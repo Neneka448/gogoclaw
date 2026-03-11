@@ -1,0 +1,302 @@
+package agent
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/Neneka448/gogoclaw/internal/config"
+	internalcontext "github.com/Neneka448/gogoclaw/internal/context"
+	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/provider"
+	"github.com/Neneka448/gogoclaw/internal/session"
+	"github.com/Neneka448/gogoclaw/internal/tools"
+	openai "github.com/sashabaranov/go-openai"
+)
+
+type fakeProvider struct {
+	responses []provider.LLMCommonResponse
+	requests  []openai.ChatCompletionRequest
+}
+
+func (provider *fakeProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	provider.requests = append(provider.requests, request)
+	response := provider.responses[0]
+	provider.responses = provider.responses[1:]
+	return response, nil
+}
+
+type fakeTool struct {
+	result string
+}
+
+func (tool fakeTool) Execute(args string) (string, error) {
+	return tool.result, nil
+}
+
+type fakeToolRegistry struct {
+	tools map[string]tools.ToolDescriptor
+}
+
+func (registry *fakeToolRegistry) RegisterTool(name string, tool tools.ToolDescriptor) error {
+	if registry.tools == nil {
+		registry.tools = make(map[string]tools.ToolDescriptor)
+	}
+	registry.tools[name] = tool
+	return nil
+}
+
+func (registry *fakeToolRegistry) GetTool(name string) (tools.ToolDescriptor, error) {
+	return registry.tools[name], nil
+}
+
+func (registry *fakeToolRegistry) GetAllTools() []tools.ToolDescriptor {
+	all := make([]tools.ToolDescriptor, 0, len(registry.tools))
+	for _, tool := range registry.tools {
+		all = append(all, tool)
+	}
+	return all
+}
+
+func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
+	configPath := writeTestConfig(t)
+	sessionManager := session.NewSessionManager(t.TempDir())
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
+				ID:        "call_1",
+				Name:      "search_docs",
+				Arguments: `{"query":"go"}`,
+				Type:      string(openai.ToolTypeFunction),
+			}}},
+			provider.NormalizedResponse{Content: "done"},
+		},
+	}
+
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"search_docs": {
+			Name: "search_docs",
+			Tool: fakeTool{result: `{"result":"ok"}`},
+			ToolForLLM: openai.Tool{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name: "search_docs",
+				},
+			},
+		},
+	}}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		ConfigManager:  config.NewConfigManager(configPath),
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+	})
+
+	inboundMessage := messagebus.Message{
+		ChannelID:   "test-channel",
+		Message:     "hello",
+		MessageID:   "msg-1",
+		MessageType: "group",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	sessionStore, err := sessionManager.GetOrCreateSession(session.MakeSessionID(inboundMessage.ChannelID, inboundMessage.ChatID), inboundMessage.SenderID)
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	messages := sessionStore.GetMessages(10)
+	if len(messages) != 4 {
+		t.Fatalf("len(messages) = %d, want 4", len(messages))
+	}
+	if messages[0].Role != openai.ChatMessageRoleUser || messages[0].Content != "hello" {
+		t.Fatalf("messages[0] = %#v, want user message", messages[0])
+	}
+	if messages[1].Role != openai.ChatMessageRoleAssistant || len(messages[1].ToolCalls) != 1 {
+		t.Fatalf("messages[1] = %#v, want assistant tool call message", messages[1])
+	}
+	if messages[2].Role != openai.ChatMessageRoleTool || messages[2].ToolCallID != "call_1" {
+		t.Fatalf("messages[2] = %#v, want tool response", messages[2])
+	}
+	if messages[3].Role != openai.ChatMessageRoleAssistant || messages[3].Content != "done" {
+		t.Fatalf("messages[3] = %#v, want final assistant message", messages[3])
+	}
+
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(providerStub.requests))
+	}
+	if len(providerStub.requests[0].Messages) != 1 {
+		t.Fatalf("first request len(Messages) = %d, want 1", len(providerStub.requests[0].Messages))
+	}
+	if len(providerStub.requests[1].Messages) != 3 {
+		t.Fatalf("second request len(Messages) = %d, want 3", len(providerStub.requests[1].Messages))
+	}
+
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+	select {
+	case message := <-outboundQueue:
+		if message.Message != `{"result":"ok"}` {
+			t.Fatalf("first message.Message = %q, want tool result", message.Message)
+		}
+		if message.FinishReason != "" {
+			t.Fatalf("first message.FinishReason = %q, want empty", message.FinishReason)
+		}
+		if message.MessageType != inboundMessage.MessageType {
+			t.Fatalf("first message.MessageType = %q, want %q", message.MessageType, inboundMessage.MessageType)
+		}
+		if message.ChatID != inboundMessage.ChatID {
+			t.Fatalf("first message.ChatID = %q, want %q", message.ChatID, inboundMessage.ChatID)
+		}
+		if message.SenderID != inboundMessage.SenderID {
+			t.Fatalf("first message.SenderID = %q, want %q", message.SenderID, inboundMessage.SenderID)
+		}
+	default:
+		t.Fatal("expected tool outbound message")
+	}
+
+	select {
+	case message := <-outboundQueue:
+		if message.FinishReason != "stop" {
+			t.Fatalf("second message.FinishReason = %q, want stop", message.FinishReason)
+		}
+		if message.MessageType != inboundMessage.MessageType {
+			t.Fatalf("second message.MessageType = %q, want %q", message.MessageType, inboundMessage.MessageType)
+		}
+		if message.Message != "done" {
+			t.Fatalf("second message.Message = %q, want done", message.Message)
+		}
+		if message.ChatID != inboundMessage.ChatID {
+			t.Fatalf("second message.ChatID = %q, want %q", message.ChatID, inboundMessage.ChatID)
+		}
+		if message.SenderID != inboundMessage.SenderID {
+			t.Fatalf("second message.SenderID = %q, want %q", message.SenderID, inboundMessage.SenderID)
+		}
+	default:
+		t.Fatal("expected final outbound message")
+	}
+}
+
+func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
+	configPath := writeTestConfigWithIterations(t, 1)
+	sessionManager := session.NewSessionManager(t.TempDir())
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{
+				FinishReason: "tool_calls",
+				ToolCalls: []provider.LLMToolCall{{
+					ID:        "call_1",
+					Name:      "search_docs",
+					Arguments: `{"query":"go"}`,
+					Type:      string(openai.ToolTypeFunction),
+				}},
+			},
+		},
+	}
+
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"search_docs": {
+			Name: "search_docs",
+			Tool: fakeTool{result: `{"result":"ok"}`},
+			ToolForLLM: openai.Tool{
+				Type:     openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{Name: "search_docs"},
+			},
+		},
+	}}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		ConfigManager:  config.NewConfigManager(configPath),
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+	})
+
+	inboundMessage := messagebus.Message{
+		ChannelID:   "test-channel",
+		Message:     "hello",
+		MessageID:   "msg-1",
+		MessageType: "group",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v, want nil", err)
+	}
+
+	sessionStore, err := sessionManager.GetOrCreateSession(session.MakeSessionID(inboundMessage.ChannelID, inboundMessage.ChatID), inboundMessage.SenderID)
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	messages := sessionStore.GetMessages(10)
+	if len(messages) != 4 {
+		t.Fatalf("len(messages) = %d, want 4", len(messages))
+	}
+	last := messages[3]
+	if last.Role != openai.ChatMessageRoleAssistant {
+		t.Fatalf("last.Role = %q, want assistant", last.Role)
+	}
+	want := "I reached the maximum number of tool call iterations (1) without finishing. If you want me to continue, please reply \"continue\"."
+	if last.Content != want {
+		t.Fatalf("last.Content = %q, want %q", last.Content, want)
+	}
+
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+	<-outboundQueue
+	message := <-outboundQueue
+	if message.FinishReason != "max_iterations" {
+		t.Fatalf("message.FinishReason = %q, want max_iterations", message.FinishReason)
+	}
+	if message.Message != want {
+		t.Fatalf("message.Message = %q, want %q", message.Message, want)
+	}
+}
+
+func writeTestConfig(t *testing.T) string {
+	t.Helper()
+	return writeTestConfigWithIterations(t, 4)
+}
+
+func writeTestConfigWithIterations(t *testing.T, maxIterations int) string {
+	t.Helper()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	defaultConfig := config.CreateDefaultConfig()
+	defaultConfig.Agents.Profiles["default"] = config.ProfileConfig{
+		Workspace:         tempDir,
+		Provider:          "codex",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: maxIterations,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+
+	encoded, err := json.Marshal(defaultConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	return configPath
+}
