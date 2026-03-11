@@ -21,11 +21,13 @@ type messageBus struct {
 }
 
 type Message struct {
-	Message     string
-	MessageID   string
-	MessageType string
-	ChatID      string
-	SenderID    string
+	ChannelID    string
+	Message      string
+	MessageID    string
+	MessageType  string
+	ChatID       string
+	SenderID     string
+	FinishReason string
 }
 
 func NewMessageBus() MessageBus {
