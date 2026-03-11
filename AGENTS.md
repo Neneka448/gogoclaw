@@ -18,23 +18,31 @@ predicate(scope): summary
 - Scopes may be hierarchical using `/` when that makes the target area clearer.
 - If one change spans multiple files in the same feature path, use the most specific shared scope.
 - If a change crosses unrelated layers, use the dominant user-facing area instead of listing multiple scopes.
+- If one change legitimately spans multiple primary layers, you may list multiple scopes separated by commas, such as `feat(cli,config): ...`.
+- Keep multi-scope commit headers short and use them only when the change truly affects more than one primary layer.
 
 Recommended scopes for this repository:
 
-| Scope         | Use for                                                                                  |
-| ------------- | ---------------------------------------------------------------------------------------- |
-| `cli`         | User-facing command flow across `cmd/` and `internal/cli/` when the change is broad      |
-| `cli/onboard` | Onboarding command and workflow, including `cmd/onboard.go` and `internal/cli/onboard/*` |
-| `cli/auth`    | Authentication flow under `internal/cli/auth/*`                                          |
-| `config`      | Configuration schema, defaults, and loaders under `internal/config/*`                    |
-| `version`     | Version metadata under `internal/version/*`                                              |
-| `root`        | Repository entrypoints such as `main.go` and `cmd/root.go`                               |
+| Scope      | Use for                                                                          |
+| ---------- | -------------------------------------------------------------------------------- |
+| `root`     | Repository entrypoints such as `main.go` and `cmd/root.go`                       |
+| `cli`      | User-facing command flow across `cmd/` and `internal/cli/`                       |
+| `config`   | Configuration schema, defaults, and loaders under `internal/config/`             |
+| `agent`    | Agent runtime, orchestration, and future code under `internal/agent/`            |
+| `memory`   | Memory management and persistence under `internal/memory/`                       |
+| `tools`    | Tool registry, execution, and adapters under `internal/tools/`                   |
+| `session`  | Session lifecycle and state under `internal/session/`                            |
+| `gateway`  | Gateway server and transport flow under `cmd/gateway.go` and `internal/gateway/` |
+| `channels` | Channel integrations and dispatch under `internal/channels/`                     |
+| `provider` | Model/provider integrations under `cmd/provider.go` and `internal/provider/`     |
+| `utils`    | Shared helpers under `internal/utils/`                                           |
 
 Examples:
 
-- `fix(cli/onboard): wire onboard command to config creation`
+- `feat(cli): wire onboard command to config creation`
 - `refactor(config): centralize default profile values`
-- `docs(cli): document command behavior`
+- `feat(provider): add provider integration scaffolding`
+- `docs(utils): document shared helper conventions`
 
 ---
 
