@@ -32,6 +32,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		ToolRegistry:   tools.NewToolRegistry(),
 		SessionManager: session.NewSessionManager(profile.Workspace),
 	}
+	if err := context.ToolRegistry.RegisterTool("read_file", tools.NewReadFileTool(profile.Workspace)); err != nil {
+		return nil, err
+	}
 
 	gateway := gateway.NewGateway(context)
 
