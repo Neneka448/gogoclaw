@@ -1,13 +1,19 @@
 package onboard
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/Neneka448/gogoclaw/internal/cli/auth"
+	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/charmbracelet/huh"
 )
+
+const configFileName = "config.json"
 
 type OnboardOptions struct {
 	ProfilePath string
@@ -36,7 +42,9 @@ func RunOnboard(options OnboardOptions) error {
 	}
 
 	if options.Interactive {
-		interactiveOnboard(&onboardCtx)
+		if err := interactiveOnboard(&onboardCtx); err != nil {
+			return err
+		}
 	}
 
 	if err := onboard(&onboardCtx); err != nil {
@@ -115,7 +123,7 @@ func interactiveOnboard(ctx *onboardContext) error {
 	err = huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Where you decide to store your workspace? (Default: ~/.gogoclaw/workspace, Recommended use ~ as path prefix to store your own workspace)").
+				Title("Where you decide to store your workspace, relative to your config directory or use absolute path to another directory? (Default: config-dir-you-chooose/workspace, Recommended use ~ as path prefix to store your own workspace)").
 				Value(&tmpCtx.Workspace),
 		),
 	).Run()
@@ -123,53 +131,134 @@ func interactiveOnboard(ctx *onboardContext) error {
 		return err
 	}
 
+	*ctx = tmpCtx
+
 	return nil
+
 }
 
 func onboard(ctx *onboardContext) error {
 	homePath, err := os.UserHomeDir()
 	if err != nil {
-		return err
-	}
-	if ctx.ProfilePath == "" {
-		ctx.ProfilePath = homePath + "/.gogoclaw"
-		slog.Warn("ProfilePath not set, use default", "path", ctx.ProfilePath)
+		return fmt.Errorf("get user home directory: %w", err)
 	}
 
-	if _, err = os.Stat(ctx.ProfilePath); os.IsNotExist(err) {
-		if err := os.MkdirAll(ctx.ProfilePath, 0755); err != nil {
-			return err
-		}
-		slog.Info("Profile Directory created", "path", ctx.ProfilePath)
-	} else if err != nil {
-		if !os.IsExist(err) {
-			slog.Error("Profile Directory exists", "path", ctx.ProfilePath)
-		}
+	normalizeContextPaths(ctx, homePath)
+
+	if err := prepareProfilePath(ctx.ProfilePath); err != nil {
 		return err
 	}
 
-	if ctx.Workspace == "" {
-		ctx.Workspace = ctx.ProfilePath + "/workspace"
-		slog.Warn("Workspace not set, use default", "path", ctx.Workspace)
-	}
-	if _, err = os.Stat(ctx.Workspace); os.IsNotExist(err) {
-		if err := os.MkdirAll(ctx.Workspace, 0755); err != nil {
-			return err
-		}
-		slog.Info("Workspace created", "path", ctx.Workspace)
-	} else if err != nil {
-		if !os.IsExist(err) {
-			slog.Error("Workspace exists", "path", ctx.Workspace)
-		}
+	if err := prepareWorkspacePath(ctx.Workspace); err != nil {
 		return err
 	}
 
-	writeConfig(ctx)
+	if err := writeConfig(ctx); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
 
 	return nil
-
 }
 
 func writeConfig(ctx *onboardContext) error {
+	defaultConfig := config.CreateDefaultConfig()
+	applyOnboardContext(&defaultConfig, ctx)
+
+	configPath := filepath.Join(ctx.ProfilePath, configFileName)
+	configFile, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return fmt.Errorf("create config file %s: %w", configPath, err)
+	}
+	defer configFile.Close()
+
+	encoder := json.NewEncoder(configFile)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(defaultConfig); err != nil {
+		return fmt.Errorf("encode config file %s: %w", configPath, err)
+	}
+	slog.Info("Config file created", "path", configPath)
+
 	return nil
+}
+
+func normalizeContextPaths(ctx *onboardContext, homePath string) {
+	if ctx.ProfilePath == "" {
+		ctx.ProfilePath = filepath.Join(homePath, ".gogoclaw")
+		slog.Warn("ProfilePath not set, use default", "path", ctx.ProfilePath)
+	}
+	ctx.ProfilePath = expandHomePath(ctx.ProfilePath, homePath)
+
+	if ctx.Workspace == "" {
+		ctx.Workspace = filepath.Join(ctx.ProfilePath, "workspace")
+		slog.Warn("Workspace not set, use default", "path", ctx.Workspace)
+	}
+	ctx.Workspace = expandHomePath(ctx.Workspace, homePath)
+}
+
+func expandHomePath(path string, homePath string) string {
+	switch {
+	case path == "~":
+		return homePath
+	case strings.HasPrefix(path, "~/"):
+		return filepath.Join(homePath, path[2:])
+	default:
+		return path
+	}
+}
+
+func prepareProfilePath(profilePath string) error {
+	info, err := os.Stat(profilePath)
+	switch {
+	case os.IsNotExist(err):
+		if err := os.MkdirAll(profilePath, 0755); err != nil {
+			return fmt.Errorf("create profile directory %s: %w", profilePath, err)
+		}
+		slog.Info("Profile Directory created", "path", profilePath)
+		return nil
+	case err != nil:
+		return fmt.Errorf("stat profile directory %s: %w", profilePath, err)
+	case !info.IsDir():
+		return fmt.Errorf("profile path is not a directory: %s", profilePath)
+	}
+
+	configPath := filepath.Join(profilePath, configFileName)
+	if _, err := os.Stat(configPath); err == nil {
+		slog.Error("Config file exists", "path", configPath)
+		return fmt.Errorf("config file exists: %s", configPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat config file %s: %w", configPath, err)
+	}
+
+	slog.Info("Config file not exists, will create one", "path", configPath)
+	return nil
+}
+
+func prepareWorkspacePath(workspacePath string) error {
+	if _, err := os.Stat(workspacePath); os.IsNotExist(err) {
+		if err := os.MkdirAll(workspacePath, 0755); err != nil {
+			return fmt.Errorf("create workspace directory %s: %w", workspacePath, err)
+		}
+		slog.Info("Workspace created", "path", workspacePath)
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat workspace path %s: %w", workspacePath, err)
+	}
+
+	slog.Error("Workspace exists", "path", workspacePath)
+	return fmt.Errorf("workspace exists: %s", workspacePath)
+}
+
+func applyOnboardContext(defaultConfig *config.SysConfig, ctx *onboardContext) {
+	defaultProfile := defaultConfig.Agents.Profiles["default"]
+	defaultProfile.Workspace = ctx.Workspace
+	defaultProfile.Provider = ctx.Provider
+	defaultProfile.Model = ctx.Model
+	defaultConfig.Agents.Profiles["default"] = defaultProfile
+
+	for i := range defaultConfig.Providers {
+		if defaultConfig.Providers[i].Name == ctx.Provider {
+			defaultConfig.Providers[i].Auth.Token = ctx.APIKey
+			break
+		}
+	}
 }
