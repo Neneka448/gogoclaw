@@ -9,7 +9,7 @@ import (
 func TestBuildRequestParams(t *testing.T) {
 	params := ChatCompletionParams{
 		Model: "gpt-5",
-		Messages: []ChatMessage{
+		Messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleSystem, Content: "You are helpful."},
 			{Role: openai.ChatMessageRoleUser, Content: "hello", Name: "alice"},
 		},
@@ -19,7 +19,7 @@ func TestBuildRequestParams(t *testing.T) {
 		Metadata:            map[string]string{"trace_id": "abc123"},
 	}
 
-	got := buildRequestParams(params)
+	got := BuildOpenaiRequestParams(params)
 
 	if got.Model != params.Model {
 		t.Fatalf("Model = %q, want %q", got.Model, params.Model)
@@ -63,7 +63,7 @@ func TestBuildRequestParamsIncludesToolCallingFields(t *testing.T) {
 
 	params := ChatCompletionParams{
 		Model: "gpt-5",
-		Messages: []ChatMessage{
+		Messages: []openai.ChatCompletionMessage{
 			{
 				Role: openai.ChatMessageRoleAssistant,
 				ToolCalls: []openai.ToolCall{{
@@ -88,7 +88,7 @@ func TestBuildRequestParamsIncludesToolCallingFields(t *testing.T) {
 		},
 	}
 
-	got := buildRequestParams(params)
+	got := BuildOpenaiRequestParams(params)
 
 	if len(got.Tools) != 1 || got.Tools[0].Function == nil || got.Tools[0].Function.Name != "search_docs" {
 		t.Fatalf("Tools = %#v, want search_docs tool", got.Tools)
@@ -111,5 +111,146 @@ func TestBuildRequestParamsIncludesToolCallingFields(t *testing.T) {
 	}
 	if got.Messages[1].ToolCallID != "call_1" {
 		t.Fatalf("second message ToolCallID = %q, want call_1", got.Messages[1].ToolCallID)
+	}
+}
+
+func TestBuildAssistantMessageReturnsToolCalls(t *testing.T) {
+	response := NormalizedResponse{
+		Content:      "",
+		FinishReason: "tool_calls",
+		ToolCalls: []LLMToolCall{{
+			ID:        "call_1",
+			Name:      "search_docs",
+			Arguments: `{"query":"react"}`,
+			Type:      string(openai.ToolTypeFunction),
+		}},
+	}
+
+	message := BuildAssistantMessage(response)
+
+	if message.Role != openai.ChatMessageRoleAssistant {
+		t.Fatalf("Role = %q, want assistant", message.Role)
+	}
+	if len(message.ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1", len(message.ToolCalls))
+	}
+	if message.ToolCalls[0].ID != "call_1" {
+		t.Fatalf("ToolCalls[0].ID = %q, want call_1", message.ToolCalls[0].ID)
+	}
+	if message.FunctionCall != nil {
+		t.Fatalf("FunctionCall = %#v, want nil", message.FunctionCall)
+	}
+}
+
+func TestBuildAssistantMessageReturnsLegacyFunctionCall(t *testing.T) {
+	response := NormalizedResponse{
+		Content:      "",
+		FinishReason: "tool_calls",
+		ToolCalls: []LLMToolCall{{
+			Name:      "search_docs",
+			Arguments: `{"query":"golang"}`,
+			Type:      string(openai.ToolTypeFunction),
+		}},
+	}
+
+	message := BuildAssistantMessage(response)
+
+	if message.FunctionCall == nil {
+		t.Fatal("FunctionCall = nil, want non-nil")
+	}
+	if message.FunctionCall.Name != "search_docs" {
+		t.Fatalf("FunctionCall.Name = %q, want search_docs", message.FunctionCall.Name)
+	}
+	if len(message.ToolCalls) != 0 {
+		t.Fatalf("len(ToolCalls) = %d, want 0", len(message.ToolCalls))
+	}
+}
+
+func TestNormalizeOpenaiResponseReturnsToolCalls(t *testing.T) {
+	response := openai.ChatCompletionResponse{
+		Choices: []openai.ChatCompletionChoice{{
+			FinishReason: "tool_calls",
+			Message: openai.ChatCompletionMessage{
+				Content: "",
+				ToolCalls: []openai.ToolCall{{
+					ID:   "call_1",
+					Type: openai.ToolTypeFunction,
+					Function: openai.FunctionCall{
+						Name:      "search_docs",
+						Arguments: `{"query":"react"}`,
+					},
+				}},
+			},
+		}},
+	}
+
+	normalized := NormalizeOpenaiResponse(response)
+
+	if !normalized.IsToolCall() {
+		t.Fatal("IsToolCall = false, want true")
+	}
+	if normalized.GetFinishReason() != "tool_calls" {
+		t.Fatalf("GetFinishReason() = %q, want tool_calls", normalized.GetFinishReason())
+	}
+	toolCalls := normalized.GetToolCalls()
+	if len(toolCalls) != 1 {
+		t.Fatalf("len(GetToolCalls()) = %d, want 1", len(toolCalls))
+	}
+	if toolCalls[0].Name != "search_docs" {
+		t.Fatalf("toolCalls[0].Name = %q, want search_docs", toolCalls[0].Name)
+	}
+	toolName, ok := FirstToolCallName(normalized)
+	if !ok || toolName != "search_docs" {
+		t.Fatalf("FirstToolCallName() = (%q, %v), want (search_docs, true)", toolName, ok)
+	}
+}
+
+func TestNormalizeOpenaiMessageIncludesLegacyFunctionCall(t *testing.T) {
+	message := openai.ChatCompletionMessage{
+		Content: "",
+		FunctionCall: &openai.FunctionCall{
+			Name:      "search_docs",
+			Arguments: `{"query":"golang"}`,
+		},
+	}
+
+	normalized := NormalizeOpenaiMessage(message)
+
+	if !normalized.IsToolCall() {
+		t.Fatal("IsToolCall = false, want true")
+	}
+	if normalized.GetFinishReason() != "tool_calls" {
+		t.Fatalf("GetFinishReason() = %q, want tool_calls", normalized.GetFinishReason())
+	}
+	toolCalls := normalized.GetToolCalls()
+	if len(toolCalls) != 1 {
+		t.Fatalf("len(GetToolCalls()) = %d, want 1", len(toolCalls))
+	}
+	if toolCalls[0].Name != "search_docs" {
+		t.Fatalf("toolCalls[0].Name = %q, want search_docs", toolCalls[0].Name)
+	}
+	if toolCalls[0].Type != string(openai.ToolTypeFunction) {
+		t.Fatalf("toolCalls[0].Type = %q, want %q", toolCalls[0].Type, string(openai.ToolTypeFunction))
+	}
+}
+
+func TestNormalizeOpenaiResponseReturnsStopFinishReason(t *testing.T) {
+	response := openai.ChatCompletionResponse{
+		Choices: []openai.ChatCompletionChoice{{
+			FinishReason: "stop",
+			Message: openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: "done",
+			},
+		}},
+	}
+
+	normalized := NormalizeOpenaiResponse(response)
+
+	if normalized.GetFinishReason() != "stop" {
+		t.Fatalf("GetFinishReason() = %q, want stop", normalized.GetFinishReason())
+	}
+	if normalized.IsToolCall() {
+		t.Fatal("IsToolCall = true, want false")
 	}
 }
