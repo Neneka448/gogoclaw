@@ -1,11 +1,35 @@
 package config
 
 type SysConfig struct {
-	Agents    AgentConfig       `json:"agents"`
-	Providers []ProviderConfig  `json:"providers"`
-	Channels  map[string]string `json:"channels"`
-	Gateway   GatewayConfig     `json:"gateway"`
-	Tools     []ToolConfig      `json:"tools"`
+	Agents    AgentConfig    `json:"agents"`
+	Providers []ProviderConfig `json:"providers"`
+	Channels  ChannelsConfig `json:"channels"`
+	Gateway   GatewayConfig  `json:"gateway"`
+	Tools     []ToolConfig   `json:"tools"`
+}
+
+type ChannelsConfig struct {
+	CLI           CLIChannelConfig    `json:"cli"`
+	Feishu        FeishuChannelConfig `json:"feishu"`
+	SendProgress  bool                `json:"sendProgress"`
+	SendToolHints bool                `json:"sendToolHints"`
+}
+
+type ChannelConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+type CLIChannelConfig struct {
+	ChannelConfig
+}
+
+type FeishuChannelConfig struct {
+	ChannelConfig
+	AppID             string   `json:"appId"`
+	AppSecret         string   `json:"appSecret"`
+	EncryptKey        string   `json:"encryptKey"`
+	VerificationToken string   `json:"verificationToken"`
+	AllowFrom         []string `json:"allowFrom"`
 }
 
 type AgentConfig struct {
@@ -82,7 +106,16 @@ func CreateDefaultConfig() SysConfig {
 				},
 			},
 		},
-		Channels: map[string]string{},
+		Channels: ChannelsConfig{
+			CLI: CLIChannelConfig{
+				ChannelConfig: ChannelConfig{Enabled: true},
+			},
+			Feishu: FeishuChannelConfig{
+				AllowFrom: []string{"*"},
+			},
+			SendProgress:  true,
+			SendToolHints: true,
+		},
 		Gateway: GatewayConfig{
 			Port: 8080,
 			Host: "127.0.0.1",

@@ -1,6 +1,7 @@
 package context
 
 import (
+	"github.com/Neneka448/gogoclaw/internal/channels"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -13,5 +14,6 @@ type SystemContext struct {
 	Provider       provider.LLMProviderOpenaiCompatible
 	ConfigManager  config.ConfigManager
 	ToolRegistry   tools.ToolRegistry
+	ChannelRegistry channels.Registry
 	SessionManager session.SessionManager
 }

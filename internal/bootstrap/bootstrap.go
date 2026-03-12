@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"github.com/Neneka448/gogoclaw/internal/channels"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/context"
 	"github.com/Neneka448/gogoclaw/internal/gateway"
@@ -12,6 +13,10 @@ import (
 
 func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	configManager := config.NewConfigManager(configPath)
+	sysConfig, err := configManager.GetConfig()
+	if err != nil {
+		return nil, err
+	}
 	profile, err := configManager.GetAgentProfileConfig("default")
 	if err != nil {
 		return nil, err
@@ -24,13 +29,24 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	messageBus := messagebus.NewMessageBus()
+	channelRegistry := channels.NewRegistry()
+	if err := channelRegistry.Register(channels.NewCLIChannel(sysConfig.Channels.CLI, nil)); err != nil {
+		return nil, err
+	}
+	if sysConfig.Channels.Feishu.Enabled {
+		if err := channelRegistry.Register(channels.NewFeishuChannel(sysConfig.Channels.Feishu, messageBus)); err != nil {
+			return nil, err
+		}
+	}
 
 	context := context.SystemContext{
-		MessageBus:     messagebus.NewMessageBus(),
-		Provider:       llmProvider,
-		ConfigManager:  configManager,
-		ToolRegistry:   tools.NewToolRegistry(),
-		SessionManager: session.NewSessionManager(profile.Workspace),
+		MessageBus:      messageBus,
+		Provider:        llmProvider,
+		ConfigManager:   configManager,
+		ToolRegistry:    tools.NewToolRegistry(),
+		ChannelRegistry: channelRegistry,
+		SessionManager:  session.NewSessionManager(profile.Workspace),
 	}
 	if err := context.ToolRegistry.RegisterTool("read_file", tools.NewReadFileTool(profile.Workspace)); err != nil {
 		return nil, err

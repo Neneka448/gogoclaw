@@ -53,7 +53,8 @@ func (cm *configManager) readConfig() error {
 		return fmt.Errorf("config file not exists: %s", cm.configPath)
 	}
 	if cm.configCache == nil {
-		cm.configCache = &SysConfig{}
+		defaultConfig := CreateDefaultConfig()
+		cm.configCache = &defaultConfig
 	}
 	configFile, err := os.Open(cm.configPath)
 	if err != nil {

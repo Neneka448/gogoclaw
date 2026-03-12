@@ -27,7 +27,9 @@ type Message struct {
 	MessageType  string
 	ChatID       string
 	SenderID     string
+	ReplyTo      string
 	FinishReason string
+	Metadata     map[string]string
 }
 
 func NewMessageBus() MessageBus {

@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/agent"
@@ -21,17 +23,16 @@ type Gateway interface {
 
 type gateway struct {
 	context context.SystemContext
+	stopCh  chan struct{}
+	mu      sync.Mutex
+	started bool
+	wg      sync.WaitGroup
 }
-
-const (
-	toolCallColor  = "\x1b[32m"
-	assistantColor = "\x1b[38;5;208m"
-	resetColor     = "\x1b[0m"
-)
 
 func NewGateway(context context.SystemContext) Gateway {
 	return &gateway{
 		context: context,
+		stopCh:  make(chan struct{}),
 	}
 }
 
@@ -73,7 +74,9 @@ func (g *gateway) listenOutboundMessages(outboundQueue <-chan messagebus.Message
 		select {
 		case outbound := <-outboundQueue:
 			if printOutput {
-				printMessage(outbound)
+				if err := g.dispatchOutboundMessage(outbound); err != nil {
+					return results, err
+				}
 			}
 			results = append(results, outbound)
 			if outbound.FinishReason != "" && outbound.FinishReason != "tool_calls" {
@@ -90,29 +93,94 @@ func (g *gateway) listenOutboundMessages(outboundQueue <-chan messagebus.Message
 	}
 }
 
-func printMessage(msg messagebus.Message) {
-	if strings.TrimSpace(msg.Message) == "" {
-		return
+func (g *gateway) dispatchOutboundMessage(msg messagebus.Message) error {
+	if g.context.ChannelRegistry == nil {
+		return nil
 	}
-	if msg.FinishReason == "tool_calls" {
-		printToolCallMessage(msg)
-		return
-	}
-	if msg.FinishReason == "" {
-		return
-	}
-	fmt.Printf("[message]:\n%s%s%s\n", assistantColor, msg.Message, resetColor)
-
-}
-func printToolCallMessage(msg messagebus.Message) {
-	fmt.Printf("%s[tool call]: %s%s\n", toolCallColor, msg.Message, resetColor)
+	return g.context.ChannelRegistry.Dispatch(msg)
 }
 
 func (g *gateway) Start() error {
+	g.mu.Lock()
+	if g.started {
+		g.mu.Unlock()
+		return nil
+	}
+	g.started = true
+	g.mu.Unlock()
+
+	if g.context.ChannelRegistry != nil {
+		if err := g.context.ChannelRegistry.StartAll(); err != nil {
+			return err
+		}
+	}
+
+	inboundQueue, err := g.context.MessageBus.Get(messagebus.InboundQueue)
+	if err != nil {
+		return err
+	}
+	outboundQueue, err := g.context.MessageBus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		return err
+	}
+
+	g.wg.Add(2)
+	go g.consumeInboundMessages(inboundQueue)
+	go g.consumeOutboundMessages(outboundQueue)
 	return nil
 }
 
+func (g *gateway) consumeInboundMessages(inboundQueue <-chan messagebus.Message) {
+	defer g.wg.Done()
+	for {
+		select {
+		case <-g.stopCh:
+			return
+		case msg, ok := <-inboundQueue:
+			if !ok {
+				return
+			}
+			go func(message messagebus.Message) {
+				if err := <-g.startAgentLoop(message); err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "gateway inbound error: %v\n", err)
+				}
+			}(msg)
+		}
+	}
+}
+
+func (g *gateway) consumeOutboundMessages(outboundQueue <-chan messagebus.Message) {
+	defer g.wg.Done()
+	for {
+		select {
+		case <-g.stopCh:
+			return
+		case msg, ok := <-outboundQueue:
+			if !ok {
+				return
+			}
+			if err := g.dispatchOutboundMessage(msg); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "gateway outbound dispatch error: %v\n", err)
+			}
+		}
+	}
+}
+
 func (g *gateway) Stop() error {
+	g.mu.Lock()
+	if !g.started {
+		g.mu.Unlock()
+	} else {
+		close(g.stopCh)
+		g.started = false
+		g.mu.Unlock()
+		g.wg.Wait()
+	}
+	if g.context.ChannelRegistry != nil {
+		if err := g.context.ChannelRegistry.StopAll(); err != nil {
+			return err
+		}
+	}
 	if g.context.SessionManager != nil {
 		if err := g.context.SessionManager.Close(); err != nil {
 			return err
