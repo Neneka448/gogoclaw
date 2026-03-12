@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 	for {
 		select {
 		case outbound := <-outboundQueue:
+			printMessage(outbound)
 			results = append(results, outbound)
 			if outbound.FinishReason != "" && outbound.FinishReason != "tool_calls" {
 				return results, nil
@@ -68,6 +70,17 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 			continue
 		}
 	}
+}
+func printMessage(msg messagebus.Message) {
+	if msg.FinishReason == "tool_calls" {
+		printToolCallMessage(msg)
+		return
+	}
+	fmt.Printf("\x1b[36m%s\x1b[0m\n", msg.Message)
+
+}
+func printToolCallMessage(msg messagebus.Message) {
+	fmt.Printf("\x1b[32m[tool call]: %s\x1b[0m\n", msg.Message)
 }
 
 func (g *gateway) Start() error {

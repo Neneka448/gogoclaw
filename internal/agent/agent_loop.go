@@ -86,6 +86,10 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 			break
 		}
 
+		if err := al.publishToolCallMessages(msg, response.GetToolCalls()); err != nil {
+			return err
+		}
+
 		toolResponses, err := al.executeToolCalls(response.GetToolCalls())
 		if err != nil {
 			return err
@@ -173,6 +177,32 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 	}
 
 	return nil
+}
+
+func (al *agentLoop) publishToolCallMessages(source messagebus.Message, toolCalls []provider.LLMToolCall) error {
+	if al.context.MessageBus == nil {
+		return nil
+	}
+
+	for _, toolCall := range toolCalls {
+		if err := al.context.MessageBus.Put(messagebus.Message{
+			ChannelID:    source.ChannelID,
+			Message:      formatToolCallMessage(toolCall),
+			MessageID:    source.MessageID,
+			MessageType:  source.MessageType,
+			ChatID:       source.ChatID,
+			SenderID:     source.SenderID,
+			FinishReason: "tool_calls",
+		}, messagebus.OutboundQueue); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func formatToolCallMessage(toolCall provider.LLMToolCall) string {
+	return toolCall.Name + "(" + toolCall.Arguments + ")"
 }
 
 func (al *agentLoop) buildMaxIterationsExceededMessage(maxIterations int) Openai.ChatCompletionMessage {

@@ -146,11 +146,11 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 	}
 	select {
 	case message := <-outboundQueue:
-		if message.Message != `{"result":"ok"}` {
-			t.Fatalf("first message.Message = %q, want tool result", message.Message)
+		if message.Message != `search_docs({"query":"go"})` {
+			t.Fatalf("first message.Message = %q, want tool call", message.Message)
 		}
-		if message.FinishReason != "" {
-			t.Fatalf("first message.FinishReason = %q, want empty", message.FinishReason)
+		if message.FinishReason != "tool_calls" {
+			t.Fatalf("first message.FinishReason = %q, want tool_calls", message.FinishReason)
 		}
 		if message.MessageType != inboundMessage.MessageType {
 			t.Fatalf("first message.MessageType = %q, want %q", message.MessageType, inboundMessage.MessageType)
@@ -167,20 +167,41 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 
 	select {
 	case message := <-outboundQueue:
-		if message.FinishReason != "stop" {
-			t.Fatalf("second message.FinishReason = %q, want stop", message.FinishReason)
+		if message.Message != `{"result":"ok"}` {
+			t.Fatalf("second message.Message = %q, want tool result", message.Message)
+		}
+		if message.FinishReason != "" {
+			t.Fatalf("second message.FinishReason = %q, want empty", message.FinishReason)
 		}
 		if message.MessageType != inboundMessage.MessageType {
 			t.Fatalf("second message.MessageType = %q, want %q", message.MessageType, inboundMessage.MessageType)
-		}
-		if message.Message != "done" {
-			t.Fatalf("second message.Message = %q, want done", message.Message)
 		}
 		if message.ChatID != inboundMessage.ChatID {
 			t.Fatalf("second message.ChatID = %q, want %q", message.ChatID, inboundMessage.ChatID)
 		}
 		if message.SenderID != inboundMessage.SenderID {
 			t.Fatalf("second message.SenderID = %q, want %q", message.SenderID, inboundMessage.SenderID)
+		}
+	default:
+		t.Fatal("expected tool result outbound message")
+	}
+
+	select {
+	case message := <-outboundQueue:
+		if message.FinishReason != "stop" {
+			t.Fatalf("third message.FinishReason = %q, want stop", message.FinishReason)
+		}
+		if message.MessageType != inboundMessage.MessageType {
+			t.Fatalf("third message.MessageType = %q, want %q", message.MessageType, inboundMessage.MessageType)
+		}
+		if message.Message != "done" {
+			t.Fatalf("third message.Message = %q, want done", message.Message)
+		}
+		if message.ChatID != inboundMessage.ChatID {
+			t.Fatalf("third message.ChatID = %q, want %q", message.ChatID, inboundMessage.ChatID)
+		}
+		if message.SenderID != inboundMessage.SenderID {
+			t.Fatalf("third message.SenderID = %q, want %q", message.SenderID, inboundMessage.SenderID)
 		}
 	default:
 		t.Fatal("expected final outbound message")
@@ -258,6 +279,7 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(OutboundQueue) error = %v", err)
 	}
+	<-outboundQueue
 	<-outboundQueue
 	message := <-outboundQueue
 	if message.FinishReason != "max_iterations" {

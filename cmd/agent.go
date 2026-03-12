@@ -38,7 +38,7 @@ var agentCmd = &cobra.Command{
 			return err
 		}
 
-		responses, err := (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
+		_, err = (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
 			ChannelID: "cli",
 			ChatID:    randomNumericString(12),
 			Message:   message,
@@ -46,12 +46,12 @@ var agentCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		for _, response := range responses {
-			if strings.TrimSpace(response.Message) == "" {
-				continue
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), response.Message)
-		}
+		// for _, response := range responses {
+		// 	if strings.TrimSpace(response.Message) == "" {
+		// 		continue
+		// 	}
+		// 	fmt.Fprintln(cmd.OutOrStdout(), response.Message)
+		// }
 
 		return nil
 	},
