@@ -133,6 +133,8 @@ func resolveProviderBaseURL(providerConfig *config.ProviderConfig) (string, erro
 			baseURL = "https://openrouter.ai/api/v1"
 		case "codex":
 			baseURL = "https://api.openai.com/v1"
+		case "voyageai":
+			baseURL = "https://api.voyageai.com/v1"
 		}
 	}
 

@@ -178,6 +178,33 @@ Example:
       }
     }
   },
+  "embedding": {
+    "profiles": {
+      "default": {
+        "text": {
+          "provider": "voyageai",
+          "model": "voyage-4-large",
+          "outputDimension": 1024
+        },
+        "modal": {
+          "provider": "voyageai",
+          "model": "voyage-multimodal-3.5",
+          "outputDimension": 1024
+        }
+      }
+    },
+    "providers": [
+      {
+        "name": "voyageai",
+        "timeout": 60,
+        "baseURL": "",
+        "path": "",
+        "auth": {
+          "token": "<voyage-api-key>"
+        }
+      }
+    ]
+  },
   "providers": [
     {
       "name": "openrouter",
@@ -221,6 +248,7 @@ Notes:
 
 - the default agent profile name is default
 - provider lookup is based on the profile's provider field
+- embedding models are configured separately under the embedding section
 - terminal tool timeout can be configured through the tools array
 - if no custom workspace is provided during onboarding, it defaults to <profile>/workspace
 

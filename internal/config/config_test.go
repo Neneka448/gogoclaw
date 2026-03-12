@@ -38,4 +38,23 @@ func TestNewConfigManagerLoadsConfig(t *testing.T) {
 	if profile.Model != "gpt-5.4" {
 		t.Fatalf("profile.Model = %q, want gpt-5.4", profile.Model)
 	}
+
+	embeddingProfile, err := manager.GetEmbeddingProfileConfig("default")
+	if err != nil {
+		t.Fatalf("GetEmbeddingProfileConfig() error = %v", err)
+	}
+	if embeddingProfile.Text.Provider != "" || embeddingProfile.Modal.Provider != "" {
+		t.Fatalf("embedding profile = %#v, want empty default provider selections", embeddingProfile)
+	}
+	if embeddingProfile.Text.OutputDimension != 0 || embeddingProfile.Modal.OutputDimension != 0 {
+		t.Fatalf("embedding output dimensions = (%d, %d), want 0,0", embeddingProfile.Text.OutputDimension, embeddingProfile.Modal.OutputDimension)
+	}
+
+	embeddingProvider, err := manager.GetEmbeddingProviderConfig("voyageai")
+	if err != nil {
+		t.Fatalf("GetEmbeddingProviderConfig() error = %v", err)
+	}
+	if embeddingProvider.Name != "voyageai" {
+		t.Fatalf("embeddingProvider.Name = %q, want voyageai", embeddingProvider.Name)
+	}
 }

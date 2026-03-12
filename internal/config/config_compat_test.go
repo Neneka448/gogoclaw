@@ -36,4 +36,10 @@ func TestConfigManagerMergesChannelDefaultsForLegacyConfig(t *testing.T) {
 	if !config.Channels.SendProgress || !config.Channels.SendToolHints {
 		t.Fatalf("progress flags = (%v, %v), want true,true", config.Channels.SendProgress, config.Channels.SendToolHints)
 	}
+	if _, ok := config.Embedding.Profiles["default"]; !ok {
+		t.Fatal("config.Embedding.Profiles[default] missing, want default embedding profile")
+	}
+	if len(config.Embedding.Providers) != 1 || config.Embedding.Providers[0].Name != "voyageai" {
+		t.Fatalf("config.Embedding.Providers = %#v, want default voyageai provider", config.Embedding.Providers)
+	}
 }

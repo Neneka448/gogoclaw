@@ -26,11 +26,19 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	embeddingProfile, err := configManager.GetEmbeddingProfileConfig("default")
+	if err != nil {
+		return nil, err
+	}
 	providerConfig, err := configManager.GetProviderConfig(profile.Provider)
 	if err != nil {
 		return nil, err
 	}
 	llmProvider, err := provider.NewOpenAICompatibleProvider(providerConfig)
+	if err != nil {
+		return nil, err
+	}
+	textEmbeddingProvider, modalEmbeddingProvider, err := buildEmbeddingProviders(configManager, embeddingProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +60,8 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	context := context.SystemContext{
 		MessageBus:      messageBus,
 		Provider:        llmProvider,
+		TextEmbedding:   textEmbeddingProvider,
+		ModalEmbedding:  modalEmbeddingProvider,
 		ConfigManager:   configManager,
 		ToolRegistry:    tools.NewToolRegistry(),
 		Skills:          skillRegistry,
@@ -92,4 +102,44 @@ func resolveToolTimeout(configs []config.ToolConfig, name string, defaultTimeout
 	}
 
 	return defaultTimeout
+}
+
+func buildEmbeddingProviders(configManager config.ConfigManager, profile *config.EmbeddingProfileConfig) (provider.EmbeddingProvider, provider.EmbeddingProvider, error) {
+	if profile == nil {
+		return nil, nil, nil
+	}
+
+	cache := map[string]provider.EmbeddingProvider{}
+	textProvider, err := resolveEmbeddingProvider(configManager, cache, profile.Text.Provider)
+	if err != nil {
+		return nil, nil, err
+	}
+	modalProvider, err := resolveEmbeddingProvider(configManager, cache, profile.Modal.Provider)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return textProvider, modalProvider, nil
+}
+
+func resolveEmbeddingProvider(configManager config.ConfigManager, cache map[string]provider.EmbeddingProvider, providerName string) (provider.EmbeddingProvider, error) {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return nil, nil
+	}
+	if embeddingProvider, ok := cache[providerName]; ok {
+		return embeddingProvider, nil
+	}
+
+	providerConfig, err := configManager.GetEmbeddingProviderConfig(providerName)
+	if err != nil {
+		return nil, err
+	}
+	embeddingProvider, err := provider.NewEmbeddingProvider(providerConfig)
+	if err != nil {
+		return nil, err
+	}
+	cache[providerName] = embeddingProvider
+
+	return embeddingProvider, nil
 }

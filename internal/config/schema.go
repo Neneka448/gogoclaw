@@ -2,6 +2,7 @@ package config
 
 type SysConfig struct {
 	Agents    AgentConfig      `json:"agents"`
+	Embedding EmbeddingConfig  `json:"embedding"`
 	Providers []ProviderConfig `json:"providers"`
 	Channels  ChannelsConfig   `json:"channels"`
 	Gateway   GatewayConfig    `json:"gateway"`
@@ -35,6 +36,22 @@ type FeishuChannelConfig struct {
 
 type AgentConfig struct {
 	Profiles map[string]ProfileConfig `json:"profiles"`
+}
+
+type EmbeddingConfig struct {
+	Profiles  map[string]EmbeddingProfileConfig `json:"profiles"`
+	Providers []ProviderConfig                  `json:"providers"`
+}
+
+type EmbeddingProfileConfig struct {
+	Text  EmbeddingModelConfig `json:"text"`
+	Modal EmbeddingModelConfig `json:"modal"`
+}
+
+type EmbeddingModelConfig struct {
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	OutputDimension int    `json:"outputDimension"`
 }
 
 type ProfileConfig struct {
@@ -88,6 +105,23 @@ func CreateDefaultConfig() SysConfig {
 					MaxToolIterations: 40,
 					MemoryWindow:      30,
 					MaxRetryTimes:     3,
+				},
+			},
+		},
+		Embedding: EmbeddingConfig{
+			Profiles: map[string]EmbeddingProfileConfig{
+				"default": {
+					Text:  EmbeddingModelConfig{},
+					Modal: EmbeddingModelConfig{},
+				},
+			},
+			Providers: []ProviderConfig{
+				{
+					Name:    "voyageai",
+					Timeout: 60,
+					Auth: AuthConfig{
+						Token: "",
+					},
 				},
 			},
 		},

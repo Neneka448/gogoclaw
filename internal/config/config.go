@@ -13,6 +13,8 @@ type ConfigManager interface {
 
 	GetProviderConfig(providerName string) (*ProviderConfig, error)
 	GetAgentProfileConfig(profileName string) (*ProfileConfig, error)
+	GetEmbeddingProviderConfig(providerName string) (*ProviderConfig, error)
+	GetEmbeddingProfileConfig(profileName string) (*EmbeddingProfileConfig, error)
 }
 
 type configManager struct {
@@ -44,6 +46,18 @@ func (cm *configManager) GetAgentProfileConfig(profileName string) (*ProfileConf
 	profile, ok := config.Agents.Profiles[profileName]
 	if !ok {
 		return nil, fmt.Errorf("profile not found: %s", profileName)
+	}
+	return &profile, nil
+}
+
+func (cm *configManager) GetEmbeddingProfileConfig(profileName string) (*EmbeddingProfileConfig, error) {
+	config, err := cm.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	profile, ok := config.Embedding.Profiles[profileName]
+	if !ok {
+		return nil, fmt.Errorf("embedding profile not found: %s", profileName)
 	}
 	return &profile, nil
 }
@@ -80,9 +94,21 @@ func (cm *configManager) GetProviderConfig(providerName string) (*ProviderConfig
 	if err != nil {
 		return nil, err
 	}
-	for i := range config.Providers {
-		if config.Providers[i].Name == providerName {
-			return &config.Providers[i], nil
+	return findProviderConfig(config.Providers, providerName)
+}
+
+func (cm *configManager) GetEmbeddingProviderConfig(providerName string) (*ProviderConfig, error) {
+	config, err := cm.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	return findProviderConfig(config.Embedding.Providers, providerName)
+}
+
+func findProviderConfig(providers []ProviderConfig, providerName string) (*ProviderConfig, error) {
+	for i := range providers {
+		if providers[i].Name == providerName {
+			return &providers[i], nil
 		}
 	}
 	return nil, fmt.Errorf("provider not found: %s", providerName)

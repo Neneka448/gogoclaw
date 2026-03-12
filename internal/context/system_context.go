@@ -14,6 +14,8 @@ import (
 type SystemContext struct {
 	MessageBus      messagebus.MessageBus
 	Provider        provider.LLMProviderOpenaiCompatible
+	TextEmbedding   provider.EmbeddingProvider
+	ModalEmbedding  provider.EmbeddingProvider
 	ConfigManager   config.ConfigManager
 	ToolRegistry    tools.ToolRegistry
 	Skills          skills.Registry
