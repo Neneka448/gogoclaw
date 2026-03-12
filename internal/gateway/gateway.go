@@ -52,17 +52,29 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 		return nil, err
 	}
 
+	errCh := g.startAgentLoop(msg)
+
+	return g.listenOutboundMessages(outboundQueue, errCh, true)
+}
+
+func (g *gateway) startAgentLoop(msg messagebus.Message) <-chan error {
 	agentLoop := agent.NewAgentLoop(g.context)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- agentLoop.ProcessMessage(msg)
 	}()
 
+	return errCh
+}
+
+func (g *gateway) listenOutboundMessages(outboundQueue <-chan messagebus.Message, errCh <-chan error, printOutput bool) ([]messagebus.Message, error) {
 	results := make([]messagebus.Message, 0, 4)
 	for {
 		select {
 		case outbound := <-outboundQueue:
-			printMessage(outbound)
+			if printOutput {
+				printMessage(outbound)
+			}
 			results = append(results, outbound)
 			if outbound.FinishReason != "" && outbound.FinishReason != "tool_calls" {
 				return results, nil
@@ -77,6 +89,7 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 		}
 	}
 }
+
 func printMessage(msg messagebus.Message) {
 	if strings.TrimSpace(msg.Message) == "" {
 		return
