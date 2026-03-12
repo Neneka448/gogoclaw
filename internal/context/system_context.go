@@ -9,6 +9,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/skills"
 	"github.com/Neneka448/gogoclaw/internal/systemprompt"
 	"github.com/Neneka448/gogoclaw/internal/tools"
+	"github.com/Neneka448/gogoclaw/internal/vectorstore"
 )
 
 type SystemContext struct {
@@ -22,4 +23,5 @@ type SystemContext struct {
 	SystemPrompt    systemprompt.Service
 	ChannelRegistry channels.Registry
 	SessionManager  session.SessionManager
+	VectorStore     vectorstore.Service
 }

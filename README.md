@@ -305,6 +305,18 @@ Build with version metadata:
 make build
 ```
 
+Fast local development:
+
+```bash
+make test
+```
+
+Fast local build:
+
+```bash
+make build
+```
+
 The repository already includes tests for core areas such as bootstrap, channels, config, gateway, provider normalization, sessions, skills, tools, and workspace bootstrap files.
 
 ## Contributing

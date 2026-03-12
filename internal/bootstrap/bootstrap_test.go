@@ -59,6 +59,15 @@ func TestBootstrapInitializesSessionManagerFromWorkspace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspaceDir, "AGENTS.md")); err == nil {
 		t.Fatalf("Bootstrap() should not create workspace bootstrap files automatically")
 	}
+	if err := (*gatewayRef).Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceDir, "sqlite-vec", "store.db")); err != nil {
+		t.Fatalf("sqlite-vec database not created: %v", err)
+	}
+	if err := (*gatewayRef).Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
 }
 
 func TestResolveToolTimeoutUsesConfiguredValue(t *testing.T) {

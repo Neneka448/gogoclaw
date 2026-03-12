@@ -122,4 +122,7 @@ func TestOnboardCreatesWorkspaceBootstrapFiles(t *testing.T) {
 			t.Fatalf("workspace file %s missing: %v", fileName, err)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(workspacePath, "sqlite-vec", "store.db")); err != nil {
+		t.Fatalf("sqlite-vec store missing: %v", err)
+	}
 }

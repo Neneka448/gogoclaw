@@ -14,6 +14,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/skills"
 	"github.com/Neneka448/gogoclaw/internal/systemprompt"
 	"github.com/Neneka448/gogoclaw/internal/tools"
+	"github.com/Neneka448/gogoclaw/internal/vectorstore"
 )
 
 func Bootstrap(configPath string) (*gateway.Gateway, error) {
@@ -68,6 +69,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		SystemPrompt:    systemprompt.NewService(profile.Workspace),
 		ChannelRegistry: channelRegistry,
 		SessionManager:  session.NewSessionManager(profile.Workspace),
+		VectorStore:     vectorstore.NewSQLiteVecService(profile.Workspace, "default", *embeddingProfile),
 	}
 	if err := context.ToolRegistry.RegisterTool("read_file", tools.NewReadFileTool(profile.Workspace)); err != nil {
 		return nil, err

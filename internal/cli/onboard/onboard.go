@@ -10,6 +10,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/cli/auth"
 	"github.com/Neneka448/gogoclaw/internal/config"
+	"github.com/Neneka448/gogoclaw/internal/vectorstore"
 	workspacepkg "github.com/Neneka448/gogoclaw/internal/workspace"
 	"github.com/charmbracelet/huh"
 )
@@ -160,6 +161,9 @@ func onboard(ctx *onboardContext) error {
 	if err := writeConfig(ctx); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
+	if err := initializeVectorStore(ctx); err != nil {
+		return fmt.Errorf("initialize vector store: %w", err)
+	}
 
 	return nil
 }
@@ -182,6 +186,19 @@ func writeConfig(ctx *onboardContext) error {
 	}
 	slog.Info("Config file created", "path", configPath)
 
+	return nil
+}
+
+func initializeVectorStore(ctx *onboardContext) error {
+	defaultConfig := config.CreateDefaultConfig()
+	applyOnboardContext(&defaultConfig, ctx)
+	service := vectorstore.NewSQLiteVecService(ctx.Workspace, "default", defaultConfig.Embedding.Profiles["default"])
+	if err := service.Start(); err != nil {
+		return err
+	}
+	if err := service.Stop(); err != nil {
+		return err
+	}
 	return nil
 }
 

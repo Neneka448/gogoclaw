@@ -115,18 +115,45 @@ func (g *gateway) Start() error {
 	g.started = true
 	g.mu.Unlock()
 
+	if g.context.VectorStore != nil {
+		if err := g.context.VectorStore.Start(); err != nil {
+			g.mu.Lock()
+			g.started = false
+			g.mu.Unlock()
+			return err
+		}
+	}
+
 	if g.context.ChannelRegistry != nil {
 		if err := g.context.ChannelRegistry.StartAll(); err != nil {
+			if g.context.VectorStore != nil {
+				_ = g.context.VectorStore.Stop()
+			}
+			g.mu.Lock()
+			g.started = false
+			g.mu.Unlock()
 			return err
 		}
 	}
 
 	inboundQueue, err := g.context.MessageBus.Get(messagebus.InboundQueue)
 	if err != nil {
+		if g.context.VectorStore != nil {
+			_ = g.context.VectorStore.Stop()
+		}
+		g.mu.Lock()
+		g.started = false
+		g.mu.Unlock()
 		return err
 	}
 	outboundQueue, err := g.context.MessageBus.Get(messagebus.OutboundQueue)
 	if err != nil {
+		if g.context.VectorStore != nil {
+			_ = g.context.VectorStore.Stop()
+		}
+		g.mu.Lock()
+		g.started = false
+		g.mu.Unlock()
 		return err
 	}
 
@@ -186,6 +213,11 @@ func (g *gateway) Stop() error {
 	}
 	if g.context.ChannelRegistry != nil {
 		if err := g.context.ChannelRegistry.StopAll(); err != nil {
+			return err
+		}
+	}
+	if g.context.VectorStore != nil {
+		if err := g.context.VectorStore.Stop(); err != nil {
 			return err
 		}
 	}
