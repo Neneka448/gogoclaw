@@ -3,10 +3,13 @@ package vectorstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -22,12 +25,49 @@ const (
 	defaultProfileName           = "default"
 )
 
+type StoreKind string
+
+const (
+	StoreKindText  StoreKind = "text"
+	StoreKindModal StoreKind = "modal"
+)
+
+type DistanceMetric string
+
+const (
+	DistanceMetricCosine DistanceMetric = "cosine"
+	DistanceMetricL2     DistanceMetric = "l2"
+)
+
+type UpsertRequest struct {
+	StoreKind    StoreKind
+	ExternalID   string
+	Embedding    []float32
+	MetadataJSON string
+}
+
+type SearchRequest struct {
+	StoreKind  StoreKind
+	Query      []float32
+	Limit      int
+	Metric     DistanceMetric
+	ExternalID string
+}
+
+type SearchResult struct {
+	ExternalID   string
+	MetadataJSON string
+	Distance     float64
+}
+
 var sqliteIdentifierSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
 
 type Service interface {
 	Start() error
 	Stop() error
 	Path() string
+	Upsert(request UpsertRequest) error
+	SearchTopK(request SearchRequest) ([]SearchResult, error)
 }
 
 type sqliteVecService struct {
@@ -131,6 +171,90 @@ func (service *sqliteVecService) Path() string {
 	defer service.mu.Unlock()
 
 	return service.dbPath
+}
+
+func (service *sqliteVecService) Upsert(request UpsertRequest) error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	if !service.started || service.db == nil {
+		return fmt.Errorf("sqlite-vec service is not started")
+	}
+	store, err := service.loadProfileStoreDefinition(request.StoreKind)
+	if err != nil {
+		return err
+	}
+	if err := validateEmbeddingInput(store, request.ExternalID, request.Embedding); err != nil {
+		return err
+	}
+
+	metadataJSON := normalizeMetadataJSON(request.MetadataJSON)
+	embeddingJSON, err := encodeEmbeddingJSON(request.Embedding)
+	if err != nil {
+		return err
+	}
+
+	tx, err := service.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sqlite-vec upsert transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		insert into %s (external_id, embedding_json, metadata_json, updated_at)
+		values (?, ?, ?, current_timestamp)
+		on conflict(external_id) do update set
+			embedding_json=excluded.embedding_json,
+			metadata_json=excluded.metadata_json,
+			updated_at=current_timestamp
+	`, quoteSQLiteIdentifier(store.MetadataTable)), request.ExternalID, embeddingJSON, metadataJSON); err != nil {
+		return fmt.Errorf("upsert sqlite-vec metadata record: %w", err)
+	}
+
+	var rowID int64
+	if err := tx.QueryRow(fmt.Sprintf(`select rowid from %s where external_id = ?`, quoteSQLiteIdentifier(store.MetadataTable)), request.ExternalID).Scan(&rowID); err != nil {
+		return fmt.Errorf("load sqlite-vec metadata rowid: %w", err)
+	}
+
+	if service.extensionLoaded && store.OutputDimension > 0 {
+		if _, err := tx.Exec(fmt.Sprintf(`delete from %s where rowid = ?`, quoteSQLiteIdentifier(store.VectorTableName)), rowID); err != nil {
+			return fmt.Errorf("delete sqlite-vec vector row: %w", err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`insert into %s (rowid, embedding) values (?, ?)`, quoteSQLiteIdentifier(store.VectorTableName)), rowID, embeddingJSON); err != nil {
+			return fmt.Errorf("upsert sqlite-vec vector row: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite-vec upsert transaction: %w", err)
+	}
+	return nil
+}
+
+func (service *sqliteVecService) SearchTopK(request SearchRequest) ([]SearchResult, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	if !service.started || service.db == nil {
+		return nil, fmt.Errorf("sqlite-vec service is not started")
+	}
+	store, err := service.loadProfileStoreDefinition(request.StoreKind)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSearchInput(store, request); err != nil {
+		return nil, err
+	}
+	metric := normalizeDistanceMetric(request.Metric)
+
+	if service.extensionLoaded && store.OutputDimension > 0 && metric == DistanceMetricL2 {
+		results, err := service.searchWithSQLiteVec(store, request)
+		if err == nil {
+			return results, nil
+		}
+	}
+
+	return service.searchFallback(store, request, metric)
 }
 
 func (service *sqliteVecService) loadSQLiteVecExtension(db *sql.DB) (bool, error) {
@@ -266,12 +390,16 @@ func ensureSQLiteVecProfileStore(db *sql.DB, store profileStoreDefinition, exten
 		create table if not exists %s (
 			rowid integer primary key,
 			external_id text not null unique,
+			embedding_json text not null default '[]',
 			metadata_json text not null default '{}',
 			created_at text not null default current_timestamp,
 			updated_at text not null default current_timestamp
 		)
 	`, quoteSQLiteIdentifier(store.MetadataTable))); err != nil {
 		return fmt.Errorf("initialize sqlite-vec metadata table %s: %w", store.MetadataTable, err)
+	}
+	if err := ensureMetadataTableColumns(db, store.MetadataTable); err != nil {
+		return err
 	}
 
 	if _, err := db.Exec(`
@@ -304,6 +432,141 @@ func ensureSQLiteVecProfileStore(db *sql.DB, store profileStoreDefinition, exten
 	}
 
 	return nil
+}
+
+func ensureMetadataTableColumns(db *sql.DB, tableName string) error {
+	columns, err := loadTableColumns(db, tableName)
+	if err != nil {
+		return err
+	}
+	if _, ok := columns["embedding_json"]; !ok {
+		if _, err := db.Exec(fmt.Sprintf(`alter table %s add column embedding_json text not null default '[]'`, quoteSQLiteIdentifier(tableName))); err != nil {
+			return fmt.Errorf("add embedding_json to %s: %w", tableName, err)
+		}
+	}
+	return nil
+}
+
+func loadTableColumns(db *sql.DB, tableName string) (map[string]struct{}, error) {
+	rows, err := db.Query(fmt.Sprintf(`pragma table_info(%s)`, quoteSQLiteIdentifier(tableName)))
+	if err != nil {
+		return nil, fmt.Errorf("load table info for %s: %w", tableName, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, fmt.Errorf("scan table info for %s: %w", tableName, err)
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate table info for %s: %w", tableName, err)
+	}
+	return columns, nil
+}
+
+func (service *sqliteVecService) loadProfileStoreDefinition(kind StoreKind) (profileStoreDefinition, error) {
+	storeKind := normalizeStoreKind(kind)
+	var store profileStoreDefinition
+	if err := service.db.QueryRow(`
+		select profile_name, store_kind, output_dimension, vector_table, metadata_table
+		from sqlite_vec_tables
+		where profile_name = ? and store_kind = ?
+	`, service.profileName, string(storeKind)).Scan(
+		&store.ProfileName,
+		&store.StoreKind,
+		&store.OutputDimension,
+		&store.VectorTableName,
+		&store.MetadataTable,
+	); err != nil {
+		return profileStoreDefinition{}, fmt.Errorf("load sqlite-vec store definition for %s/%s: %w", service.profileName, storeKind, err)
+	}
+	return store, nil
+}
+
+func (service *sqliteVecService) searchWithSQLiteVec(store profileStoreDefinition, request SearchRequest) ([]SearchResult, error) {
+	queryJSON, err := encodeEmbeddingJSON(request.Query)
+	if err != nil {
+		return nil, err
+	}
+	query := fmt.Sprintf(`
+		select m.external_id, m.metadata_json, v.distance
+		from %s as v
+		join %s as m on m.rowid = v.rowid
+		where embedding match ?
+		order by distance
+		limit ?
+	`, quoteSQLiteIdentifier(store.VectorTableName), quoteSQLiteIdentifier(store.MetadataTable))
+	rows, err := service.db.Query(query, queryJSON, request.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("search sqlite-vec virtual table: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]SearchResult, 0, request.Limit)
+	for rows.Next() {
+		var result SearchResult
+		if err := rows.Scan(&result.ExternalID, &result.MetadataJSON, &result.Distance); err != nil {
+			return nil, fmt.Errorf("scan sqlite-vec search result: %w", err)
+		}
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite-vec search results: %w", err)
+	}
+	return results, nil
+}
+
+func (service *sqliteVecService) searchFallback(store profileStoreDefinition, request SearchRequest, metric DistanceMetric) ([]SearchResult, error) {
+	query := fmt.Sprintf(`select external_id, metadata_json, embedding_json from %s`, quoteSQLiteIdentifier(store.MetadataTable))
+	args := make([]any, 0, 1)
+	if strings.TrimSpace(request.ExternalID) != "" {
+		query += ` where external_id <> ?`
+		args = append(args, request.ExternalID)
+	}
+	rows, err := service.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query sqlite-vec fallback candidates: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]SearchResult, 0)
+	for rows.Next() {
+		var result SearchResult
+		var embeddingJSON string
+		if err := rows.Scan(&result.ExternalID, &result.MetadataJSON, &embeddingJSON); err != nil {
+			return nil, fmt.Errorf("scan sqlite-vec fallback row: %w", err)
+		}
+		embedding, err := decodeEmbeddingJSON(embeddingJSON)
+		if err != nil {
+			return nil, err
+		}
+		if len(embedding) != len(request.Query) {
+			continue
+		}
+		result.Distance, err = calculateDistance(metric, request.Query, embedding)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite-vec fallback rows: %w", err)
+	}
+
+	sort.Slice(results, func(i int, j int) bool { return results[i].Distance < results[j].Distance })
+	if len(results) > request.Limit {
+		results = results[:request.Limit]
+	}
+	return results, nil
 }
 
 func resolveSQLiteVecExtensionPath(dbDir string) string {
@@ -388,4 +651,102 @@ func maxInt(value int, minimum int) int {
 		return minimum
 	}
 	return value
+}
+
+func normalizeStoreKind(kind StoreKind) StoreKind {
+	switch kind {
+	case StoreKindModal:
+		return StoreKindModal
+	default:
+		return StoreKindText
+	}
+}
+
+func normalizeDistanceMetric(metric DistanceMetric) DistanceMetric {
+	switch metric {
+	case DistanceMetricL2:
+		return DistanceMetricL2
+	default:
+		return DistanceMetricCosine
+	}
+}
+
+func validateEmbeddingInput(store profileStoreDefinition, externalID string, embedding []float32) error {
+	if strings.TrimSpace(externalID) == "" {
+		return fmt.Errorf("sqlite-vec external id is required")
+	}
+	if len(embedding) == 0 {
+		return fmt.Errorf("sqlite-vec embedding is required")
+	}
+	if store.OutputDimension > 0 && len(embedding) != store.OutputDimension {
+		return fmt.Errorf("sqlite-vec embedding dimension mismatch: got %d want %d", len(embedding), store.OutputDimension)
+	}
+	return nil
+}
+
+func validateSearchInput(store profileStoreDefinition, request SearchRequest) error {
+	if request.Limit <= 0 {
+		return fmt.Errorf("sqlite-vec search limit must be greater than zero")
+	}
+	if len(request.Query) == 0 {
+		return fmt.Errorf("sqlite-vec search query is required")
+	}
+	if store.OutputDimension > 0 && len(request.Query) != store.OutputDimension {
+		return fmt.Errorf("sqlite-vec search dimension mismatch: got %d want %d", len(request.Query), store.OutputDimension)
+	}
+	return nil
+}
+
+func normalizeMetadataJSON(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "{}"
+	}
+	return trimmed
+}
+
+func encodeEmbeddingJSON(embedding []float32) (string, error) {
+	encoded, err := json.Marshal(embedding)
+	if err != nil {
+		return "", fmt.Errorf("encode sqlite-vec embedding: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func decodeEmbeddingJSON(value string) ([]float32, error) {
+	var embedding []float32
+	if err := json.Unmarshal([]byte(value), &embedding); err != nil {
+		return nil, fmt.Errorf("decode sqlite-vec embedding: %w", err)
+	}
+	return embedding, nil
+}
+
+func calculateDistance(metric DistanceMetric, left []float32, right []float32) (float64, error) {
+	if len(left) != len(right) {
+		return 0, fmt.Errorf("sqlite-vec distance dimension mismatch: %d vs %d", len(left), len(right))
+	}
+	switch metric {
+	case DistanceMetricL2:
+		var sum float64
+		for i := range left {
+			delta := float64(left[i] - right[i])
+			sum += delta * delta
+		}
+		return math.Sqrt(sum), nil
+	default:
+		var dot float64
+		var leftNorm float64
+		var rightNorm float64
+		for i := range left {
+			leftValue := float64(left[i])
+			rightValue := float64(right[i])
+			dot += leftValue * rightValue
+			leftNorm += leftValue * leftValue
+			rightNorm += rightValue * rightValue
+		}
+		if leftNorm == 0 || rightNorm == 0 {
+			return 1, nil
+		}
+		return 1 - dot/(math.Sqrt(leftNorm)*math.Sqrt(rightNorm)), nil
+	}
 }

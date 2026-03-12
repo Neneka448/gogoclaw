@@ -109,6 +109,85 @@ func TestResolveSQLiteVecExtensionPathFindsWorkspaceArtifact(t *testing.T) {
 	}
 }
 
+func TestSQLiteVecServiceUpsertAndSearchTopKFallback(t *testing.T) {
+	workspace := t.TempDir()
+	service := NewSQLiteVecService(workspace, "default", config.EmbeddingProfileConfig{
+		Text: config.EmbeddingModelConfig{OutputDimension: 3},
+	}).(*sqliteVecService)
+	service.extensionPath = ""
+
+	if err := service.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Stop() })
+
+	fixtures := []UpsertRequest{
+		{StoreKind: StoreKindText, ExternalID: "alpha", Embedding: []float32{1, 0, 0}, MetadataJSON: `{"title":"alpha"}`},
+		{StoreKind: StoreKindText, ExternalID: "beta", Embedding: []float32{0.9, 0.1, 0}, MetadataJSON: `{"title":"beta"}`},
+		{StoreKind: StoreKindText, ExternalID: "gamma", Embedding: []float32{0, 1, 0}, MetadataJSON: `{"title":"gamma"}`},
+	}
+	for _, fixture := range fixtures {
+		if err := service.Upsert(fixture); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", fixture.ExternalID, err)
+		}
+	}
+
+	results, err := service.SearchTopK(SearchRequest{
+		StoreKind: StoreKindText,
+		Query:     []float32{1, 0, 0},
+		Limit:     2,
+		Metric:    DistanceMetricCosine,
+	})
+	if err != nil {
+		t.Fatalf("SearchTopK() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2", len(results))
+	}
+	if results[0].ExternalID != "alpha" {
+		t.Fatalf("results[0].ExternalID = %q, want alpha", results[0].ExternalID)
+	}
+	if results[1].ExternalID != "beta" {
+		t.Fatalf("results[1].ExternalID = %q, want beta", results[1].ExternalID)
+	}
+}
+
+func TestSQLiteVecServiceUpsertRejectsDimensionMismatch(t *testing.T) {
+	workspace := t.TempDir()
+	service := NewSQLiteVecService(workspace, "default", config.EmbeddingProfileConfig{
+		Text: config.EmbeddingModelConfig{OutputDimension: 3},
+	}).(*sqliteVecService)
+	service.extensionPath = ""
+
+	if err := service.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Stop() })
+
+	err := service.Upsert(UpsertRequest{StoreKind: StoreKindText, ExternalID: "bad", Embedding: []float32{1, 2}})
+	if err == nil {
+		t.Fatal("Upsert() error = nil, want dimension mismatch error")
+	}
+}
+
+func TestSQLiteVecServiceSearchRejectsBadLimit(t *testing.T) {
+	workspace := t.TempDir()
+	service := NewSQLiteVecService(workspace, "default", config.EmbeddingProfileConfig{
+		Text: config.EmbeddingModelConfig{OutputDimension: 3},
+	}).(*sqliteVecService)
+	service.extensionPath = ""
+
+	if err := service.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Stop() })
+
+	_, err := service.SearchTopK(SearchRequest{StoreKind: StoreKindText, Query: []float32{1, 0, 0}, Limit: 0})
+	if err == nil {
+		t.Fatal("SearchTopK() error = nil, want invalid limit error")
+	}
+}
+
 func assertTableExists(t *testing.T, db *sql.DB, tableName string) {
 	t.Helper()
 
