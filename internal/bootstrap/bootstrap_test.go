@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
@@ -54,5 +55,19 @@ func TestBootstrapInitializesSessionManagerFromWorkspace(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(workspaceDir, "sessions", "telegram:chat-1.json")); err != nil {
 		t.Fatalf("session file not created: %v", err)
+	}
+}
+
+func TestResolveToolTimeoutUsesConfiguredValue(t *testing.T) {
+	timeout := resolveToolTimeout([]config.ToolConfig{{Name: "terminal", Timeout: 12}}, "terminal", 30*time.Second)
+	if timeout != 12*time.Second {
+		t.Fatalf("resolveToolTimeout() = %v, want 12s", timeout)
+	}
+}
+
+func TestResolveToolTimeoutFallsBackToDefault(t *testing.T) {
+	timeout := resolveToolTimeout([]config.ToolConfig{{Name: "read_file", Timeout: 5}}, "terminal", 30*time.Second)
+	if timeout != 30*time.Second {
+		t.Fatalf("resolveToolTimeout() = %v, want 30s", timeout)
 	}
 }

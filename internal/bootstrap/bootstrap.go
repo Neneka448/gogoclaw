@@ -1,6 +1,9 @@
 package bootstrap
 
 import (
+	"strings"
+	"time"
+
 	"github.com/Neneka448/gogoclaw/internal/channels"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/context"
@@ -60,6 +63,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err := context.ToolRegistry.RegisterTool("list_dir", tools.NewListDirTool(profile.Workspace)); err != nil {
 		return nil, err
 	}
+	if err := context.ToolRegistry.RegisterTool("terminal", tools.NewTerminalTool(profile.Workspace, resolveToolTimeout(sysConfig.Tools, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
+		return nil, err
+	}
 	if err := context.ToolRegistry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
 		return nil, err
 	}
@@ -67,4 +73,18 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	gateway := gateway.NewGateway(context)
 
 	return &gateway, nil
+}
+
+func resolveToolTimeout(configs []config.ToolConfig, name string, defaultTimeout time.Duration) time.Duration {
+	for _, toolConfig := range configs {
+		if !strings.EqualFold(strings.TrimSpace(toolConfig.Name), name) {
+			continue
+		}
+		if toolConfig.Timeout <= 0 {
+			return defaultTimeout
+		}
+		return time.Duration(toolConfig.Timeout) * time.Second
+	}
+
+	return defaultTimeout
 }
