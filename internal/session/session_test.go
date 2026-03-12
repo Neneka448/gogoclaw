@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -140,5 +142,62 @@ func TestSessionManagerCloseFlushesPendingMessages(t *testing.T) {
 	}
 	if data.Messages[0].Content != "final reply" {
 		t.Fatalf("data.Messages[0].Content = %q, want final reply", data.Messages[0].Content)
+	}
+}
+
+func TestSessionArchiveAndReset(t *testing.T) {
+	previousNow := sessionNow
+	sessionNow = func() time.Time { return time.Unix(1700000000, 0) }
+	defer func() { sessionNow = previousNow }()
+
+	workspace := t.TempDir()
+	manager := NewSessionManager(workspace)
+	currentSession, err := manager.GetOrCreateSession("feishu:chat-1", "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.AppendMessages([]openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hello"}, {Role: openai.ChatMessageRoleAssistant, Content: "world"}}); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
+	}
+	if err := currentSession.WriteSessionFile(); err != nil {
+		t.Fatalf("WriteSessionFile() error = %v", err)
+	}
+
+	archivePath, err := currentSession.ArchiveAndReset()
+	if err != nil {
+		t.Fatalf("ArchiveAndReset() error = %v", err)
+	}
+	if !strings.Contains(archivePath, filepath.Join("sessions", "achrive")) {
+		t.Fatalf("archivePath = %q, want achrive directory", archivePath)
+	}
+	if !strings.HasSuffix(archivePath, ".json_achrive_1700000000") {
+		t.Fatalf("archivePath = %q, want suffix .json_achrive_1700000000", archivePath)
+	}
+
+	archivedContent, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(archivePath) error = %v", err)
+	}
+	var archived SessionFile
+	if err := json.Unmarshal(archivedContent, &archived); err != nil {
+		t.Fatalf("json.Unmarshal(archived) error = %v", err)
+	}
+	if len(archived.Messages) != 2 {
+		t.Fatalf("len(archived.Messages) = %d, want 2", len(archived.Messages))
+	}
+
+	if got := currentSession.GetMessages(10); len(got) != 0 {
+		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
+	}
+	currentContent, err := os.ReadFile(currentSession.GetSessionFilePath())
+	if err != nil {
+		t.Fatalf("os.ReadFile(current session) error = %v", err)
+	}
+	var cleared SessionFile
+	if err := json.Unmarshal(currentContent, &cleared); err != nil {
+		t.Fatalf("json.Unmarshal(cleared) error = %v", err)
+	}
+	if len(cleared.Messages) != 0 {
+		t.Fatalf("len(cleared.Messages) = %d, want 0", len(cleared.Messages))
 	}
 }

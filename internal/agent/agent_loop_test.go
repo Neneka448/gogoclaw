@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	internalcontext "github.com/Neneka448/gogoclaw/internal/context"
@@ -287,6 +289,70 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 	}
 	if message.Message != want {
 		t.Fatalf("message.Message = %q, want %q", message.Message, want)
+	}
+}
+
+func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
+	previousNow := session.SessionNowForTest(func() time.Time { return time.Unix(1700000001, 0) })
+	defer previousNow()
+
+	configPath := writeTestConfig(t)
+	workspace := t.TempDir()
+	sessionManager := session.NewSessionManager(workspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		ConfigManager:  config.NewConfigManager(configPath),
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+	})
+
+	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("feishu", "chat-1"), "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "history"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	if err := currentSession.WriteSessionFile(); err != nil {
+		t.Fatalf("WriteSessionFile() error = %v", err)
+	}
+
+	inboundMessage := messagebus.Message{ChannelID: "feishu", Message: "/new", MessageID: "msg-1", MessageType: "text", ChatID: "chat-1", SenderID: "user-1"}
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+	if len(providerStub.requests) != 0 {
+		t.Fatalf("len(providerStub.requests) = %d, want 0", len(providerStub.requests))
+	}
+	if got := currentSession.GetMessages(10); len(got) != 0 {
+		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
+	}
+
+	archiveFiles, err := filepath.Glob(filepath.Join(workspace, "sessions", "achrive", "*.json_achrive_1700000001"))
+	if err != nil {
+		t.Fatalf("filepath.Glob() error = %v", err)
+	}
+	if len(archiveFiles) != 1 {
+		t.Fatalf("len(archiveFiles) = %d, want 1", len(archiveFiles))
+	}
+
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+	message := <-outboundQueue
+	if message.Message != newSessionReply {
+		t.Fatalf("message.Message = %q, want %q", message.Message, newSessionReply)
+	}
+	if message.FinishReason != "new_session" {
+		t.Fatalf("message.FinishReason = %q, want new_session", message.FinishReason)
+	}
+	if !strings.Contains(archiveFiles[0], filepath.Join("sessions", "achrive")) {
+		t.Fatalf("archive file path = %q, want achrive folder", archiveFiles[0])
 	}
 }
 

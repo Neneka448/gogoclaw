@@ -19,6 +19,9 @@ type agentLoop struct {
 	context context.SystemContext
 }
 
+const newSessionCommand = "/new"
+const newSessionReply = "🎸新会话已启动"
+
 func NewAgentLoop(context context.SystemContext) AgentLoop {
 	return &agentLoop{
 		context: context,
@@ -45,6 +48,12 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 	currentSession, err := al.getOrCreateSession(msg, config.Workspace)
 	if err != nil {
 		return err
+	}
+	if isNewSessionCommand(msg.Message) {
+		if _, err := currentSession.ArchiveAndReset(); err != nil {
+			return err
+		}
+		return al.publishDirectReply(msg, newSessionReply, "new_session")
 	}
 	if strings.TrimSpace(msg.Message) != "" {
 		if err := currentSession.AppendMessage(Openai.ChatCompletionMessage{
@@ -118,6 +127,10 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 	return nil
 }
 
+func isNewSessionCommand(message string) bool {
+	return strings.TrimSpace(message) == newSessionCommand
+}
+
 func (al *agentLoop) buildMessage(currentSession session.Session, memoryWindow int) []Openai.ChatCompletionMessage {
 	return currentSession.GetMessages(memoryWindow)
 }
@@ -161,6 +174,24 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 	return al.context.MessageBus.Put(messagebus.Message{
 		ChannelID:    source.ChannelID,
 		Message:      message.Content,
+		MessageID:    source.MessageID,
+		MessageType:  source.MessageType,
+		ChatID:       source.ChatID,
+		SenderID:     source.SenderID,
+		MediaPaths:   cloneMediaPaths(source.MediaPaths),
+		ReplyTo:      source.ReplyTo,
+		Metadata:     cloneMetadata(source.Metadata),
+		FinishReason: finishReason,
+	}, messagebus.OutboundQueue)
+}
+
+func (al *agentLoop) publishDirectReply(source messagebus.Message, content string, finishReason string) error {
+	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
+		return nil
+	}
+	return al.context.MessageBus.Put(messagebus.Message{
+		ChannelID:    source.ChannelID,
+		Message:      content,
 		MessageID:    source.MessageID,
 		MessageType:  source.MessageType,
 		ChatID:       source.ChatID,

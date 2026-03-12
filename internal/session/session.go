@@ -5,10 +5,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+var sessionNow = time.Now
+
+func SessionNowForTest(now func() time.Time) func() {
+	previous := sessionNow
+	sessionNow = now
+	return func() {
+		sessionNow = previous
+	}
+}
 
 type Session interface {
 	Close() error
@@ -19,6 +31,7 @@ type Session interface {
 	ReadSessionFile() error
 	WriteSessionFile() error
 	GetSessionFilePath() string
+	ArchiveAndReset() (string, error)
 }
 
 type SessionManager interface {
@@ -127,6 +140,34 @@ func (session *fileSession) GetSessionID() string {
 
 func (session *fileSession) GetSessionFilePath() string {
 	return session.filePath
+}
+
+func (session *fileSession) ArchiveAndReset() (string, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if err := session.ensureLoadedLocked(); err != nil {
+		return "", err
+	}
+
+	snapshot := session.snapshotLocked()
+	archivePath := ""
+	if len(snapshot.Messages) > 0 {
+		var err error
+		archivePath, err = session.archiveSnapshotLocked(snapshot)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	session.data.Messages = []openai.ChatCompletionMessage{}
+	session.flushRequested = false
+	session.lastWriteErr = nil
+	if err := session.writeSessionFileLocked(); err != nil {
+		return "", err
+	}
+
+	return archivePath, nil
 }
 
 func (session *fileSession) GetMessages(memoryWindow int) []openai.ChatCompletionMessage {
@@ -244,6 +285,21 @@ func (session *fileSession) writeSessionFileLocked() error {
 	return session.writeSnapshot(session.snapshotLocked())
 }
 
+func (session *fileSession) archiveSnapshotLocked(snapshot SessionFile) (string, error) {
+	archiveDir := filepath.Join(filepath.Dir(session.filePath), "achrive")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		return "", fmt.Errorf("create achrive directory: %w", err)
+	}
+	archivePath := filepath.Join(
+		archiveDir,
+		filepath.Base(session.filePath)+"_achrive_"+strconv.FormatInt(sessionNow().Unix(), 10),
+	)
+	if err := session.writeSnapshotToPath(snapshot, archivePath); err != nil {
+		return "", err
+	}
+	return archivePath, nil
+}
+
 func (session *fileSession) snapshotLocked() SessionFile {
 	snapshot := SessionFile{
 		Meta: SessionMeta{
@@ -266,11 +322,15 @@ func (session *fileSession) snapshotLocked() SessionFile {
 }
 
 func (session *fileSession) writeSnapshot(snapshot SessionFile) error {
+	return session.writeSnapshotToPath(snapshot, session.filePath)
+}
+
+func (session *fileSession) writeSnapshotToPath(snapshot SessionFile, targetPath string) error {
 	encoded, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode session file: %w", err)
 	}
-	if err := os.WriteFile(session.filePath, encoded, 0644); err != nil {
+	if err := os.WriteFile(targetPath, encoded, 0644); err != nil {
 		return fmt.Errorf("write session file: %w", err)
 	}
 
