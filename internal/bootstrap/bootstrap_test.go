@@ -56,6 +56,9 @@ func TestBootstrapInitializesSessionManagerFromWorkspace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspaceDir, "sessions", "telegram:chat-1.json")); err != nil {
 		t.Fatalf("session file not created: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(workspaceDir, "AGENTS.md")); err == nil {
+		t.Fatalf("Bootstrap() should not create workspace bootstrap files automatically")
+	}
 }
 
 func TestResolveToolTimeoutUsesConfiguredValue(t *testing.T) {

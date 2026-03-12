@@ -10,6 +10,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/cli/auth"
 	"github.com/Neneka448/gogoclaw/internal/config"
+	workspacepkg "github.com/Neneka448/gogoclaw/internal/workspace"
 	"github.com/charmbracelet/huh"
 )
 
@@ -151,6 +152,9 @@ func onboard(ctx *onboardContext) error {
 
 	if err := prepareWorkspacePath(ctx.Workspace); err != nil {
 		return err
+	}
+	if err := workspacepkg.EnsureBootstrapFiles(ctx.Workspace); err != nil {
+		return fmt.Errorf("prepare workspace bootstrap files: %w", err)
 	}
 
 	if err := writeConfig(ctx); err != nil {

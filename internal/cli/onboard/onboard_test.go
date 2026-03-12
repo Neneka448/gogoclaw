@@ -102,3 +102,24 @@ func TestWriteConfigWritesDefaultProfileOverrides(t *testing.T) {
 
 	t.Fatalf("provider %q not found", ctx.Provider)
 }
+
+func TestOnboardCreatesWorkspaceBootstrapFiles(t *testing.T) {
+	profilePath := filepath.Join(t.TempDir(), "profile")
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	ctx := &onboardContext{
+		ProfilePath: profilePath,
+		Workspace:   workspacePath,
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+	}
+
+	if err := onboard(ctx); err != nil {
+		t.Fatalf("onboard() error = %v", err)
+	}
+
+	for _, fileName := range []string{"AGENTS.md", "SOUL.md", "TOOLS.md", "USER.md", "HEARTBEAT.md"} {
+		if _, err := os.Stat(filepath.Join(workspacePath, fileName)); err != nil {
+			t.Fatalf("workspace file %s missing: %v", fileName, err)
+		}
+	}
+}

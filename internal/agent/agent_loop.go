@@ -160,29 +160,10 @@ func (al *agentLoop) buildMessage(currentSession session.Session, memoryWindow i
 }
 
 func (al *agentLoop) buildSystemPrompt() string {
-	if al.context.Skills == nil || al.context.Skills.Len() == 0 {
+	if al.context.SystemPrompt == nil {
 		return ""
 	}
-
-	var builder strings.Builder
-	builder.WriteString("You have access to reusable workspace skills. Each skill lives under workspace/skills/<skill-name>/SKILL.md.\n")
-	builder.WriteString("Before solving the current request, compare the request against the available skill metadata below and judge whether the scenario matches a skill.\n")
-	builder.WriteString("If a skill appears relevant, call get_skill with the skill name before continuing so you can read the full SKILL.md instructions.\n")
-	builder.WriteString("If no skill matches, continue normally without calling get_skill.\n")
-	builder.WriteString("Available skills:\n")
-
-	for _, skill := range al.context.Skills.GetAll() {
-		metadata := "{}"
-		if len(skill.FrontMatter) > 0 {
-			encoded, err := json.Marshal(skill.FrontMatter)
-			if err == nil {
-				metadata = string(encoded)
-			}
-		}
-		builder.WriteString(fmt.Sprintf("- %s: %s\n", skill.Name, metadata))
-	}
-
-	return strings.TrimSpace(builder.String())
+	return al.context.SystemPrompt.Build(al.context.Skills)
 }
 
 type executedToolMessage struct {

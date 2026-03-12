@@ -12,6 +12,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
 	"github.com/Neneka448/gogoclaw/internal/skills"
+	"github.com/Neneka448/gogoclaw/internal/systemprompt"
 	"github.com/Neneka448/gogoclaw/internal/tools"
 )
 
@@ -54,6 +55,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		ConfigManager:   configManager,
 		ToolRegistry:    tools.NewToolRegistry(),
 		Skills:          skillRegistry,
+		SystemPrompt:    systemprompt.NewService(profile.Workspace),
 		ChannelRegistry: channelRegistry,
 		SessionManager:  session.NewSessionManager(profile.Workspace),
 	}

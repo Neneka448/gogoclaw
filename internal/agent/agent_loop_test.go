@@ -14,6 +14,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
 	"github.com/Neneka448/gogoclaw/internal/skills"
+	"github.com/Neneka448/gogoclaw/internal/systemprompt"
 	"github.com/Neneka448/gogoclaw/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -472,6 +473,7 @@ func TestAgentLoopInjectsSkillSystemPrompt(t *testing.T) {
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		Skills:         skillRegistry,
+		SystemPrompt:   systemprompt.NewService(tempWorkspaceFromConfig(t, configPath)),
 		SessionManager: sessionManager,
 	})
 
@@ -511,6 +513,16 @@ func TestAgentLoopInjectsSkillSystemPrompt(t *testing.T) {
 func writeTestConfig(t *testing.T) string {
 	t.Helper()
 	return writeTestConfigWithIterations(t, 4)
+}
+
+func tempWorkspaceFromConfig(t *testing.T, configPath string) string {
+	t.Helper()
+	manager := config.NewConfigManager(configPath)
+	profile, err := manager.GetAgentProfileConfig("default")
+	if err != nil {
+		t.Fatalf("GetAgentProfileConfig() error = %v", err)
+	}
+	return profile.Workspace
 }
 
 func writeTestConfigWithIterations(t *testing.T, maxIterations int) string {

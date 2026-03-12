@@ -7,6 +7,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
 	"github.com/Neneka448/gogoclaw/internal/skills"
+	"github.com/Neneka448/gogoclaw/internal/systemprompt"
 	"github.com/Neneka448/gogoclaw/internal/tools"
 )
 
@@ -16,6 +17,7 @@ type SystemContext struct {
 	ConfigManager   config.ConfigManager
 	ToolRegistry    tools.ToolRegistry
 	Skills          skills.Registry
+	SystemPrompt    systemprompt.Service
 	ChannelRegistry channels.Registry
 	SessionManager  session.SessionManager
 }
