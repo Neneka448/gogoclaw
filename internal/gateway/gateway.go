@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -12,6 +13,8 @@ import (
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/session"
 )
+
+var stderrWriter io.Writer = os.Stderr
 
 type Gateway interface {
 	// directly send a message to the agent and return the response, without starting a session listen loop
@@ -106,6 +109,9 @@ func (g *gateway) Start() error {
 		g.mu.Unlock()
 		return nil
 	}
+	if g.stopCh == nil {
+		g.stopCh = make(chan struct{})
+	}
 	g.started = true
 	g.mu.Unlock()
 
@@ -142,7 +148,7 @@ func (g *gateway) consumeInboundMessages(inboundQueue <-chan messagebus.Message)
 			}
 			go func(message messagebus.Message) {
 				if err := <-g.startAgentLoop(message); err != nil {
-					_, _ = fmt.Fprintf(os.Stderr, "gateway inbound error: %v\n", err)
+					g.logBackgroundError("inbound", message, err)
 				}
 			}(msg)
 		}
@@ -160,7 +166,7 @@ func (g *gateway) consumeOutboundMessages(outboundQueue <-chan messagebus.Messag
 				return
 			}
 			if err := g.dispatchOutboundMessage(msg); err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "gateway outbound dispatch error: %v\n", err)
+				g.logBackgroundError("outbound", msg, err)
 			}
 		}
 	}
@@ -168,12 +174,14 @@ func (g *gateway) consumeOutboundMessages(outboundQueue <-chan messagebus.Messag
 
 func (g *gateway) Stop() error {
 	g.mu.Lock()
+	stopCh := g.stopCh
 	if !g.started {
 		g.mu.Unlock()
 	} else {
-		close(g.stopCh)
+		g.stopCh = nil
 		g.started = false
 		g.mu.Unlock()
+		close(stopCh)
 		g.wg.Wait()
 	}
 	if g.context.ChannelRegistry != nil {
@@ -193,4 +201,19 @@ func (g *gateway) Stop() error {
 	}
 
 	return nil
+}
+
+func (g *gateway) logBackgroundError(direction string, message messagebus.Message, err error) {
+	if err == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(
+		stderrWriter,
+		"gateway %s error: channel=%s chat=%s message_id=%s err=%v\n",
+		direction,
+		message.ChannelID,
+		message.ChatID,
+		message.MessageID,
+		err,
+	)
 }

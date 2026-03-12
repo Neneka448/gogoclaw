@@ -1,11 +1,11 @@
 package config
 
 type SysConfig struct {
-	Agents    AgentConfig    `json:"agents"`
+	Agents    AgentConfig      `json:"agents"`
 	Providers []ProviderConfig `json:"providers"`
-	Channels  ChannelsConfig `json:"channels"`
-	Gateway   GatewayConfig  `json:"gateway"`
-	Tools     []ToolConfig   `json:"tools"`
+	Channels  ChannelsConfig   `json:"channels"`
+	Gateway   GatewayConfig    `json:"gateway"`
+	Tools     []ToolConfig     `json:"tools"`
 }
 
 type ChannelsConfig struct {

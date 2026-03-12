@@ -81,9 +81,19 @@ func TestExtractFeishuContent(t *testing.T) {
 		t.Fatalf("extractFeishuContent(text) = %q, want hello", text)
 	}
 
+	textWithoutAt := extractFeishuContent("text", `{"text":"@bot hello","text_without_at_bot":"hello"}`)
+	if textWithoutAt != "hello" {
+		t.Fatalf("extractFeishuContent(text_without_at_bot) = %q, want hello", textWithoutAt)
+	}
+
 	post := extractFeishuContent("post", `{"zh_cn":{"title":"日报","content":[[{"tag":"text","text":"完成"}]]}}`)
 	if post != "日报 完成" {
 		t.Fatalf("extractFeishuContent(post) = %q, want 日报 完成", post)
+	}
+
+	interactive := extractFeishuContent("interactive", `{"header":{"title":{"content":"告警"}},"elements":[{"tag":"markdown","content":"请处理"}]}`)
+	if interactive != "告警 请处理" {
+		t.Fatalf("extractFeishuContent(interactive) = %q, want 告警 请处理", interactive)
 	}
 }
 
@@ -93,5 +103,61 @@ func TestReceiveIDTypeForChatID(t *testing.T) {
 	}
 	if got := receiveIDTypeForChatID("ou_123"); got != "open_id" {
 		t.Fatalf("receiveIDTypeForChatID(user) = %q, want open_id", got)
+	}
+}
+
+func TestParseFeishuInboundMessage(t *testing.T) {
+	body := map[string]any{
+		"event": map[string]any{
+			"sender": map[string]any{
+				"sender_id": map[string]any{
+					"open_id": "ou_user_1",
+				},
+			},
+			"message": map[string]any{
+				"message_id":   "om_1",
+				"message_type": "text",
+				"chat_id":      "oc_chat_1",
+				"chat_type":    "group",
+				"parent_id":    "om_parent",
+				"thread_id":    "omt_thread",
+				"content":      `{"text_without_at_bot":"hello"}`,
+			},
+		},
+	}
+
+	message, ok := parseFeishuInboundMessage(body)
+	if !ok {
+		t.Fatal("parseFeishuInboundMessage() ok = false, want true")
+	}
+	if message.ChannelID != "feishu" {
+		t.Fatalf("message.ChannelID = %q, want feishu", message.ChannelID)
+	}
+	if message.Message != "hello" {
+		t.Fatalf("message.Message = %q, want hello", message.Message)
+	}
+	if message.ChatID != "oc_chat_1" || message.SenderID != "ou_user_1" {
+		t.Fatalf("message ids = (%q,%q), want (oc_chat_1,ou_user_1)", message.ChatID, message.SenderID)
+	}
+	if message.ReplyTo != "om_parent" {
+		t.Fatalf("message.ReplyTo = %q, want om_parent", message.ReplyTo)
+	}
+	if message.Metadata["thread_id"] != "omt_thread" {
+		t.Fatalf("message.Metadata[thread_id] = %q, want omt_thread", message.Metadata["thread_id"])
+	}
+}
+
+func TestParseFeishuInboundMessageSkipsEmptyContent(t *testing.T) {
+	body := map[string]any{
+		"event": map[string]any{
+			"message": map[string]any{
+				"message_type": "image",
+				"content":      `{}`,
+			},
+		},
+	}
+
+	if _, ok := parseFeishuInboundMessage(body); ok {
+		t.Fatal("parseFeishuInboundMessage() ok = true, want false")
 	}
 }

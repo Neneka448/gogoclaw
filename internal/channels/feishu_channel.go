@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -27,7 +28,6 @@ type FeishuChannel struct {
 	messageIDs []string
 	seen       map[string]struct{}
 }
-
 
 func NewFeishuChannel(cfg config.FeishuChannelConfig, bus messagebus.MessageBus) *FeishuChannel {
 	return &FeishuChannel{
@@ -133,26 +133,36 @@ func (c *FeishuChannel) handleMessageReceive(_ context.Context, event *larkim.P2
 		return err
 	}
 
+	message, ok := parseFeishuInboundMessage(body)
+	if !ok {
+		return nil
+	}
+	if message.MessageID != "" && !c.markMessage(message.MessageID) {
+		return nil
+	}
+	if !c.isAllowed(message.SenderID) {
+		return nil
+	}
+	if c.messageBus == nil {
+		return nil
+	}
+
+	return c.messageBus.Put(message, messagebus.InboundQueue)
+}
+
+func parseFeishuInboundMessage(body map[string]any) (messagebus.Message, bool) {
 	messageID := firstString(body,
 		"event.message.message_id",
 		"event.message.messageId",
 		"message.message_id",
 		"message.messageId",
 	)
-	if messageID != "" && !c.markMessage(messageID) {
-		return nil
-	}
-
 	senderID := firstString(body,
 		"event.sender.sender_id.open_id",
 		"event.sender.sender_id.user_id",
 		"sender.sender_id.open_id",
 		"sender.sender_id.user_id",
 	)
-	if !c.isAllowed(senderID) {
-		return nil
-	}
-
 	chatID := firstString(body,
 		"event.message.chat_id",
 		"event.message.chatId",
@@ -170,35 +180,61 @@ func (c *FeishuChannel) handleMessageReceive(_ context.Context, event *larkim.P2
 		"message.content",
 	))
 	if strings.TrimSpace(content) == "" {
-		return nil
+		return messagebus.Message{}, false
 	}
 
-	metadata := map[string]string{}
-	if chatType := firstString(body,
-		"event.message.chat_type",
-		"event.message.chatType",
-		"message.chat_type",
-		"message.chatType",
-	); chatType != "" {
-		metadata["chat_type"] = chatType
-	}
-	if messageID != "" {
-		metadata["message_id"] = messageID
-	}
-
-	if c.messageBus == nil {
-		return nil
-	}
-
-	return c.messageBus.Put(messagebus.Message{
-		ChannelID:   c.Name(),
+	metadata := collectFeishuMetadata(body)
+	return messagebus.Message{
+		ChannelID:   "feishu",
 		Message:     content,
 		MessageID:   messageID,
 		MessageType: messageType,
 		ChatID:      chatID,
 		SenderID:    senderID,
+		ReplyTo:     firstNonEmpty(metadata["parent_id"], metadata["root_id"], metadata["thread_id"]),
 		Metadata:    metadata,
-	}, messagebus.InboundQueue)
+	}, true
+}
+
+func collectFeishuMetadata(body map[string]any) map[string]string {
+	metadata := map[string]string{}
+	for key, value := range map[string]string{
+		"message_id": firstString(body,
+			"event.message.message_id",
+			"event.message.messageId",
+			"message.message_id",
+			"message.messageId",
+		),
+		"chat_type": firstString(body,
+			"event.message.chat_type",
+			"event.message.chatType",
+			"message.chat_type",
+			"message.chatType",
+		),
+		"parent_id": firstString(body,
+			"event.message.parent_id",
+			"event.message.parentId",
+			"message.parent_id",
+			"message.parentId",
+		),
+		"root_id": firstString(body,
+			"event.message.root_id",
+			"event.message.rootId",
+			"message.root_id",
+			"message.rootId",
+		),
+		"thread_id": firstString(body,
+			"event.message.thread_id",
+			"event.message.threadId",
+			"message.thread_id",
+			"message.threadId",
+		),
+	} {
+		if value != "" {
+			metadata[key] = value
+		}
+	}
+	return metadata
 }
 
 func (c *FeishuChannel) isAllowed(senderID string) bool {
@@ -247,22 +283,64 @@ func extractFeishuContent(messageType string, raw string) string {
 
 	switch messageType {
 	case "text":
-		return firstString(content, "text")
+		return firstNonEmpty(
+			firstString(content, "text_without_at_bot"),
+			firstString(content, "textWithoutAtBot"),
+			firstString(content, "text"),
+		)
 	case "post":
 		return flattenFeishuPost(content)
 	case "interactive":
-		if title := firstString(content, "title.content", "header.title.content", "header.title.text"); title != "" {
-			return title
+		if flattened := flattenFeishuInteractive(content); flattened != "" {
+			return flattened
 		}
 		encoded, _ := json.Marshal(content)
 		return string(encoded)
 	default:
-		if text := firstString(content, "text"); text != "" {
-			return text
-		}
-		encoded, _ := json.Marshal(content)
-		return string(encoded)
+		return firstNonEmpty(
+			firstString(content, "text_without_at_bot"),
+			firstString(content, "textWithoutAtBot"),
+			firstString(content, "text"),
+		)
 	}
+}
+
+func flattenFeishuInteractive(content map[string]any) string {
+	parts := make([]string, 0, 8)
+	for _, candidate := range []string{
+		firstString(content, "title.content"),
+		firstString(content, "header.title.content"),
+		firstString(content, "header.title.text"),
+	} {
+		if candidate != "" {
+			parts = append(parts, candidate)
+		}
+	}
+
+	for _, key := range []string{"elements", "body.elements", "card.elements"} {
+		for _, element := range getAnySliceByPath(content, key) {
+			parts = append(parts, flattenInteractiveElement(element)...)
+		}
+	}
+
+	return strings.TrimSpace(strings.Join(uniqueNonEmpty(parts), " "))
+}
+
+func flattenInteractiveElement(value any) []string {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	parts := make([]string, 0, 4)
+	if text := firstString(item, "content", "text.content", "text.text", "title.content", "title.text"); text != "" {
+		parts = append(parts, text)
+	}
+	for _, key := range []string{"elements", "fields", "columns", "actions"} {
+		for _, nested := range getAnySliceByPath(item, key) {
+			parts = append(parts, flattenInteractiveElement(nested)...)
+		}
+	}
+	return parts
 }
 
 func flattenFeishuPost(content map[string]any) string {
@@ -329,4 +407,50 @@ func firstString(payload map[string]any, paths ...string) string {
 		}
 	}
 	return ""
+}
+
+func getAnySliceByPath(payload map[string]any, path string) []any {
+	current := any(payload)
+	for _, part := range strings.Split(path, ".") {
+		next, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current, ok = next[part]
+		if !ok {
+			return nil
+		}
+	}
+	values, ok := current.([]any)
+	if !ok {
+		return nil
+	}
+	return values
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func uniqueNonEmpty(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	sort.Strings(result)
+	return result
 }
