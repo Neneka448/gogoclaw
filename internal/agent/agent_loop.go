@@ -81,7 +81,7 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 			return err
 		}
 
-		if response.GetFinishReason() != "tool_calls" {
+		if !response.IsToolCall() {
 			completed = true
 			break
 		}

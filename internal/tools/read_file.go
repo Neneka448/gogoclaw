@@ -26,6 +26,7 @@ type readFileResult struct {
 	StartLine int    `json:"start_line"`
 	EndLine   int    `json:"end_line"`
 	Content   string `json:"content"`
+	Error     string `json:"error,omitempty"`
 }
 
 func NewReadFileTool(workspace string) ToolDescriptor {
@@ -63,20 +64,20 @@ func NewReadFileTool(workspace string) ToolDescriptor {
 func (tool *ReadFileTool) Execute(args string) (string, error) {
 	var input readFileArgs
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
-		return "", fmt.Errorf("parse read_file args: %w", err)
+		return tool.encodeResult(readFileResult{Error: fmt.Sprintf("parse read_file args: %v", err)})
 	}
 	if strings.TrimSpace(input.Path) == "" {
-		return "", fmt.Errorf("read_file path is required")
+		return tool.encodeResult(readFileResult{Error: "read_file path is required"})
 	}
 
 	resolvedPath, err := tool.resolvePath(input.Path)
 	if err != nil {
-		return "", err
+		return tool.encodeResult(readFileResult{Path: input.Path, Error: err.Error()})
 	}
 
 	file, err := os.Open(resolvedPath)
 	if err != nil {
-		return "", err
+		return tool.encodeResult(readFileResult{Path: input.Path, Error: err.Error()})
 	}
 	defer file.Close()
 
@@ -86,7 +87,12 @@ func (tool *ReadFileTool) Execute(args string) (string, error) {
 	}
 	endLine := input.EndLine
 	if endLine > 0 && endLine < startLine {
-		return "", fmt.Errorf("end_line must be greater than or equal to start_line")
+		return tool.encodeResult(readFileResult{
+			Path:      input.Path,
+			StartLine: startLine,
+			EndLine:   endLine,
+			Error:     "end_line must be greater than or equal to start_line",
+		})
 	}
 
 	scanner := bufio.NewScanner(file)
@@ -107,7 +113,12 @@ func (tool *ReadFileTool) Execute(args string) (string, error) {
 		lastLine = lineNumber
 	}
 	if err := scanner.Err(); err != nil {
-		return "", err
+		return tool.encodeResult(readFileResult{
+			Path:      input.Path,
+			StartLine: startLine,
+			EndLine:   lastLine,
+			Error:     err.Error(),
+		})
 	}
 	if len(selected) == 0 {
 		lastLine = startLine - 1
@@ -119,6 +130,11 @@ func (tool *ReadFileTool) Execute(args string) (string, error) {
 		EndLine:   lastLine,
 		Content:   strings.Join(selected, "\n"),
 	}
+
+	return tool.encodeResult(result)
+}
+
+func (tool *ReadFileTool) encodeResult(result readFileResult) (string, error) {
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return "", err
