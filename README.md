@@ -93,6 +93,18 @@ Or use the provided Make target:
 make build
 ```
 
+Install the sqlite-vec loadable extension into the default workspace location:
+
+```bash
+make sqlite-vec-install
+```
+
+Install it into a custom workspace:
+
+```bash
+make sqlite-vec-install WORKSPACE=/path/to/workspace
+```
+
 ## Quick Start
 
 ### 1. Create a profile and workspace
@@ -117,6 +129,7 @@ By default this creates:
 - profile directory at ~/.gogoclaw
 - config file at ~/.gogoclaw/config.json
 - workspace at ~/.gogoclaw/workspace
+- sqlite-vec extension files under ~/.gogoclaw/workspace/sqlite-vec after `make sqlite-vec-install`
 
 ### 2. Run a one-shot agent command
 
