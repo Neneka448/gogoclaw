@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,7 +33,14 @@ type FeishuChannel struct {
 }
 
 var (
-	feishuImageExts = map[string]struct{}{
+	feishuComplexMarkdownRe = regexp.MustCompile("(?m)```|^\\s*#{1,6}\\s|\\|.+\\||^\\s*>|^\\s*---+$")
+	feishuSimpleMarkdownRe  = regexp.MustCompile(`\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|` + "`[^`]+`" + `|\*[^*]+\*|_[^_]+_`)
+	feishuListRe            = regexp.MustCompile(`(?m)^\s*[-*+]\s+`)
+	feishuOrderedListRe     = regexp.MustCompile(`(?m)^\s*\d+\.\s+`)
+	feishuMarkdownLinkRe    = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	feishuTextMaxLen        = 200
+	feishuPostMaxLen        = 2000
+	feishuImageExts         = map[string]struct{}{
 		".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".bmp": {}, ".webp": {}, ".ico": {}, ".tiff": {}, ".tif": {},
 	}
 	feishuAudioExts = map[string]struct{}{
@@ -131,8 +139,11 @@ func (c *FeishuChannel) Send(message messagebus.Message) error {
 		return nil
 	}
 
-	content := larkim.NewTextMsgBuilder().Text(message.Message).Build()
-	return c.sendMessage(receiveIDType, message.ChatID, larkim.MsgTypeText, content)
+	messageType, content, err := buildFeishuOutboundContent(message.Message)
+	if err != nil {
+		return err
+	}
+	return c.sendMessage(receiveIDType, message.ChatID, messageType, content)
 }
 
 func receiveIDTypeForChatID(chatID string) string {
@@ -496,22 +507,127 @@ func uniqueNonEmpty(values []string) []string {
 	return result
 }
 
+func buildFeishuOutboundContent(content string) (string, string, error) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("feishu outbound content is empty")
+	}
+
+	switch detectFeishuMessageFormat(trimmed) {
+	case larkim.MsgTypePost:
+		post, err := markdownToFeishuPost(trimmed)
+		if err != nil {
+			return "", "", err
+		}
+		return larkim.MsgTypePost, post, nil
+	case larkim.MsgTypeInteractive:
+		interactive, err := markdownToFeishuInteractive(trimmed)
+		if err != nil {
+			return "", "", err
+		}
+		return larkim.MsgTypeInteractive, interactive, nil
+	default:
+		return larkim.MsgTypeText, larkim.NewTextMsgBuilder().Text(trimmed).Build(), nil
+	}
+}
+
+func detectFeishuMessageFormat(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return larkim.MsgTypeText
+	}
+	if feishuComplexMarkdownRe.MatchString(trimmed) {
+		return larkim.MsgTypeInteractive
+	}
+	if len(trimmed) > feishuPostMaxLen {
+		return larkim.MsgTypeInteractive
+	}
+	if feishuSimpleMarkdownRe.MatchString(trimmed) {
+		return larkim.MsgTypeInteractive
+	}
+	if feishuListRe.MatchString(trimmed) || feishuOrderedListRe.MatchString(trimmed) {
+		return larkim.MsgTypeInteractive
+	}
+	if feishuMarkdownLinkRe.MatchString(trimmed) {
+		return larkim.MsgTypePost
+	}
+	if len(trimmed) <= feishuTextMaxLen {
+		return larkim.MsgTypeText
+	}
+	return larkim.MsgTypePost
+}
+
+func markdownToFeishuPost(content string) (string, error) {
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	paragraphs := make([][]map[string]string, 0, len(lines))
+	for _, line := range lines {
+		elements := make([]map[string]string, 0, 4)
+		lastEnd := 0
+		for _, match := range feishuMarkdownLinkRe.FindAllStringSubmatchIndex(line, -1) {
+			before := line[lastEnd:match[0]]
+			if before != "" {
+				elements = append(elements, map[string]string{"tag": "text", "text": before})
+			}
+			elements = append(elements, map[string]string{
+				"tag":  "a",
+				"text": line[match[2]:match[3]],
+				"href": line[match[4]:match[5]],
+			})
+			lastEnd = match[1]
+		}
+		remaining := line[lastEnd:]
+		if remaining != "" {
+			elements = append(elements, map[string]string{"tag": "text", "text": remaining})
+		}
+		if len(elements) == 0 {
+			elements = append(elements, map[string]string{"tag": "text", "text": ""})
+		}
+		paragraphs = append(paragraphs, elements)
+	}
+	body := map[string]any{
+		"zh_cn": map[string]any{
+			"content": paragraphs,
+		},
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func markdownToFeishuInteractive(content string) (string, error) {
+	body := map[string]any{
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
+		"elements": []map[string]string{{
+			"tag":     "markdown",
+			"content": content,
+		}},
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
 func outboundMediaPaths(message messagebus.Message) []string {
 	paths := cloneStringSlice(message.MediaPaths)
 	if len(paths) > 0 {
 		return paths
 	}
-	if message.Metadata == nil {
-		return nil
-	}
-	if raw := strings.TrimSpace(message.Metadata["media_paths"]); raw != "" {
-		var decoded []string
-		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
-			return decoded
+	if message.Metadata != nil {
+		if raw := strings.TrimSpace(message.Metadata["media_paths"]); raw != "" {
+			var decoded []string
+			if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+				return decoded
+			}
 		}
-	}
-	if raw := strings.TrimSpace(message.Metadata["media_path"]); raw != "" {
-		return []string{raw}
+		if raw := strings.TrimSpace(message.Metadata["media_path"]); raw != "" {
+			return []string{raw}
+		}
 	}
 	if isLocalFilePath(message.Message) && strings.TrimSpace(message.MessageType) != "text" {
 		return []string{message.Message}

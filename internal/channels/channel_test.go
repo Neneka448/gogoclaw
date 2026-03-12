@@ -2,6 +2,7 @@ package channels
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -222,5 +223,80 @@ func TestIsBotSender(t *testing.T) {
 	}
 	if !isBotSender(body) {
 		t.Fatal("isBotSender() = false, want true")
+	}
+}
+
+func TestDetectFeishuMessageFormat(t *testing.T) {
+	if got := detectFeishuMessageFormat("short plain text"); got != "text" {
+		t.Fatalf("detectFeishuMessageFormat(text) = %q, want text", got)
+	}
+	if got := detectFeishuMessageFormat("read [docs](https://example.com)"); got != "post" {
+		t.Fatalf("detectFeishuMessageFormat(link) = %q, want post", got)
+	}
+	if got := detectFeishuMessageFormat("- item 1\n- item 2"); got != "interactive" {
+		t.Fatalf("detectFeishuMessageFormat(list) = %q, want interactive", got)
+	}
+	if got := detectFeishuMessageFormat("**bold** text"); got != "interactive" {
+		t.Fatalf("detectFeishuMessageFormat(markdown) = %q, want interactive", got)
+	}
+}
+
+func TestMarkdownToFeishuPost(t *testing.T) {
+	content, err := markdownToFeishuPost("hello [docs](https://example.com)")
+	if err != nil {
+		t.Fatalf("markdownToFeishuPost() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(content), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	zhCN, ok := body["zh_cn"].(map[string]any)
+	if !ok {
+		t.Fatalf("body[zh_cn] missing: %#v", body)
+	}
+	rows, ok := zhCN["content"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("rows = %#v, want one row", zhCN["content"])
+	}
+}
+
+func TestMarkdownToFeishuInteractive(t *testing.T) {
+	content, err := markdownToFeishuInteractive("# heading")
+	if err != nil {
+		t.Fatalf("markdownToFeishuInteractive() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(content), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	elements, ok := body["elements"].([]any)
+	if !ok || len(elements) != 1 {
+		t.Fatalf("elements = %#v, want one markdown element", body["elements"])
+	}
+}
+
+func TestBuildFeishuOutboundContent(t *testing.T) {
+	messageType, content, err := buildFeishuOutboundContent("plain text")
+	if err != nil {
+		t.Fatalf("buildFeishuOutboundContent(text) error = %v", err)
+	}
+	if messageType != "text" || content == "" {
+		t.Fatalf("buildFeishuOutboundContent(text) = (%q,%q)", messageType, content)
+	}
+
+	messageType, content, err = buildFeishuOutboundContent("see [docs](https://example.com)")
+	if err != nil {
+		t.Fatalf("buildFeishuOutboundContent(post) error = %v", err)
+	}
+	if messageType != "post" || content == "" {
+		t.Fatalf("buildFeishuOutboundContent(post) = (%q,%q)", messageType, content)
+	}
+
+	messageType, content, err = buildFeishuOutboundContent("1. one\n2. two")
+	if err != nil {
+		t.Fatalf("buildFeishuOutboundContent(interactive) error = %v", err)
+	}
+	if messageType != "interactive" || content == "" {
+		t.Fatalf("buildFeishuOutboundContent(interactive) = (%q,%q)", messageType, content)
 	}
 }
