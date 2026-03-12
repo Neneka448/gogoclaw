@@ -13,6 +13,7 @@ import (
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
+	"github.com/Neneka448/gogoclaw/internal/skills"
 	"github.com/Neneka448/gogoclaw/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -353,6 +354,70 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 	}
 	if !strings.Contains(archiveFiles[0], filepath.Join("sessions", "achrive")) {
 		t.Fatalf("archive file path = %q, want achrive folder", archiveFiles[0])
+	}
+}
+
+func TestAgentLoopInjectsSkillSystemPrompt(t *testing.T) {
+	configPath := writeTestConfig(t)
+	sessionManager := session.NewSessionManager(t.TempDir())
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{Content: "done"},
+		},
+	}
+	skillRegistry := skills.NewRegistry()
+	if err := skillRegistry.Register(skills.Skill{
+		Name: "article-summarize",
+		FrontMatter: map[string]any{
+			"description": "summarize article links",
+			"triggers":    []string{"summarize article", "read this link"},
+		},
+	}); err != nil {
+		t.Fatalf("skillRegistry.Register() error = %v", err)
+	}
+
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"get_skill": tools.NewGetSkillTool(skillRegistry),
+	}}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		ConfigManager:  config.NewConfigManager(configPath),
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		Skills:         skillRegistry,
+		SessionManager: sessionManager,
+	})
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "test-channel",
+		ChatID:    "chat-1",
+		SenderID:  "user-1",
+		Message:   "帮我总结这篇文章",
+	}
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+	if len(providerStub.requests) != 1 {
+		t.Fatalf("len(providerStub.requests) = %d, want 1", len(providerStub.requests))
+	}
+	request := providerStub.requests[0]
+	if len(request.Messages) != 2 {
+		t.Fatalf("len(request.Messages) = %d, want 2", len(request.Messages))
+	}
+	if request.Messages[0].Role != openai.ChatMessageRoleSystem {
+		t.Fatalf("request.Messages[0].Role = %q, want system", request.Messages[0].Role)
+	}
+	if !strings.Contains(request.Messages[0].Content, "get_skill") {
+		t.Fatalf("system prompt = %q, want get_skill guidance", request.Messages[0].Content)
+	}
+	if !strings.Contains(request.Messages[0].Content, "article-summarize") {
+		t.Fatalf("system prompt = %q, want skill name", request.Messages[0].Content)
+	}
+	if !strings.Contains(request.Messages[0].Content, "summarize article links") {
+		t.Fatalf("system prompt = %q, want skill metadata", request.Messages[0].Content)
+	}
+	if request.Messages[1].Role != openai.ChatMessageRoleUser {
+		t.Fatalf("request.Messages[1].Role = %q, want user", request.Messages[1].Role)
 	}
 }
 

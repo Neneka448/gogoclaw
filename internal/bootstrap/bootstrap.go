@@ -8,6 +8,7 @@ import (
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
+	"github.com/Neneka448/gogoclaw/internal/skills"
 	"github.com/Neneka448/gogoclaw/internal/tools"
 )
 
@@ -29,6 +30,10 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	skillRegistry, err := skills.LoadWorkspaceSkills(profile.Workspace)
+	if err != nil {
+		return nil, err
+	}
 	messageBus := messagebus.NewMessageBus()
 	channelRegistry := channels.NewRegistry()
 	if err := channelRegistry.Register(channels.NewCLIChannel(sysConfig.Channels.CLI, nil)); err != nil {
@@ -45,6 +50,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		Provider:        llmProvider,
 		ConfigManager:   configManager,
 		ToolRegistry:    tools.NewToolRegistry(),
+		Skills:          skillRegistry,
 		ChannelRegistry: channelRegistry,
 		SessionManager:  session.NewSessionManager(profile.Workspace),
 	}
@@ -52,6 +58,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		return nil, err
 	}
 	if err := context.ToolRegistry.RegisterTool("list_dir", tools.NewListDirTool(profile.Workspace)); err != nil {
+		return nil, err
+	}
+	if err := context.ToolRegistry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
 		return nil, err
 	}
 
