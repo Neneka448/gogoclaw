@@ -37,6 +37,7 @@ var agentCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		defer (*gatewayRef).Stop()
 
 		_, err = (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
 			ChannelID: "cli",

@@ -23,6 +23,12 @@ type gateway struct {
 	context context.SystemContext
 }
 
+const (
+	toolCallColor  = "\x1b[32m"
+	assistantColor = "\x1b[38;5;208m"
+	resetColor     = "\x1b[0m"
+)
+
 func NewGateway(context context.SystemContext) Gateway {
 	return &gateway{
 		context: context,
@@ -72,15 +78,21 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 	}
 }
 func printMessage(msg messagebus.Message) {
+	if strings.TrimSpace(msg.Message) == "" {
+		return
+	}
 	if msg.FinishReason == "tool_calls" {
 		printToolCallMessage(msg)
 		return
 	}
-	fmt.Printf("\x1b[36m%s\x1b[0m\n", msg.Message)
+	if msg.FinishReason == "" {
+		return
+	}
+	fmt.Printf("[message]:\n%s%s%s\n", assistantColor, msg.Message, resetColor)
 
 }
 func printToolCallMessage(msg messagebus.Message) {
-	fmt.Printf("\x1b[32m[tool call]: %s\x1b[0m\n", msg.Message)
+	fmt.Printf("%s[tool call]: %s%s\n", toolCallColor, msg.Message, resetColor)
 }
 
 func (g *gateway) Start() error {
@@ -88,6 +100,16 @@ func (g *gateway) Start() error {
 }
 
 func (g *gateway) Stop() error {
-	g.context.MessageBus.Close()
+	if g.context.SessionManager != nil {
+		if err := g.context.SessionManager.Close(); err != nil {
+			return err
+		}
+	}
+	if g.context.MessageBus != nil {
+		if err := g.context.MessageBus.Close(); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

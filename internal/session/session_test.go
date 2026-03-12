@@ -110,3 +110,35 @@ func TestSessionManagerCachesSessionInMemory(t *testing.T) {
 		t.Fatal("expected session manager to return cached session instance")
 	}
 }
+
+func TestSessionManagerCloseFlushesPendingMessages(t *testing.T) {
+	workspace := t.TempDir()
+	manager := NewSessionManager(workspace)
+	session, err := manager.GetOrCreateSession("telegram:chat-1", "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := session.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "final reply"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(workspace, "sessions", "telegram:chat-1.json"))
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+
+	var data SessionFile
+	if err := json.Unmarshal(content, &data); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(data.Messages) != 1 {
+		t.Fatalf("len(data.Messages) = %d, want 1", len(data.Messages))
+	}
+	if data.Messages[0].Content != "final reply" {
+		t.Fatalf("data.Messages[0].Content = %q, want final reply", data.Messages[0].Content)
+	}
+}

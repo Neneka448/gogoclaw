@@ -11,6 +11,7 @@ import (
 )
 
 type Session interface {
+	Close() error
 	GetSessionID() string
 	GetMessages(memoryWindow int) []openai.ChatCompletionMessage
 	AppendMessage(message openai.ChatCompletionMessage) error
@@ -22,6 +23,7 @@ type Session interface {
 
 type SessionManager interface {
 	GetOrCreateSession(sessionID string, senderID string) (Session, error)
+	Close() error
 }
 
 type SessionFile struct {
@@ -96,6 +98,27 @@ func (manager *sessionManager) GetOrCreateSession(sessionID string, senderID str
 
 	manager.sessions[sessionID] = session
 	return session, nil
+}
+
+func (manager *sessionManager) Close() error {
+	manager.mu.Lock()
+	sessions := make([]*fileSession, 0, len(manager.sessions))
+	for _, currentSession := range manager.sessions {
+		sessions = append(sessions, currentSession)
+	}
+	manager.mu.Unlock()
+
+	for _, currentSession := range sessions {
+		if err := currentSession.Close(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (session *fileSession) Close() error {
+	return session.WriteSessionFile()
 }
 
 func (session *fileSession) GetSessionID() string {
