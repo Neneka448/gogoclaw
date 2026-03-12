@@ -4,11 +4,28 @@ import (
 	"fmt"
 	"sync"
 
+	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	Openai "github.com/sashabaranov/go-openai"
 )
 
 type Tool interface {
 	Execute(args string) (string, error)
+}
+
+type MessageContextTool interface {
+	SetMessageContext(messagebus.Message)
+}
+
+type TurnLifecycleTool interface {
+	StartTurn()
+}
+
+type OutboundSuppressionTool interface {
+	SuppressToolResultOutbound() bool
+}
+
+type SentMessageTool interface {
+	SentInTurn() bool
 }
 
 type ToolDescriptor struct {

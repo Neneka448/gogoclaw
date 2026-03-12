@@ -10,6 +10,7 @@ import (
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
+	toolspkg "github.com/Neneka448/gogoclaw/internal/tools"
 	Openai "github.com/sashabaranov/go-openai"
 )
 
@@ -19,6 +20,12 @@ type AgentLoop interface {
 
 type agentLoop struct {
 	context context.SystemContext
+}
+
+type outboundToolPayload struct {
+	Content    string   `json:"content,omitempty"`
+	MediaPaths []string `json:"media_paths,omitempty"`
+	MediaPath  string   `json:"media_path,omitempty"`
 }
 
 const newSessionCommand = "/new"
@@ -31,6 +38,7 @@ func NewAgentLoop(context context.SystemContext) AgentLoop {
 }
 
 func (al *agentLoop) ProcessMessage(message messagebus.Message) error {
+	al.prepareToolsForTurn(message)
 	return al.loop(message)
 }
 
@@ -88,8 +96,10 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 		if err := currentSession.AppendMessage(assistantMessage); err != nil {
 			return err
 		}
-		if err := al.publishOutboundMessage(msg, assistantMessage, response.GetFinishReason()); err != nil {
-			return err
+		if !(al.sentMessageInTurn() && !response.IsToolCall()) {
+			if err := al.publishOutboundMessage(msg, assistantMessage, response.GetFinishReason()); err != nil {
+				return err
+			}
 		}
 
 		if !response.IsToolCall() {
@@ -105,7 +115,7 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 		if err != nil {
 			return err
 		}
-		if err := currentSession.AppendMessages(toolResponses); err != nil {
+		if err := currentSession.AppendMessages(executedMessagesToChatMessages(toolResponses)); err != nil {
 			return err
 		}
 		if err := al.publishOutboundMessages(msg, toolResponses); err != nil {
@@ -175,8 +185,13 @@ func (al *agentLoop) buildSystemPrompt() string {
 	return strings.TrimSpace(builder.String())
 }
 
-func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) ([]Openai.ChatCompletionMessage, error) {
-	messages := make([]Openai.ChatCompletionMessage, 0, len(toolCalls))
+type executedToolMessage struct {
+	Message                Openai.ChatCompletionMessage
+	SuppressOutboundResult bool
+}
+
+func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) ([]executedToolMessage, error) {
+	messages := make([]executedToolMessage, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
 		toolDescriptor, err := al.context.ToolRegistry.GetTool(toolCall.Name)
 		if err != nil {
@@ -197,10 +212,22 @@ func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) ([]Opena
 			message.ToolCallID = toolCall.ID
 		}
 
-		messages = append(messages, message)
+		executed := executedToolMessage{Message: message}
+		if suppressor, ok := toolDescriptor.Tool.(toolspkg.OutboundSuppressionTool); ok {
+			executed.SuppressOutboundResult = suppressor.SuppressToolResultOutbound()
+		}
+		messages = append(messages, executed)
 	}
 
 	return messages, nil
+}
+
+func executedMessagesToChatMessages(executed []executedToolMessage) []Openai.ChatCompletionMessage {
+	messages := make([]Openai.ChatCompletionMessage, 0, len(executed))
+	for _, item := range executed {
+		messages = append(messages, item.Message)
+	}
+	return messages
 }
 
 func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message Openai.ChatCompletionMessage, finishReason string) error {
@@ -243,21 +270,26 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 	}, messagebus.OutboundQueue)
 }
 
-func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages []Openai.ChatCompletionMessage) error {
-	for _, message := range messages {
+func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages []executedToolMessage) error {
+	for _, executed := range messages {
+		if executed.SuppressOutboundResult {
+			continue
+		}
+		message := executed.Message
 		outbound := cloneMetadata(source.Metadata)
 		if outbound == nil {
 			outbound = make(map[string]string, 1)
 		}
 		outbound["message_kind"] = "tool_result"
+		content, mediaPaths := extractOutboundToolPayload(message.Content)
 		if err := al.context.MessageBus.Put(messagebus.Message{
 			ChannelID:    source.ChannelID,
-			Message:      message.Content,
+			Message:      content,
 			MessageID:    source.MessageID,
 			MessageType:  source.MessageType,
 			ChatID:       source.ChatID,
 			SenderID:     source.SenderID,
-			MediaPaths:   cloneMediaPaths(source.MediaPaths),
+			MediaPaths:   mergeMediaPaths(source.MediaPaths, mediaPaths),
 			ReplyTo:      source.ReplyTo,
 			Metadata:     outbound,
 			FinishReason: "",
@@ -267,6 +299,26 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 	}
 
 	return nil
+}
+
+func (al *agentLoop) prepareToolsForTurn(message messagebus.Message) {
+	for _, descriptor := range al.context.ToolRegistry.GetAllTools() {
+		if turnTool, ok := descriptor.Tool.(toolspkg.TurnLifecycleTool); ok {
+			turnTool.StartTurn()
+		}
+		if contextTool, ok := descriptor.Tool.(toolspkg.MessageContextTool); ok {
+			contextTool.SetMessageContext(message)
+		}
+	}
+}
+
+func (al *agentLoop) sentMessageInTurn() bool {
+	for _, descriptor := range al.context.ToolRegistry.GetAllTools() {
+		if sender, ok := descriptor.Tool.(toolspkg.SentMessageTool); ok && sender.SentInTurn() {
+			return true
+		}
+	}
+	return false
 }
 
 func (al *agentLoop) publishToolCallMessages(source messagebus.Message, toolCalls []provider.LLMToolCall) error {
@@ -303,6 +355,16 @@ func cloneMediaPaths(paths []string) []string {
 	return cloned
 }
 
+func mergeMediaPaths(base []string, extra []string) []string {
+	if len(base) == 0 && len(extra) == 0 {
+		return nil
+	}
+	merged := make([]string, 0, len(base)+len(extra))
+	merged = append(merged, base...)
+	merged = append(merged, extra...)
+	return merged
+}
+
 func cloneMetadata(metadata map[string]string) map[string]string {
 	if len(metadata) == 0 {
 		return nil
@@ -316,6 +378,27 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 
 func formatToolCallMessage(toolCall provider.LLMToolCall) string {
 	return toolCall.Name + "(" + toolCall.Arguments + ")"
+}
+
+func extractOutboundToolPayload(raw string) (string, []string) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+
+	var payload outboundToolPayload
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return raw, nil
+	}
+
+	if strings.TrimSpace(payload.MediaPath) != "" {
+		payload.MediaPaths = append(payload.MediaPaths, payload.MediaPath)
+	}
+	if strings.TrimSpace(payload.Content) == "" && len(payload.MediaPaths) == 0 {
+		return raw, nil
+	}
+
+	return payload.Content, cloneMediaPaths(payload.MediaPaths)
 }
 
 func (al *agentLoop) buildMaxIterationsExceededMessage(maxIterations int) Openai.ChatCompletionMessage {

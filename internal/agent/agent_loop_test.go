@@ -66,6 +66,10 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 	configPath := writeTestConfig(t)
 	sessionManager := session.NewSessionManager(t.TempDir())
 	bus := messagebus.NewMessageBus()
+	imagePath := filepath.Join(t.TempDir(), "chart.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
 			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
@@ -81,7 +85,7 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
 		"search_docs": {
 			Name: "search_docs",
-			Tool: fakeTool{result: `{"result":"ok"}`},
+			Tool: fakeTool{result: `{"content":"chart ready","media_paths":["` + imagePath + `"]}`},
 			ToolForLLM: openai.Tool{
 				Type: openai.ToolTypeFunction,
 				Function: &openai.FunctionDefinition{
@@ -170,14 +174,17 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 
 	select {
 	case message := <-outboundQueue:
-		if message.Message != `{"result":"ok"}` {
-			t.Fatalf("second message.Message = %q, want tool result", message.Message)
+		if message.Message != "chart ready" {
+			t.Fatalf("second message.Message = %q, want chart ready", message.Message)
 		}
 		if message.FinishReason != "" {
 			t.Fatalf("second message.FinishReason = %q, want empty", message.FinishReason)
 		}
 		if message.Metadata["message_kind"] != "tool_result" {
 			t.Fatalf("second message.Metadata[message_kind] = %q, want tool_result", message.Metadata["message_kind"])
+		}
+		if len(message.MediaPaths) != 1 || message.MediaPaths[0] != imagePath {
+			t.Fatalf("second message.MediaPaths = %#v, want [%s]", message.MediaPaths, imagePath)
 		}
 		if message.MessageType != inboundMessage.MessageType {
 			t.Fatalf("second message.MessageType = %q, want %q", message.MessageType, inboundMessage.MessageType)
@@ -211,6 +218,83 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected final outbound message")
+	}
+}
+
+func TestExtractOutboundToolPayloadFallsBackToRawContent(t *testing.T) {
+	content, mediaPaths := extractOutboundToolPayload(`{"result":"ok"}`)
+	if content != `{"result":"ok"}` {
+		t.Fatalf("content = %q, want raw payload", content)
+	}
+	if len(mediaPaths) != 0 {
+		t.Fatalf("len(mediaPaths) = %d, want 0", len(mediaPaths))
+	}
+}
+
+func TestExtractOutboundToolPayloadExtractsMediaPaths(t *testing.T) {
+	content, mediaPaths := extractOutboundToolPayload(`{"content":"done","media_path":"/tmp/a.png","media_paths":["/tmp/b.png"]}`)
+	if content != "done" {
+		t.Fatalf("content = %q, want done", content)
+	}
+	if len(mediaPaths) != 2 || mediaPaths[0] != "/tmp/b.png" || mediaPaths[1] != "/tmp/a.png" {
+		t.Fatalf("mediaPaths = %#v, want [/tmp/b.png /tmp/a.png]", mediaPaths)
+	}
+}
+
+func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
+	configPath := writeTestConfig(t)
+	sessionManager := session.NewSessionManager(t.TempDir())
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
+				ID:        "call_1",
+				Name:      "message",
+				Arguments: `{"content":"sent now"}`,
+				Type:      string(openai.ToolTypeFunction),
+			}}},
+			provider.NormalizedResponse{Content: "done"},
+		},
+	}
+
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"message": tools.NewMessageTool(bus),
+	}}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		ConfigManager:  config.NewConfigManager(configPath),
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+	})
+
+	inboundMessage := messagebus.Message{ChannelID: "feishu", Message: "hello", MessageID: "msg-1", MessageType: "group", ChatID: "chat-1", SenderID: "user-1"}
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+
+	first := <-outboundQueue
+	if first.Message != `message({"content":"sent now"})` {
+		t.Fatalf("first.Message = %q, want tool call", first.Message)
+	}
+	second := <-outboundQueue
+	if second.Message != "sent now" {
+		t.Fatalf("second.Message = %q, want sent now", second.Message)
+	}
+	if second.Metadata["message_kind"] != "active_message" {
+		t.Fatalf("second.Metadata[message_kind] = %q, want active_message", second.Metadata["message_kind"])
+	}
+
+	select {
+	case extra := <-outboundQueue:
+		t.Fatalf("unexpected extra outbound message: %#v", extra)
+	default:
 	}
 }
 

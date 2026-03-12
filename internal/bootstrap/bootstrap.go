@@ -66,6 +66,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err := context.ToolRegistry.RegisterTool("terminal", tools.NewTerminalTool(profile.Workspace, resolveToolTimeout(sysConfig.Tools, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
 		return nil, err
 	}
+	if err := context.ToolRegistry.RegisterTool("message", tools.NewMessageTool(messageBus)); err != nil {
+		return nil, err
+	}
 	if err := context.ToolRegistry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
 		return nil, err
 	}
