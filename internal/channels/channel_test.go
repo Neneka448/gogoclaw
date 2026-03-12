@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
@@ -283,6 +284,13 @@ func TestBuildFeishuOutboundContent(t *testing.T) {
 	if messageType != "text" || content == "" {
 		t.Fatalf("buildFeishuOutboundContent(text) = (%q,%q)", messageType, content)
 	}
+	var textPayload map[string]string
+	if err := json.Unmarshal([]byte(content), &textPayload); err != nil {
+		t.Fatalf("json.Unmarshal(text payload) error = %v", err)
+	}
+	if textPayload["text"] != "plain text" {
+		t.Fatalf("textPayload[text] = %q, want plain text", textPayload["text"])
+	}
 
 	messageType, content, err = buildFeishuOutboundContent("see [docs](https://example.com)")
 	if err != nil {
@@ -298,5 +306,46 @@ func TestBuildFeishuOutboundContent(t *testing.T) {
 	}
 	if messageType != "interactive" || content == "" {
 		t.Fatalf("buildFeishuOutboundContent(interactive) = (%q,%q)", messageType, content)
+	}
+}
+
+func TestSplitToolCallMessage(t *testing.T) {
+	name, arguments := splitToolCallMessage("read_file({\"path\":\"sessions/a.json\"})")
+	if name != "read_file" {
+		t.Fatalf("splitToolCallMessage() name = %q, want read_file", name)
+	}
+	if arguments != `{"path":"sessions/a.json"}` {
+		t.Fatalf("splitToolCallMessage() arguments = %q", arguments)
+	}
+}
+
+func TestPrettyToolCallArguments(t *testing.T) {
+	formatted := prettyToolCallArguments(`{"path":"sessions/a.json","start_line":1}`)
+	if !strings.Contains(formatted, "\n") || !strings.Contains(formatted, `"path": "sessions/a.json"`) {
+		t.Fatalf("prettyToolCallArguments() = %q", formatted)
+	}
+}
+
+func TestFormatToolCallBatch(t *testing.T) {
+	formatted := formatToolCallBatch([]messagebus.Message{{Message: `read_file({"path":"sessions/a.json","start_line":1})`}})
+	if !strings.Contains(formatted, "工具调用中") {
+		t.Fatalf("formatToolCallBatch() missing header: %q", formatted)
+	}
+	if !strings.Contains(formatted, "1. read_file") {
+		t.Fatalf("formatToolCallBatch() missing name: %q", formatted)
+	}
+	if !strings.Contains(formatted, "```json") {
+		t.Fatalf("formatToolCallBatch() missing json fence: %q", formatted)
+	}
+}
+
+func TestToolCallBatchKey(t *testing.T) {
+	withReply := toolCallBatchKey(messagebus.Message{ChatID: "oc_1", ReplyTo: "om_root"})
+	withoutReply := toolCallBatchKey(messagebus.Message{ChatID: "oc_1"})
+	if withReply != "oc_1|om_root" {
+		t.Fatalf("toolCallBatchKey(withReply) = %q", withReply)
+	}
+	if withoutReply != "oc_1" {
+		t.Fatalf("toolCallBatchKey(withoutReply) = %q", withoutReply)
 	}
 }

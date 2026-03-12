@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
@@ -28,8 +30,15 @@ type FeishuChannel struct {
 	startOnce  sync.Once
 	started    bool
 	mu         sync.Mutex
+	toolMu     sync.Mutex
+	toolCalls  map[string]*pendingToolCallBatch
 	messageIDs []string
 	seen       map[string]struct{}
+}
+
+type pendingToolCallBatch struct {
+	messages []messagebus.Message
+	timer    *time.Timer
 }
 
 var (
@@ -40,6 +49,7 @@ var (
 	feishuMarkdownLinkRe    = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
 	feishuTextMaxLen        = 200
 	feishuPostMaxLen        = 2000
+	feishuToolCallDebounce  = 2 * time.Second
 	feishuImageExts         = map[string]struct{}{
 		".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".bmp": {}, ".webp": {}, ".ico": {}, ".tiff": {}, ".tif": {},
 	}
@@ -66,6 +76,7 @@ func NewFeishuChannel(cfg config.FeishuChannelConfig, bus messagebus.MessageBus)
 	return &FeishuChannel{
 		config:     cfg,
 		messageBus: bus,
+		toolCalls:  make(map[string]*pendingToolCallBatch),
 		seen:       make(map[string]struct{}),
 	}
 }
@@ -114,12 +125,21 @@ func (c *FeishuChannel) Start() error {
 }
 
 func (c *FeishuChannel) Stop() error {
+	if err := c.flushAllToolCallBatches(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (c *FeishuChannel) Send(message messagebus.Message) error {
 	if !c.Enabled() {
 		return fmt.Errorf("feishu channel disabled")
+	}
+	if message.FinishReason == "tool_calls" {
+		return c.enqueueToolCall(message)
+	}
+	if err := c.flushToolCallBatch(toolCallBatchKey(message)); err != nil {
+		return err
 	}
 	mediaPaths := outboundMediaPaths(message)
 	if strings.TrimSpace(message.Message) == "" && len(mediaPaths) == 0 {
@@ -144,6 +164,74 @@ func (c *FeishuChannel) Send(message messagebus.Message) error {
 		return err
 	}
 	return c.sendMessage(receiveIDType, message.ChatID, messageType, content)
+}
+
+func (c *FeishuChannel) enqueueToolCall(message messagebus.Message) error {
+	key := toolCallBatchKey(message)
+	c.toolMu.Lock()
+	batch, ok := c.toolCalls[key]
+	if !ok {
+		batch = &pendingToolCallBatch{}
+		c.toolCalls[key] = batch
+	}
+	batch.messages = append(batch.messages, message)
+	if batch.timer != nil {
+		batch.timer.Stop()
+	}
+	batch.timer = time.AfterFunc(feishuToolCallDebounce, func() {
+		_ = c.flushToolCallBatch(key)
+	})
+	c.toolMu.Unlock()
+	return nil
+}
+
+func (c *FeishuChannel) flushToolCallBatch(key string) error {
+	batch := c.takeToolCallBatch(key)
+	if batch == nil || len(batch.messages) == 0 {
+		return nil
+	}
+	messageType, content, err := buildFeishuOutboundContent(formatToolCallBatch(batch.messages))
+	if err != nil {
+		return err
+	}
+	last := batch.messages[len(batch.messages)-1]
+	return c.sendMessage(receiveIDTypeForChatID(last.ChatID), last.ChatID, messageType, content)
+}
+
+func (c *FeishuChannel) flushAllToolCallBatches() error {
+	c.toolMu.Lock()
+	keys := make([]string, 0, len(c.toolCalls))
+	for key := range c.toolCalls {
+		keys = append(keys, key)
+	}
+	c.toolMu.Unlock()
+	for _, key := range keys {
+		if err := c.flushToolCallBatch(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *FeishuChannel) takeToolCallBatch(key string) *pendingToolCallBatch {
+	c.toolMu.Lock()
+	defer c.toolMu.Unlock()
+	batch, ok := c.toolCalls[key]
+	if !ok {
+		return nil
+	}
+	delete(c.toolCalls, key)
+	if batch.timer != nil {
+		batch.timer.Stop()
+	}
+	return batch
+}
+
+func toolCallBatchKey(message messagebus.Message) string {
+	if strings.TrimSpace(message.ReplyTo) != "" {
+		return message.ChatID + "|" + message.ReplyTo
+	}
+	return message.ChatID
 }
 
 func receiveIDTypeForChatID(chatID string) string {
@@ -527,8 +615,55 @@ func buildFeishuOutboundContent(content string) (string, string, error) {
 		}
 		return larkim.MsgTypeInteractive, interactive, nil
 	default:
-		return larkim.MsgTypeText, larkim.NewTextMsgBuilder().Text(trimmed).Build(), nil
+		textPayload, err := json.Marshal(map[string]string{"text": trimmed})
+		if err != nil {
+			return "", "", err
+		}
+		return larkim.MsgTypeText, string(textPayload), nil
 	}
+}
+
+func formatToolCallBatch(messages []messagebus.Message) string {
+	lines := []string{"工具调用中"}
+	for index, message := range messages {
+		name, arguments := splitToolCallMessage(message.Message)
+		if name == "" {
+			name = message.Message
+		}
+		lines = append(lines, strconv.Itoa(index+1)+". "+name)
+		if strings.TrimSpace(arguments) != "" {
+			lines = append(lines, "```json")
+			lines = append(lines, prettyToolCallArguments(arguments))
+			lines = append(lines, "```")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func splitToolCallMessage(content string) (string, string) {
+	trimmed := strings.TrimSpace(content)
+	open := strings.Index(trimmed, "(")
+	close := strings.LastIndex(trimmed, ")")
+	if open <= 0 || close <= open {
+		return trimmed, ""
+	}
+	return strings.TrimSpace(trimmed[:open]), strings.TrimSpace(trimmed[open+1 : close])
+}
+
+func prettyToolCallArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "{}"
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return trimmed
+	}
+	formatted, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return trimmed
+	}
+	return string(formatted)
 }
 
 func detectFeishuMessageFormat(content string) string {
