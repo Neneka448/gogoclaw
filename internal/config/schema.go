@@ -30,6 +30,7 @@ type FeishuChannelConfig struct {
 	EncryptKey        string   `json:"encryptKey"`
 	VerificationToken string   `json:"verificationToken"`
 	AllowFrom         []string `json:"allowFrom"`
+	ReactEmoji        string   `json:"reactEmoji"`
 }
 
 type AgentConfig struct {
@@ -111,7 +112,8 @@ func CreateDefaultConfig() SysConfig {
 				ChannelConfig: ChannelConfig{Enabled: true},
 			},
 			Feishu: FeishuChannelConfig{
-				AllowFrom: []string{"*"},
+				AllowFrom:  []string{"*"},
+				ReactEmoji: "THUMBSUP",
 			},
 			SendProgress:  true,
 			SendToolHints: true,

@@ -30,6 +30,9 @@ func TestConfigManagerMergesChannelDefaultsForLegacyConfig(t *testing.T) {
 	if len(config.Channels.Feishu.AllowFrom) != 1 || config.Channels.Feishu.AllowFrom[0] != "*" {
 		t.Fatalf("config.Channels.Feishu.AllowFrom = %#v, want [*]", config.Channels.Feishu.AllowFrom)
 	}
+	if config.Channels.Feishu.ReactEmoji != "THUMBSUP" {
+		t.Fatalf("config.Channels.Feishu.ReactEmoji = %q, want THUMBSUP", config.Channels.Feishu.ReactEmoji)
+	}
 	if !config.Channels.SendProgress || !config.Channels.SendToolHints {
 		t.Fatalf("progress flags = (%v, %v), want true,true", config.Channels.SendProgress, config.Channels.SendToolHints)
 	}

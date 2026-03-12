@@ -27,6 +27,7 @@ type Message struct {
 	MessageType  string
 	ChatID       string
 	SenderID     string
+	MediaPaths   []string
 	ReplyTo      string
 	FinishReason string
 	Metadata     map[string]string

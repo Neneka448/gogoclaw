@@ -2,6 +2,8 @@ package channels
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
@@ -159,5 +161,66 @@ func TestParseFeishuInboundMessageSkipsEmptyContent(t *testing.T) {
 
 	if _, ok := parseFeishuInboundMessage(body); ok {
 		t.Fatal("parseFeishuInboundMessage() ok = true, want false")
+	}
+}
+
+func TestOutboundMediaPathsPrefersMediaPathsField(t *testing.T) {
+	message := messagebus.Message{
+		MediaPaths: []string{"/tmp/a.png", "/tmp/b.pdf"},
+		Metadata:   map[string]string{"media_path": "/tmp/c.png"},
+	}
+	paths := outboundMediaPaths(message)
+	if len(paths) != 2 || paths[0] != "/tmp/a.png" || paths[1] != "/tmp/b.pdf" {
+		t.Fatalf("outboundMediaPaths() = %#v, want explicit MediaPaths", paths)
+	}
+}
+
+func TestOutboundMediaPathsFallsBackToMetadataJSON(t *testing.T) {
+	message := messagebus.Message{
+		Metadata: map[string]string{"media_paths": `["/tmp/a.png","/tmp/b.pdf"]`},
+	}
+	paths := outboundMediaPaths(message)
+	if len(paths) != 2 || paths[1] != "/tmp/b.pdf" {
+		t.Fatalf("outboundMediaPaths() = %#v, want metadata json paths", paths)
+	}
+}
+
+func TestOutboundMediaPathsFallsBackToMessagePath(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "image.png")
+	message := messagebus.Message{Message: filePath, MessageType: "image"}
+	if err := os.WriteFile(filePath, []byte("x"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+	paths := outboundMediaPaths(message)
+	if len(paths) != 1 || paths[0] != filePath {
+		t.Fatalf("outboundMediaPaths() = %#v, want [%s]", paths, filePath)
+	}
+}
+
+func TestFeishuFileTypeHelpers(t *testing.T) {
+	if got := feishuUploadFileType(".pdf"); got != "pdf" {
+		t.Fatalf("feishuUploadFileType(.pdf) = %q, want pdf", got)
+	}
+	if got := feishuUploadFileType(".zip"); got != "stream" {
+		t.Fatalf("feishuUploadFileType(.zip) = %q, want stream", got)
+	}
+	if got := feishuMessageTypeForFileExt(".mp4"); got != "media" {
+		t.Fatalf("feishuMessageTypeForFileExt(.mp4) = %q, want media", got)
+	}
+	if got := feishuMessageTypeForFileExt(".pdf"); got != "file" {
+		t.Fatalf("feishuMessageTypeForFileExt(.pdf) = %q, want file", got)
+	}
+}
+
+func TestIsBotSender(t *testing.T) {
+	body := map[string]any{
+		"event": map[string]any{
+			"sender": map[string]any{
+				"sender_type": "bot",
+			},
+		},
+	}
+	if !isBotSender(body) {
+		t.Fatal("isBotSender() = false, want true")
 	}
 }

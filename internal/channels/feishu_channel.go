@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +30,29 @@ type FeishuChannel struct {
 	messageIDs []string
 	seen       map[string]struct{}
 }
+
+var (
+	feishuImageExts = map[string]struct{}{
+		".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".bmp": {}, ".webp": {}, ".ico": {}, ".tiff": {}, ".tif": {},
+	}
+	feishuAudioExts = map[string]struct{}{
+		".opus": {},
+	}
+	feishuVideoExts = map[string]struct{}{
+		".mp4": {}, ".mov": {}, ".avi": {},
+	}
+	feishuFileTypeMap = map[string]string{
+		".opus": "opus",
+		".mp4":  "mp4",
+		".pdf":  "pdf",
+		".doc":  "doc",
+		".docx": "doc",
+		".xls":  "xls",
+		".xlsx": "xls",
+		".ppt":  "ppt",
+		".pptx": "ppt",
+	}
+)
 
 func NewFeishuChannel(cfg config.FeishuChannelConfig, bus messagebus.MessageBus) *FeishuChannel {
 	return &FeishuChannel{
@@ -88,7 +113,8 @@ func (c *FeishuChannel) Send(message messagebus.Message) error {
 	if !c.Enabled() {
 		return fmt.Errorf("feishu channel disabled")
 	}
-	if strings.TrimSpace(message.Message) == "" {
+	mediaPaths := outboundMediaPaths(message)
+	if strings.TrimSpace(message.Message) == "" && len(mediaPaths) == 0 {
 		return nil
 	}
 	if c.client == nil {
@@ -96,23 +122,17 @@ func (c *FeishuChannel) Send(message messagebus.Message) error {
 	}
 
 	receiveIDType := receiveIDTypeForChatID(message.ChatID)
+	for _, mediaPath := range mediaPaths {
+		if err := c.sendMediaMessage(receiveIDType, message.ChatID, mediaPath); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(message.Message) == "" {
+		return nil
+	}
 
 	content := larkim.NewTextMsgBuilder().Text(message.Message).Build()
-	resp, err := c.client.Im.Message.Create(context.Background(), larkim.NewCreateMessageReqBuilder().
-		ReceiveIdType(receiveIDType).
-		Body(larkim.NewCreateMessageReqBodyBuilder().
-			ReceiveId(message.ChatID).
-			MsgType(larkim.MsgTypeText).
-			Content(content).
-			Build()).
-		Build())
-	if err != nil {
-		return err
-	}
-	if !resp.Success() {
-		return fmt.Errorf("feishu send message failed: code=%d msg=%s request_id=%s", resp.Code, resp.Msg, resp.RequestId())
-	}
-	return nil
+	return c.sendMessage(receiveIDType, message.ChatID, larkim.MsgTypeText, content)
 }
 
 func receiveIDTypeForChatID(chatID string) string {
@@ -140,8 +160,14 @@ func (c *FeishuChannel) handleMessageReceive(_ context.Context, event *larkim.P2
 	if message.MessageID != "" && !c.markMessage(message.MessageID) {
 		return nil
 	}
+	if isBotSender(body) {
+		return nil
+	}
 	if !c.isAllowed(message.SenderID) {
 		return nil
+	}
+	if err := c.addReaction(message.MessageID); err != nil {
+		return err
 	}
 	if c.messageBus == nil {
 		return nil
@@ -229,12 +255,27 @@ func collectFeishuMetadata(body map[string]any) map[string]string {
 			"message.thread_id",
 			"message.threadId",
 		),
+		"sender_type": firstString(body,
+			"event.sender.sender_type",
+			"event.sender.senderType",
+			"sender.sender_type",
+			"sender.senderType",
+		),
 	} {
 		if value != "" {
 			metadata[key] = value
 		}
 	}
 	return metadata
+}
+
+func isBotSender(body map[string]any) bool {
+	return strings.EqualFold(firstString(body,
+		"event.sender.sender_type",
+		"event.sender.senderType",
+		"sender.sender_type",
+		"sender.senderType",
+	), "bot")
 }
 
 func (c *FeishuChannel) isAllowed(senderID string) bool {
@@ -453,4 +494,168 @@ func uniqueNonEmpty(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func outboundMediaPaths(message messagebus.Message) []string {
+	paths := cloneStringSlice(message.MediaPaths)
+	if len(paths) > 0 {
+		return paths
+	}
+	if message.Metadata == nil {
+		return nil
+	}
+	if raw := strings.TrimSpace(message.Metadata["media_paths"]); raw != "" {
+		var decoded []string
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+			return decoded
+		}
+	}
+	if raw := strings.TrimSpace(message.Metadata["media_path"]); raw != "" {
+		return []string{raw}
+	}
+	if isLocalFilePath(message.Message) && strings.TrimSpace(message.MessageType) != "text" {
+		return []string{message.Message}
+	}
+	return nil
+}
+
+func cloneStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func isLocalFilePath(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string, mediaPath string) error {
+	if !isLocalFilePath(mediaPath) {
+		return fmt.Errorf("feishu media path not found: %s", mediaPath)
+	}
+	ext := strings.ToLower(filepath.Ext(mediaPath))
+	if _, ok := feishuImageExts[ext]; ok {
+		imageKey, err := c.uploadImage(mediaPath)
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(map[string]string{"image_key": imageKey})
+		if err != nil {
+			return err
+		}
+		return c.sendMessage(receiveIDType, receiveID, larkim.MsgTypeImage, string(payload))
+	}
+
+	fileKey, messageType, err := c.uploadFile(mediaPath)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]string{"file_key": fileKey})
+	if err != nil {
+		return err
+	}
+	return c.sendMessage(receiveIDType, receiveID, messageType, string(payload))
+}
+
+func (c *FeishuChannel) uploadImage(mediaPath string) (string, error) {
+	body, err := larkim.NewCreateImagePathReqBodyBuilder().
+		ImagePath(mediaPath).
+		ImageType("message").
+		Build()
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.client.Im.Image.Create(context.Background(), larkim.NewCreateImageReqBuilder().Body(body).Build())
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success() || resp.Data == nil || resp.Data.ImageKey == nil {
+		return "", fmt.Errorf("feishu upload image failed: code=%d msg=%s request_id=%s", resp.Code, resp.Msg, resp.RequestId())
+	}
+	return *resp.Data.ImageKey, nil
+}
+
+func (c *FeishuChannel) uploadFile(mediaPath string) (string, string, error) {
+	ext := strings.ToLower(filepath.Ext(mediaPath))
+	body, err := larkim.NewCreateFilePathReqBodyBuilder().
+		FilePath(mediaPath).
+		FileName(filepath.Base(mediaPath)).
+		FileType(feishuUploadFileType(ext)).
+		Build()
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := c.client.Im.File.Create(context.Background(), larkim.NewCreateFileReqBuilder().Body(body).Build())
+	if err != nil {
+		return "", "", err
+	}
+	if !resp.Success() || resp.Data == nil || resp.Data.FileKey == nil {
+		return "", "", fmt.Errorf("feishu upload file failed: code=%d msg=%s request_id=%s", resp.Code, resp.Msg, resp.RequestId())
+	}
+	return *resp.Data.FileKey, feishuMessageTypeForFileExt(ext), nil
+}
+
+func feishuUploadFileType(ext string) string {
+	if fileType, ok := feishuFileTypeMap[ext]; ok {
+		return fileType
+	}
+	return "stream"
+}
+
+func feishuMessageTypeForFileExt(ext string) string {
+	if _, ok := feishuAudioExts[ext]; ok {
+		return "media"
+	}
+	if _, ok := feishuVideoExts[ext]; ok {
+		return "media"
+	}
+	return "file"
+}
+
+func (c *FeishuChannel) sendMessage(receiveIDType string, receiveID string, messageType string, content string) error {
+	resp, err := c.client.Im.Message.Create(context.Background(), larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType(receiveIDType).
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			ReceiveId(receiveID).
+			MsgType(messageType).
+			Content(content).
+			Build()).
+		Build())
+	if err != nil {
+		return err
+	}
+	if !resp.Success() {
+		return fmt.Errorf("feishu send %s message failed: code=%d msg=%s request_id=%s", messageType, resp.Code, resp.Msg, resp.RequestId())
+	}
+	return nil
+}
+
+func (c *FeishuChannel) addReaction(messageID string) error {
+	if strings.TrimSpace(messageID) == "" || c.client == nil {
+		return nil
+	}
+	reactionEmoji := strings.TrimSpace(c.config.ReactEmoji)
+	if reactionEmoji == "" {
+		reactionEmoji = "THUMBSUP"
+	}
+	resp, err := c.client.Im.V1.MessageReaction.Create(context.Background(), larkim.NewCreateMessageReactionReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+			ReactionType(larkim.NewEmojiBuilder().EmojiType(reactionEmoji).Build()).
+			Build()).
+		Build())
+	if err != nil {
+		return err
+	}
+	if !resp.Success() {
+		return fmt.Errorf("feishu add reaction failed: code=%d msg=%s request_id=%s", resp.Code, resp.Msg, resp.RequestId())
+	}
+	return nil
 }

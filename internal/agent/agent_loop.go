@@ -165,6 +165,9 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 		MessageType:  source.MessageType,
 		ChatID:       source.ChatID,
 		SenderID:     source.SenderID,
+		MediaPaths:   cloneMediaPaths(source.MediaPaths),
+		ReplyTo:      source.ReplyTo,
+		Metadata:     cloneMetadata(source.Metadata),
 		FinishReason: finishReason,
 	}, messagebus.OutboundQueue)
 }
@@ -192,6 +195,9 @@ func (al *agentLoop) publishToolCallMessages(source messagebus.Message, toolCall
 			MessageType:  source.MessageType,
 			ChatID:       source.ChatID,
 			SenderID:     source.SenderID,
+			MediaPaths:   cloneMediaPaths(source.MediaPaths),
+			ReplyTo:      source.ReplyTo,
+			Metadata:     cloneMetadata(source.Metadata),
 			FinishReason: "tool_calls",
 		}, messagebus.OutboundQueue); err != nil {
 			return err
@@ -199,6 +205,26 @@ func (al *agentLoop) publishToolCallMessages(source messagebus.Message, toolCall
 	}
 
 	return nil
+}
+
+func cloneMediaPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	cloned := make([]string, len(paths))
+	copy(cloned, paths)
+	return cloned
+}
+
+func cloneMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func formatToolCallMessage(toolCall provider.LLMToolCall) string {
