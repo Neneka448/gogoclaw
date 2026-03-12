@@ -43,7 +43,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		return nil, err
 	}
 	if sysConfig.Channels.Feishu.Enabled {
-		if err := channelRegistry.Register(channels.NewFeishuChannel(sysConfig.Channels.Feishu, messageBus)); err != nil {
+		if err := channelRegistry.Register(channels.NewFeishuChannel(sysConfig.Channels.Feishu, messageBus, profile.Workspace)); err != nil {
 			return nil, err
 		}
 	}

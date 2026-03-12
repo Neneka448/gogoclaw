@@ -25,6 +25,7 @@ import (
 type FeishuChannel struct {
 	config     config.FeishuChannelConfig
 	messageBus messagebus.MessageBus
+	workspace  string
 	client     *lark.Client
 	wsClient   *larkws.Client
 	startOnce  sync.Once
@@ -75,10 +76,11 @@ var (
 	}
 )
 
-func NewFeishuChannel(cfg config.FeishuChannelConfig, bus messagebus.MessageBus) *FeishuChannel {
+func NewFeishuChannel(cfg config.FeishuChannelConfig, bus messagebus.MessageBus, workspace string) *FeishuChannel {
 	return &FeishuChannel{
 		config:     cfg,
 		messageBus: bus,
+		workspace:  strings.TrimSpace(workspace),
 		toolCalls:  make(map[string]*pendingToolCallBatch),
 		seen:       make(map[string]struct{}),
 	}
@@ -870,12 +872,13 @@ func isLocalFilePath(path string) bool {
 }
 
 func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string, mediaPath string) error {
-	if !isLocalFilePath(mediaPath) {
+	resolvedPath, ok := c.resolveMediaPath(mediaPath)
+	if !ok {
 		return fmt.Errorf("feishu media path not found: %s", mediaPath)
 	}
-	ext := strings.ToLower(filepath.Ext(mediaPath))
+	ext := strings.ToLower(filepath.Ext(resolvedPath))
 	if _, ok := feishuImageExts[ext]; ok {
-		imageKey, err := c.uploadImage(mediaPath)
+		imageKey, err := c.uploadImage(resolvedPath)
 		if err != nil {
 			return err
 		}
@@ -886,7 +889,7 @@ func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string,
 		return c.sendMessage(receiveIDType, receiveID, larkim.MsgTypeImage, string(payload))
 	}
 
-	fileKey, messageType, err := c.uploadFile(mediaPath)
+	fileKey, messageType, err := c.uploadFile(resolvedPath)
 	if err != nil {
 		return err
 	}
@@ -895,6 +898,36 @@ func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string,
 		return err
 	}
 	return c.sendMessage(receiveIDType, receiveID, messageType, string(payload))
+}
+
+func (c *FeishuChannel) resolveMediaPath(mediaPath string) (string, bool) {
+	trimmed := strings.TrimSpace(mediaPath)
+	if trimmed == "" {
+		return "", false
+	}
+	if isLocalFilePath(trimmed) {
+		resolved, err := filepath.Abs(trimmed)
+		if err != nil {
+			return trimmed, true
+		}
+		return resolved, true
+	}
+	if filepath.IsAbs(trimmed) {
+		return "", false
+	}
+	workspace := strings.TrimSpace(c.workspace)
+	if workspace == "" {
+		return "", false
+	}
+	candidate := filepath.Join(workspace, filepath.Clean(trimmed))
+	if !isLocalFilePath(candidate) {
+		return "", false
+	}
+	resolved, err := filepath.Abs(candidate)
+	if err != nil {
+		return candidate, true
+	}
+	return resolved, true
 }
 
 func (c *FeishuChannel) uploadImage(mediaPath string) (string, error) {

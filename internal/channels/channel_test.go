@@ -214,6 +214,34 @@ func TestFeishuFileTypeHelpers(t *testing.T) {
 	}
 }
 
+func TestFeishuChannelResolveMediaPathUsesWorkspaceForRelativePaths(t *testing.T) {
+	workspace := t.TempDir()
+	relativePath := filepath.Join("tmp", "fullscreen.png")
+	absPath := filepath.Join(workspace, relativePath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(absPath, []byte("x"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, workspace)
+	resolved, ok := channel.resolveMediaPath(relativePath)
+	if !ok {
+		t.Fatal("resolveMediaPath() ok = false, want true")
+	}
+	if resolved != absPath {
+		t.Fatalf("resolveMediaPath() = %q, want %q", resolved, absPath)
+	}
+}
+
+func TestFeishuChannelResolveMediaPathRejectsMissingRelativeFile(t *testing.T) {
+	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, t.TempDir())
+	if resolved, ok := channel.resolveMediaPath(filepath.Join("tmp", "missing.png")); ok {
+		t.Fatalf("resolveMediaPath() = %q, want not found", resolved)
+	}
+}
+
 func TestIsBotSender(t *testing.T) {
 	body := map[string]any{
 		"event": map[string]any{
