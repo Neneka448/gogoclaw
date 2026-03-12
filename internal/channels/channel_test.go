@@ -90,14 +90,14 @@ func TestExtractFeishuContent(t *testing.T) {
 		t.Fatalf("extractFeishuContent(text_without_at_bot) = %q, want hello", textWithoutAt)
 	}
 
-	post := extractFeishuContent("post", `{"zh_cn":{"title":"日报","content":[[{"tag":"text","text":"完成"}]]}}`)
-	if post != "日报 完成" {
-		t.Fatalf("extractFeishuContent(post) = %q, want 日报 完成", post)
+	post := extractFeishuContent("post", `{"zh_cn":{"title":"Daily Report","content":[[{"tag":"text","text":"Done"}]]}}`)
+	if post != "Daily Report Done" {
+		t.Fatalf("extractFeishuContent(post) = %q, want Daily Report Done", post)
 	}
 
-	interactive := extractFeishuContent("interactive", `{"header":{"title":{"content":"告警"}},"elements":[{"tag":"markdown","content":"请处理"}]}`)
-	if interactive != "告警 请处理" {
-		t.Fatalf("extractFeishuContent(interactive) = %q, want 告警 请处理", interactive)
+	interactive := extractFeishuContent("interactive", `{"header":{"title":{"content":"Alert"}},"elements":[{"tag":"markdown","content":"Please handle this"}]}`)
+	if interactive != "Alert Please handle this" {
+		t.Fatalf("extractFeishuContent(interactive) = %q, want Alert Please handle this", interactive)
 	}
 }
 
@@ -309,6 +309,44 @@ func TestBuildFeishuOutboundContent(t *testing.T) {
 	}
 }
 
+func TestBuildFeishuToolResultCard(t *testing.T) {
+	content, err := buildFeishuToolResultCard("{\"name\":\"screenshot\",\"content\":\"very long body\"}")
+	if err != nil {
+		t.Fatalf("buildFeishuToolResultCard() error = %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(content), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if header, ok := body["header"].(map[string]any); !ok || header["template"] != "blue" {
+		t.Fatalf("header = %#v, want blue template", body["header"])
+	}
+	elements, ok := body["elements"].([]any)
+	if !ok || len(elements) != 2 {
+		t.Fatalf("elements = %#v, want 2 elements", body["elements"])
+	}
+	panel, ok := elements[1].(map[string]any)
+	if !ok || panel["tag"] != "collapsible_panel" {
+		t.Fatalf("panel = %#v, want collapsible_panel", elements[1])
+	}
+	if expanded, ok := panel["expanded"].(bool); !ok || expanded {
+		t.Fatalf("panel.expanded = %#v, want false", panel["expanded"])
+	}
+	panelElements, ok := panel["elements"].([]any)
+	if !ok || len(panelElements) != 1 {
+		t.Fatalf("panel.elements = %#v, want one markdown element", panel["elements"])
+	}
+	markdown, ok := panelElements[0].(map[string]any)
+	if !ok || !strings.Contains(markdown["content"].(string), "screenshot") {
+		t.Fatalf("markdown = %#v, want full tool result content", panelElements[0])
+	}
+	preview, ok := elements[0].(map[string]any)
+	if !ok || preview["tag"] != "markdown" {
+		t.Fatalf("preview = %#v, want markdown summary", elements[0])
+	}
+}
+
 func TestSplitToolCallMessage(t *testing.T) {
 	name, arguments := splitToolCallMessage("read_file({\"path\":\"sessions/a.json\"})")
 	if name != "read_file" {
@@ -328,7 +366,7 @@ func TestPrettyToolCallArguments(t *testing.T) {
 
 func TestFormatToolCallBatch(t *testing.T) {
 	formatted := formatToolCallBatch([]messagebus.Message{{Message: `read_file({"path":"sessions/a.json","start_line":1})`}})
-	if !strings.Contains(formatted, "工具调用中") {
+	if !strings.Contains(formatted, "Tool calls in progress") {
 		t.Fatalf("formatToolCallBatch() missing header: %q", formatted)
 	}
 	if !strings.Contains(formatted, "1. read_file") {

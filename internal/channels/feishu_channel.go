@@ -47,8 +47,11 @@ var (
 	feishuListRe            = regexp.MustCompile(`(?m)^\s*[-*+]\s+`)
 	feishuOrderedListRe     = regexp.MustCompile(`(?m)^\s*\d+\.\s+`)
 	feishuMarkdownLinkRe    = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	feishuWhitespaceRe      = regexp.MustCompile(`\s+`)
 	feishuTextMaxLen        = 200
 	feishuPostMaxLen        = 2000
+	feishuToolPreviewMaxLen = 120
+	feishuToolDetailMaxLen  = 12000
 	feishuToolCallDebounce  = 2 * time.Second
 	feishuImageExts         = map[string]struct{}{
 		".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".bmp": {}, ".webp": {}, ".ico": {}, ".tiff": {}, ".tif": {},
@@ -157,6 +160,13 @@ func (c *FeishuChannel) Send(message messagebus.Message) error {
 	}
 	if strings.TrimSpace(message.Message) == "" {
 		return nil
+	}
+	if isToolResultMessage(message) {
+		content, err := buildFeishuToolResultCard(message.Message)
+		if err != nil {
+			return err
+		}
+		return c.sendMessage(receiveIDType, message.ChatID, larkim.MsgTypeInteractive, content)
 	}
 
 	messageType, content, err := buildFeishuOutboundContent(message.Message)
@@ -623,8 +633,80 @@ func buildFeishuOutboundContent(content string) (string, string, error) {
 	}
 }
 
+func isToolResultMessage(message messagebus.Message) bool {
+	if message.Metadata == nil {
+		return false
+	}
+	return message.Metadata["message_kind"] == "tool_result"
+}
+
+func buildFeishuToolResultCard(content string) (string, error) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return "", fmt.Errorf("feishu tool result content is empty")
+	}
+
+	detail := trimmed
+	if len(detail) > feishuToolDetailMaxLen {
+		detail = detail[:feishuToolDetailMaxLen] + "\n\n... output truncated ..."
+	}
+
+	preview := singleLinePreview(trimmed, feishuToolPreviewMaxLen)
+	card := map[string]any{
+		"config": map[string]any{
+			"wide_screen_mode": true,
+		},
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag":     "plain_text",
+				"content": "Tool Output",
+			},
+			"template": "blue",
+		},
+		"elements": []any{
+			map[string]any{
+				"tag":     "markdown",
+				"content": preview,
+			},
+			map[string]any{
+				"tag":      "collapsible_panel",
+				"expanded": false,
+				"header": map[string]any{
+					"title": map[string]any{
+						"tag":     "plain_text",
+						"content": "Click to view the full output",
+					},
+				},
+				"elements": []any{
+					map[string]any{
+						"tag":     "markdown",
+						"content": "```json\n" + detail + "\n```",
+					},
+				},
+			},
+		},
+	}
+
+	encoded, err := json.Marshal(card)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func singleLinePreview(content string, maxLen int) string {
+	collapsed := strings.TrimSpace(feishuWhitespaceRe.ReplaceAllString(content, " "))
+	if maxLen <= 0 || len(collapsed) <= maxLen {
+		return collapsed
+	}
+	if maxLen <= 3 {
+		return collapsed[:maxLen]
+	}
+	return collapsed[:maxLen-3] + "..."
+}
+
 func formatToolCallBatch(messages []messagebus.Message) string {
-	lines := []string{"工具调用中"}
+	lines := []string{"Tool calls in progress"}
 	for index, message := range messages {
 		name, arguments := splitToolCallMessage(message.Message)
 		if name == "" {

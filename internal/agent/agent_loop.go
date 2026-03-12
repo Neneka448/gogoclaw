@@ -22,7 +22,7 @@ type agentLoop struct {
 }
 
 const newSessionCommand = "/new"
-const newSessionReply = "🎸新会话已启动"
+const newSessionReply = "🎸A new session has started"
 
 func NewAgentLoop(context context.SystemContext) AgentLoop {
 	return &agentLoop{
@@ -245,7 +245,23 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 
 func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages []Openai.ChatCompletionMessage) error {
 	for _, message := range messages {
-		if err := al.publishOutboundMessage(source, message, ""); err != nil {
+		outbound := cloneMetadata(source.Metadata)
+		if outbound == nil {
+			outbound = make(map[string]string, 1)
+		}
+		outbound["message_kind"] = "tool_result"
+		if err := al.context.MessageBus.Put(messagebus.Message{
+			ChannelID:    source.ChannelID,
+			Message:      message.Content,
+			MessageID:    source.MessageID,
+			MessageType:  source.MessageType,
+			ChatID:       source.ChatID,
+			SenderID:     source.SenderID,
+			MediaPaths:   cloneMediaPaths(source.MediaPaths),
+			ReplyTo:      source.ReplyTo,
+			Metadata:     outbound,
+			FinishReason: "",
+		}, messagebus.OutboundQueue); err != nil {
 			return err
 		}
 	}

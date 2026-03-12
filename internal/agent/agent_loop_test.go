@@ -176,6 +176,9 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 		if message.FinishReason != "" {
 			t.Fatalf("second message.FinishReason = %q, want empty", message.FinishReason)
 		}
+		if message.Metadata["message_kind"] != "tool_result" {
+			t.Fatalf("second message.Metadata[message_kind] = %q, want tool_result", message.Metadata["message_kind"])
+		}
 		if message.MessageType != inboundMessage.MessageType {
 			t.Fatalf("second message.MessageType = %q, want %q", message.MessageType, inboundMessage.MessageType)
 		}
@@ -392,7 +395,7 @@ func TestAgentLoopInjectsSkillSystemPrompt(t *testing.T) {
 		ChannelID: "test-channel",
 		ChatID:    "chat-1",
 		SenderID:  "user-1",
-		Message:   "帮我总结这篇文章",
+		Message:   "Please summarize this article",
 	}
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
 		t.Fatalf("ProcessMessage() error = %v", err)
