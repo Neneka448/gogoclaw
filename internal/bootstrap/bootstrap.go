@@ -4,9 +4,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Neneka448/gogoclaw/internal/agent"
 	"github.com/Neneka448/gogoclaw/internal/channels"
 	"github.com/Neneka448/gogoclaw/internal/config"
-	"github.com/Neneka448/gogoclaw/internal/context"
+	appcontext "github.com/Neneka448/gogoclaw/internal/context"
+	"github.com/Neneka448/gogoclaw/internal/cron"
 	"github.com/Neneka448/gogoclaw/internal/gateway"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -57,8 +59,18 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 			return nil, err
 		}
 	}
+	cronLocation, err := time.LoadLocation(strings.TrimSpace(sysConfig.Cron.Timezone))
+	if err != nil {
+		return nil, err
+	}
+	cronManager := cron.NewCronManager(cronLocation)
 
-	context := context.SystemContext{
+	var sysContext appcontext.SystemContext
+	cronService := cron.NewCronService(profile.Workspace, cronManager, func(request cron.ExecutionRequest) error {
+		return executeCronRequest(sysContext, sysConfig, profile.Workspace, skillRegistry, request)
+	}, cronLocation)
+
+	sysContext = appcontext.SystemContext{
 		MessageBus:      messageBus,
 		Provider:        llmProvider,
 		TextEmbedding:   textEmbeddingProvider,
@@ -70,26 +82,58 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		ChannelRegistry: channelRegistry,
 		SessionManager:  session.NewSessionManager(profile.Workspace),
 		VectorStore:     vectorstore.NewSQLiteVecService(profile.Workspace, "default", *embeddingProfile),
+		CronService:     cronService,
+		CronEnabled:     sysConfig.Cron.Enabled,
 	}
-	if err := context.ToolRegistry.RegisterTool("read_file", tools.NewReadFileTool(profile.Workspace)); err != nil {
-		return nil, err
-	}
-	if err := context.ToolRegistry.RegisterTool("list_dir", tools.NewListDirTool(profile.Workspace)); err != nil {
-		return nil, err
-	}
-	if err := context.ToolRegistry.RegisterTool("terminal", tools.NewTerminalTool(profile.Workspace, resolveToolTimeout(sysConfig.Tools, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
-		return nil, err
-	}
-	if err := context.ToolRegistry.RegisterTool("message", tools.NewMessageTool(messageBus)); err != nil {
-		return nil, err
-	}
-	if err := context.ToolRegistry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
+	if err := registerBuiltinTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus); err != nil {
 		return nil, err
 	}
 
-	gateway := gateway.NewGateway(context)
+	gateway := gateway.NewGateway(sysContext)
 
 	return &gateway, nil
+}
+
+func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus) error {
+	if err := registry.RegisterTool("read_file", tools.NewReadFileTool(workspace)); err != nil {
+		return err
+	}
+	if err := registry.RegisterTool("list_dir", tools.NewListDirTool(workspace)); err != nil {
+		return err
+	}
+	if err := registry.RegisterTool("terminal", tools.NewTerminalTool(workspace, resolveToolTimeout(sysConfig.Tools, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
+		return err
+	}
+	if err := registry.RegisterTool("message", tools.NewMessageTool(bus)); err != nil {
+		return err
+	}
+	if err := registry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func executeCronRequest(baseContext appcontext.SystemContext, sysConfig *config.SysConfig, workspace string, skillRegistry skills.Registry, request cron.ExecutionRequest) error {
+	tempBus := messagebus.NewMessageBus()
+	defer tempBus.Close()
+	tempTools := tools.NewToolRegistry()
+	if err := registerBuiltinTools(tempTools, workspace, sysConfig, skillRegistry, tempBus); err != nil {
+		return err
+	}
+	cronContext := baseContext
+	cronContext.MessageBus = tempBus
+	cronContext.ToolRegistry = tempTools
+	cronContext.ChannelRegistry = nil
+
+	message := messagebus.Message{
+		ChannelID:   "cron",
+		ChatID:      strings.TrimPrefix(request.SessionID, "cron:"),
+		SenderID:    request.CronID,
+		MessageType: "cron",
+		Message:     request.Prompt,
+		Metadata:    request.Metadata,
+	}
+	return agent.NewAgentLoop(cronContext).ProcessMessage(message)
 }
 
 func resolveToolTimeout(configs []config.ToolConfig, name string, defaultTimeout time.Duration) time.Duration {

@@ -94,7 +94,8 @@ type ToolConfig struct {
 }
 
 type CronConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled  bool   `json:"enabled"`
+	Timezone string `json:"timezone"`
 }
 
 func CreateDefaultConfig() SysConfig {
@@ -167,7 +168,8 @@ func CreateDefaultConfig() SysConfig {
 		},
 		Tools: []ToolConfig{},
 		Cron: CronConfig{
-			Enabled: true,
+			Enabled:  true,
+			Timezone: "Europe/London",
 		},
 	}
 }

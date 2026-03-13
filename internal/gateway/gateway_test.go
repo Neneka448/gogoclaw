@@ -8,6 +8,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/channels"
 	appcontext "github.com/Neneka448/gogoclaw/internal/context"
+	"github.com/Neneka448/gogoclaw/internal/cron"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 )
 
@@ -141,6 +142,86 @@ type channelsTestChannel struct {
 	received []messagebus.Message
 }
 
+type fakeGatewayCronManager struct {
+	startCalls int
+	stopCalls  int
+}
+
+type fakeGatewayCronService struct {
+	manager   *fakeGatewayCronManager
+	loadCalls int
+	loadErr   error
+}
+
+func (manager *fakeGatewayCronManager) RegisterCron(cronTask cron.Cron) error {
+	return nil
+}
+
+func (manager *fakeGatewayCronManager) GetCron(cronID string) (cron.Cron, error) {
+	return nil, cron.ErrCronNotFound
+}
+
+func (manager *fakeGatewayCronManager) DeleteCron(cronID string) error {
+	return nil
+}
+
+func (manager *fakeGatewayCronManager) Start() error {
+	manager.startCalls++
+	return nil
+}
+
+func (manager *fakeGatewayCronManager) Stop() error {
+	manager.stopCalls++
+	return nil
+}
+
+func (service *fakeGatewayCronService) EnsureRoot() error {
+	return nil
+}
+
+func (service *fakeGatewayCronService) LoadAll() error {
+	service.loadCalls++
+	return service.loadErr
+}
+
+func (service *fakeGatewayCronService) Start() error {
+	if service.manager == nil {
+		return nil
+	}
+	return service.manager.Start()
+}
+
+func (service *fakeGatewayCronService) Stop() error {
+	if service.manager == nil {
+		return nil
+	}
+	return service.manager.Stop()
+}
+
+func (service *fakeGatewayCronService) ListCrons() ([]cron.StoredCron, error) {
+	return nil, nil
+}
+
+func (service *fakeGatewayCronService) GetCron(cronID string) (*cron.StoredCron, error) {
+	return nil, cron.ErrCronNotFound
+}
+
+func (service *fakeGatewayCronService) CreateCron(input cron.UpsertCronInput) (*cron.StoredCron, error) {
+	return nil, nil
+}
+
+func (service *fakeGatewayCronService) UpdateCron(input cron.UpsertCronInput) (*cron.StoredCron, error) {
+	return nil, nil
+}
+
+func (service *fakeGatewayCronService) DeleteCron(cronID string) error {
+	return nil
+}
+
+func (service *fakeGatewayCronService) ExecuteCron(cronID string) error {
+	return nil
+}
+
 func (c *channelsTestChannel) Name() string {
 	return c.name
 }
@@ -167,5 +248,34 @@ func osStderrSwap(buffer *bytes.Buffer) func() {
 	stderrWriter = buffer
 	return func() {
 		stderrWriter = original
+	}
+}
+
+func TestGatewayStartsAndStopsCronManager(t *testing.T) {
+	bus := messagebus.NewMessageBus()
+	registry := channels.NewRegistry()
+	manager := &fakeGatewayCronManager{}
+	service := &fakeGatewayCronService{manager: manager}
+
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:      bus,
+		ChannelRegistry: registry,
+		CronService:     service,
+		CronEnabled:     true,
+	})
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if service.loadCalls != 1 {
+		t.Fatalf("service.loadCalls = %d, want 1", service.loadCalls)
+	}
+	if manager.startCalls != 1 {
+		t.Fatalf("manager.startCalls = %d, want 1", manager.startCalls)
+	}
+	if err := gw.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if manager.stopCalls != 1 {
+		t.Fatalf("manager.stopCalls = %d, want 1", manager.stopCalls)
 	}
 }

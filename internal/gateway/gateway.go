@@ -124,8 +124,32 @@ func (g *gateway) Start() error {
 		}
 	}
 
+	if g.context.CronService != nil && g.context.CronEnabled {
+		if err := g.context.CronService.LoadAll(); err != nil {
+			if g.context.VectorStore != nil {
+				_ = g.context.VectorStore.Stop()
+			}
+			g.mu.Lock()
+			g.started = false
+			g.mu.Unlock()
+			return err
+		}
+		if err := g.context.CronService.Start(); err != nil {
+			if g.context.VectorStore != nil {
+				_ = g.context.VectorStore.Stop()
+			}
+			g.mu.Lock()
+			g.started = false
+			g.mu.Unlock()
+			return err
+		}
+	}
+
 	if g.context.ChannelRegistry != nil {
 		if err := g.context.ChannelRegistry.StartAll(); err != nil {
+			if g.context.CronService != nil {
+				_ = g.context.CronService.Stop()
+			}
 			if g.context.VectorStore != nil {
 				_ = g.context.VectorStore.Stop()
 			}
@@ -138,6 +162,9 @@ func (g *gateway) Start() error {
 
 	inboundQueue, err := g.context.MessageBus.Get(messagebus.InboundQueue)
 	if err != nil {
+		if g.context.CronService != nil {
+			_ = g.context.CronService.Stop()
+		}
 		if g.context.VectorStore != nil {
 			_ = g.context.VectorStore.Stop()
 		}
@@ -148,6 +175,9 @@ func (g *gateway) Start() error {
 	}
 	outboundQueue, err := g.context.MessageBus.Get(messagebus.OutboundQueue)
 	if err != nil {
+		if g.context.CronService != nil {
+			_ = g.context.CronService.Stop()
+		}
 		if g.context.VectorStore != nil {
 			_ = g.context.VectorStore.Stop()
 		}
@@ -192,6 +222,9 @@ func (g *gateway) consumeOutboundMessages(outboundQueue <-chan messagebus.Messag
 			if !ok {
 				return
 			}
+			if msg.Metadata["source"] == "cron" {
+				continue
+			}
 			if err := g.dispatchOutboundMessage(msg); err != nil {
 				g.logBackgroundError("outbound", msg, err)
 			}
@@ -213,6 +246,11 @@ func (g *gateway) Stop() error {
 	}
 	if g.context.ChannelRegistry != nil {
 		if err := g.context.ChannelRegistry.StopAll(); err != nil {
+			return err
+		}
+	}
+	if g.context.CronService != nil {
+		if err := g.context.CronService.Stop(); err != nil {
 			return err
 		}
 	}

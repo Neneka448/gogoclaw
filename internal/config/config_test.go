@@ -57,4 +57,11 @@ func TestNewConfigManagerLoadsConfig(t *testing.T) {
 	if embeddingProvider.Name != "voyageai" {
 		t.Fatalf("embeddingProvider.Name = %q, want voyageai", embeddingProvider.Name)
 	}
+	loadedConfig, err := manager.GetConfig()
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if loadedConfig.Cron.Timezone != "Europe/London" {
+		t.Fatalf("Cron.Timezone = %q, want Europe/London", loadedConfig.Cron.Timezone)
+	}
 }
