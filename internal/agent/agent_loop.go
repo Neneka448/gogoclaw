@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -110,10 +111,7 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 			return err
 		}
 
-		toolResponses, err := al.executeToolCalls(response.GetToolCalls())
-		if err != nil {
-			return err
-		}
+		toolResponses := al.executeToolCalls(response.GetToolCalls())
 		if err := currentSession.AppendMessages(executedMessagesToChatMessages(toolResponses)); err != nil {
 			return err
 		}
@@ -170,36 +168,56 @@ type executedToolMessage struct {
 	SuppressOutboundResult bool
 }
 
-func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) ([]executedToolMessage, error) {
+func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) []executedToolMessage {
 	messages := make([]executedToolMessage, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
 		toolDescriptor, err := al.context.ToolRegistry.GetTool(toolCall.Name)
 		if err != nil {
-			return nil, err
+			messages = append(messages, executedToolMessage{Message: buildToolCallOutputMessage(toolCall, buildToolExecutionErrorOutput(toolCall.Name, err))})
+			continue
 		}
 
 		toolResponse, err := toolDescriptor.Tool.Execute(toolCall.Arguments)
 		if err != nil {
-			return nil, err
+			messages = append(messages, executedToolMessage{Message: buildToolCallOutputMessage(toolCall, buildToolExecutionErrorOutput(toolCall.Name, err))})
+			continue
 		}
 
-		message := Openai.ChatCompletionMessage{Content: toolResponse}
-		if toolCall.ID == "" {
-			message.Role = Openai.ChatMessageRoleFunction
-			message.Name = toolCall.Name
-		} else {
-			message.Role = Openai.ChatMessageRoleTool
-			message.ToolCallID = toolCall.ID
-		}
-
-		executed := executedToolMessage{Message: message}
+		executed := executedToolMessage{Message: buildToolCallOutputMessage(toolCall, toolResponse)}
 		if suppressor, ok := toolDescriptor.Tool.(toolspkg.OutboundSuppressionTool); ok {
 			executed.SuppressOutboundResult = suppressor.SuppressToolResultOutbound()
 		}
 		messages = append(messages, executed)
 	}
 
-	return messages, nil
+	return messages
+}
+
+func buildToolCallOutputMessage(toolCall provider.LLMToolCall, content string) Openai.ChatCompletionMessage {
+	message := Openai.ChatCompletionMessage{Content: content}
+	if toolCall.ID == "" {
+		message.Role = Openai.ChatMessageRoleFunction
+		message.Name = toolCall.Name
+		return message
+	}
+
+	message.Role = Openai.ChatMessageRoleTool
+	message.ToolCallID = toolCall.ID
+	return message
+}
+
+func buildToolExecutionErrorOutput(toolName string, err error) string {
+	payload := outboundToolPayload{
+		Content: "Tool " + toolName + " failed: " + err.Error(),
+	}
+	raw, marshalErr := json.Marshal(map[string]string{
+		"content": payload.Content,
+		"error":   err.Error(),
+	})
+	if marshalErr != nil {
+		return fmt.Sprintf("{\"content\":%q,\"error\":%q}", payload.Content, err.Error())
+	}
+	return string(raw)
 }
 
 func executedMessagesToChatMessages(executed []executedToolMessage) []Openai.ChatCompletionMessage {

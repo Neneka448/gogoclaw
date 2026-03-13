@@ -35,6 +35,47 @@ func TestSessionRespectsMemoryWindow(t *testing.T) {
 	}
 }
 
+func TestSessionBacktracksWindowToIncludeAssistantToolCall(t *testing.T) {
+	manager := NewSessionManager(t.TempDir())
+	session, err := manager.GetOrCreateSession("session-1", "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := session.AppendMessages([]openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "hello"},
+		{
+			Role: openai.ChatMessageRoleAssistant,
+			ToolCalls: []openai.ToolCall{{
+				ID:   "call_1",
+				Type: openai.ToolTypeFunction,
+				Function: openai.FunctionCall{
+					Name:      "read_file",
+					Arguments: `{"path":"README.md"}`,
+				},
+			}},
+		},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "call_1", Content: `{"content":"ok"}`},
+		{Role: openai.ChatMessageRoleAssistant, Content: "done"},
+	}); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
+	}
+
+	messages := session.GetMessages(2)
+
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3", len(messages))
+	}
+	if messages[0].Role != openai.ChatMessageRoleAssistant || len(messages[0].ToolCalls) != 1 {
+		t.Fatalf("messages[0] = %#v, want assistant tool call", messages[0])
+	}
+	if messages[1].Role != openai.ChatMessageRoleTool || messages[1].ToolCallID != "call_1" {
+		t.Fatalf("messages[1] = %#v, want matching tool result", messages[1])
+	}
+	if messages[2].Content != "done" {
+		t.Fatalf("messages[2] = %#v, want final assistant reply", messages[2])
+	}
+}
+
 func TestSessionReturnsCopies(t *testing.T) {
 	manager := NewSessionManager(t.TempDir())
 	session, err := manager.GetOrCreateSession("session-1", "user-1")

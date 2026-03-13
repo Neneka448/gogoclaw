@@ -182,8 +182,39 @@ func (session *fileSession) GetMessages(memoryWindow int) []openai.ChatCompletio
 	if memoryWindow > 0 && len(session.data.Messages) > memoryWindow {
 		start = len(session.data.Messages) - memoryWindow
 	}
+	start = normalizeWindowStart(session.data.Messages, start)
 
 	return cloneMessages(session.data.Messages[start:])
+}
+
+func normalizeWindowStart(messages []openai.ChatCompletionMessage, start int) int {
+	if start <= 0 || start >= len(messages) {
+		return start
+	}
+	if !isToolMessage(messages[start]) {
+		return start
+	}
+
+	probe := start
+	for probe > 0 && isToolMessage(messages[probe]) {
+		probe--
+	}
+	if isAssistantToolCallMessage(messages[probe]) {
+		return probe
+	}
+
+	return start
+}
+
+func isToolMessage(message openai.ChatCompletionMessage) bool {
+	return message.Role == openai.ChatMessageRoleTool
+}
+
+func isAssistantToolCallMessage(message openai.ChatCompletionMessage) bool {
+	if message.Role != openai.ChatMessageRoleAssistant {
+		return false
+	}
+	return len(message.ToolCalls) > 0 || message.FunctionCall != nil
 }
 
 func (session *fileSession) AppendMessage(message openai.ChatCompletionMessage) error {

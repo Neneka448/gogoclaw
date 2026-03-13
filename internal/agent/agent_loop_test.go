@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -33,9 +34,13 @@ func (provider *fakeProvider) ChatCompletion(request openai.ChatCompletionReques
 
 type fakeTool struct {
 	result string
+	err    error
 }
 
 func (tool fakeTool) Execute(args string) (string, error) {
+	if tool.err != nil {
+		return "", tool.err
+	}
 	return tool.result, nil
 }
 
@@ -52,7 +57,11 @@ func (registry *fakeToolRegistry) RegisterTool(name string, tool tools.ToolDescr
 }
 
 func (registry *fakeToolRegistry) GetTool(name string) (tools.ToolDescriptor, error) {
-	return registry.tools[name], nil
+	tool, ok := registry.tools[name]
+	if !ok {
+		return tools.ToolDescriptor{}, errors.New("tool not found: " + name)
+	}
+	return tool, nil
 }
 
 func (registry *fakeToolRegistry) GetAllTools() []tools.ToolDescriptor {
@@ -378,6 +387,109 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 	}
 	if message.Message != want {
 		t.Fatalf("message.Message = %q, want %q", message.Message, want)
+	}
+}
+
+func TestAgentLoopContinuesAfterToolExecutionError(t *testing.T) {
+	configPath := writeTestConfig(t)
+	sessionManager := session.NewSessionManager(t.TempDir())
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
+				ID:        "call_1",
+				Name:      "search_docs",
+				Arguments: `{"query":"go"}`,
+				Type:      string(openai.ToolTypeFunction),
+			}}},
+			provider.NormalizedResponse{Content: "recovered"},
+		},
+	}
+
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"search_docs": {
+			Name: "search_docs",
+			Tool: fakeTool{err: errors.New("boom")},
+			ToolForLLM: openai.Tool{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name: "search_docs",
+				},
+			},
+		},
+	}}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		ConfigManager:  config.NewConfigManager(configPath),
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+	})
+
+	inboundMessage := messagebus.Message{
+		ChannelID:   "test-channel",
+		Message:     "hello",
+		MessageID:   "msg-1",
+		MessageType: "group",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("len(providerStub.requests) = %d, want 2", len(providerStub.requests))
+	}
+	secondRequest := providerStub.requests[1]
+	if len(secondRequest.Messages) != 3 {
+		t.Fatalf("len(secondRequest.Messages) = %d, want 3", len(secondRequest.Messages))
+	}
+	if secondRequest.Messages[2].Role != openai.ChatMessageRoleTool {
+		t.Fatalf("secondRequest.Messages[2].Role = %q, want tool", secondRequest.Messages[2].Role)
+	}
+	if secondRequest.Messages[2].ToolCallID != "call_1" {
+		t.Fatalf("secondRequest.Messages[2].ToolCallID = %q, want call_1", secondRequest.Messages[2].ToolCallID)
+	}
+	if !strings.Contains(secondRequest.Messages[2].Content, "\"error\":\"boom\"") {
+		t.Fatalf("secondRequest.Messages[2].Content = %q, want serialized tool error", secondRequest.Messages[2].Content)
+	}
+
+	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID(inboundMessage.ChannelID, inboundMessage.ChatID), inboundMessage.SenderID)
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	messages := currentSession.GetMessages(10)
+	if len(messages) != 4 {
+		t.Fatalf("len(messages) = %d, want 4", len(messages))
+	}
+	if messages[2].Role != openai.ChatMessageRoleTool || messages[2].ToolCallID != "call_1" {
+		t.Fatalf("messages[2] = %#v, want tool error output", messages[2])
+	}
+	if !strings.Contains(messages[2].Content, "Tool search_docs failed: boom") {
+		t.Fatalf("messages[2].Content = %q, want readable tool error", messages[2].Content)
+	}
+	if messages[3].Content != "recovered" {
+		t.Fatalf("messages[3].Content = %q, want recovered", messages[3].Content)
+	}
+
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+	<-outboundQueue
+	errorMessage := <-outboundQueue
+	if errorMessage.Metadata["message_kind"] != "tool_result" {
+		t.Fatalf("errorMessage.Metadata[message_kind] = %q, want tool_result", errorMessage.Metadata["message_kind"])
+	}
+	if errorMessage.Message != "Tool search_docs failed: boom" {
+		t.Fatalf("errorMessage.Message = %q, want readable tool error", errorMessage.Message)
+	}
+	finalMessage := <-outboundQueue
+	if finalMessage.Message != "recovered" {
+		t.Fatalf("finalMessage.Message = %q, want recovered", finalMessage.Message)
 	}
 }
 
