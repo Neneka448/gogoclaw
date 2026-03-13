@@ -24,8 +24,8 @@ func TestSQLiteVecServiceStartCreatesDatabase(t *testing.T) {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
 	defer db.Close()
-	assertTableExists(t, db, "sqlite_vec_profiles")
-	assertTableExists(t, db, "sqlite_vec_tables")
+	assertTableExists(t, db, sqliteVecProfilesTableName)
+	assertTableExists(t, db, sqliteVecTablesTableName)
 	if err := service.Stop(); err != nil {
 		t.Fatalf("Stop() error = %v", err)
 	}
@@ -63,11 +63,11 @@ func TestSQLiteVecServiceInitializesProfileRegistryAndMetadataTables(t *testing.
 	}
 	defer db.Close()
 
-	assertTableExists(t, db, "sqlite_vec_my_profile_text_records")
-	assertTableExists(t, db, "sqlite_vec_my_profile_modal_records")
+	assertTableExists(t, db, "gogoclaw_vec_my_profile_text_records")
+	assertTableExists(t, db, "gogoclaw_vec_my_profile_modal_records")
 
 	var textDim int
-	if err := db.QueryRow(`select text_dimensions from sqlite_vec_profiles where name = ?`, "my-profile").Scan(&textDim); err != nil {
+	if err := db.QueryRow(`select text_dimensions from gogoclaw_vec_profiles where name = ?`, "my-profile").Scan(&textDim); err != nil {
 		t.Fatalf("QueryRow(text_dimensions) error = %v", err)
 	}
 	if textDim != 1024 {
@@ -75,11 +75,11 @@ func TestSQLiteVecServiceInitializesProfileRegistryAndMetadataTables(t *testing.
 	}
 
 	var vectorTable string
-	if err := db.QueryRow(`select vector_table from sqlite_vec_tables where profile_name = ? and store_kind = ?`, "my-profile", "text").Scan(&vectorTable); err != nil {
+	if err := db.QueryRow(`select vector_table from gogoclaw_vec_tables where profile_name = ? and store_kind = ?`, "my-profile", "text").Scan(&vectorTable); err != nil {
 		t.Fatalf("QueryRow(vector_table) error = %v", err)
 	}
-	if vectorTable != "sqlite_vec_my_profile_text_vectors" {
-		t.Fatalf("vector_table = %q, want sqlite_vec_my_profile_text_vectors", vectorTable)
+	if vectorTable != "gogoclaw_vec_my_profile_text_vectors" {
+		t.Fatalf("vector_table = %q, want gogoclaw_vec_my_profile_text_vectors", vectorTable)
 	}
 }
 

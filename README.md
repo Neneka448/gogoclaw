@@ -84,14 +84,16 @@ Build from source:
 ```bash
 git clone https://github.com/Neneka448/gogoclaw.git
 cd gogoclaw
-go build -o gogoclaw .
+CGO_ENABLED=1 go build -o gogoclaw .
 ```
 
 Or use the provided Make target:
 
 ```bash
-make build
+CGO_ENABLED=1 make build
 ```
+
+If you hit Ubuntu build errors related to `sqliteConn.LoadExtension`, see [docs/troubleshooting.md](/Users/chenkaiming/project/gogoclaw/docs/troubleshooting.md).
 
 Install the sqlite-vec loadable extension into the default workspace location:
 
@@ -104,6 +106,10 @@ Install it into a custom workspace:
 ```bash
 make sqlite-vec-install WORKSPACE=/path/to/workspace
 ```
+
+## Troubleshooting
+
+- [docs/troubleshooting.md](/Users/chenkaiming/project/gogoclaw/docs/troubleshooting.md): Ubuntu build failures, including `SQLiteConn.LoadExtension undefined` when cgo is disabled
 
 ## Quick Start
 

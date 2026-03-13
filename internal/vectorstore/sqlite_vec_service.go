@@ -23,6 +23,10 @@ const (
 	sqliteVecExtensionBaseName   = "vec0"
 	sqliteVecExtensionPathEnvVar = "GOGOCLAW_SQLITE_VEC_PATH"
 	defaultProfileName           = "default"
+	sqliteVecMetaTableName       = "gogoclaw_vec_service_meta"
+	sqliteVecProfilesTableName   = "gogoclaw_vec_profiles"
+	sqliteVecTablesTableName     = "gogoclaw_vec_tables"
+	sqliteVecObjectPrefix        = "gogoclaw_vec"
 )
 
 type StoreKind string
@@ -290,7 +294,7 @@ func (service *sqliteVecService) loadSQLiteVecExtension(db *sql.DB) (bool, error
 
 func initializeSQLiteVecMetadata(db *sql.DB) error {
 	if _, err := db.Exec(`
-		create table if not exists sqlite_vec_service_meta (
+		create table if not exists gogoclaw_vec_service_meta (
 			key text primary key,
 			value text not null
 		)
@@ -298,7 +302,7 @@ func initializeSQLiteVecMetadata(db *sql.DB) error {
 		return fmt.Errorf("initialize sqlite-vec metadata: %w", err)
 	}
 	if _, err := db.Exec(`
-		create table if not exists sqlite_vec_profiles (
+		create table if not exists gogoclaw_vec_profiles (
 			name text primary key,
 			workspace_path text not null,
 			text_model text not null default '',
@@ -313,7 +317,7 @@ func initializeSQLiteVecMetadata(db *sql.DB) error {
 		return fmt.Errorf("initialize sqlite-vec profiles: %w", err)
 	}
 	if _, err := db.Exec(`
-		create table if not exists sqlite_vec_tables (
+		create table if not exists gogoclaw_vec_tables (
 			profile_name text not null,
 			store_kind text not null,
 			vector_table text not null,
@@ -323,7 +327,7 @@ func initializeSQLiteVecMetadata(db *sql.DB) error {
 			created_at text not null default current_timestamp,
 			updated_at text not null default current_timestamp,
 			primary key (profile_name, store_kind),
-			foreign key (profile_name) references sqlite_vec_profiles(name)
+			foreign key (profile_name) references gogoclaw_vec_profiles(name)
 		)
 	`); err != nil {
 		return fmt.Errorf("initialize sqlite-vec table registry: %w", err)
@@ -337,7 +341,7 @@ func (service *sqliteVecService) initializeProfileSchema(db *sql.DB, extensionLo
 	}
 
 	if _, err := db.Exec(`
-		insert into sqlite_vec_profiles (
+		insert into gogoclaw_vec_profiles (
 			name, workspace_path, text_model, text_dimensions, modal_model, modal_dimensions, extension_loaded, updated_at
 		) values (?, ?, ?, ?, ?, ?, ?, current_timestamp)
 		on conflict(name) do update set
@@ -380,8 +384,8 @@ func newProfileStoreDefinition(profileName string, storeKind string, outputDimen
 		ProfileName:     profileName,
 		StoreKind:       storeKind,
 		OutputDimension: maxInt(outputDimension, 0),
-		VectorTableName: fmt.Sprintf("sqlite_vec_%s_%s_vectors", normalizedProfile, normalizedKind),
-		MetadataTable:   fmt.Sprintf("sqlite_vec_%s_%s_records", normalizedProfile, normalizedKind),
+		VectorTableName: fmt.Sprintf("%s_%s_%s_vectors", sqliteVecObjectPrefix, normalizedProfile, normalizedKind),
+		MetadataTable:   fmt.Sprintf("%s_%s_%s_records", sqliteVecObjectPrefix, normalizedProfile, normalizedKind),
 	}
 }
 
@@ -403,7 +407,7 @@ func ensureSQLiteVecProfileStore(db *sql.DB, store profileStoreDefinition, exten
 	}
 
 	if _, err := db.Exec(`
-		insert into sqlite_vec_tables (
+		insert into gogoclaw_vec_tables (
 			profile_name, store_kind, vector_table, metadata_table, output_dimension, extension_loaded, updated_at
 		) values (?, ?, ?, ?, ?, ?, current_timestamp)
 		on conflict(profile_name, store_kind) do update set
@@ -478,7 +482,7 @@ func (service *sqliteVecService) loadProfileStoreDefinition(kind StoreKind) (pro
 	var store profileStoreDefinition
 	if err := service.db.QueryRow(`
 		select profile_name, store_kind, output_dimension, vector_table, metadata_table
-		from sqlite_vec_tables
+		from gogoclaw_vec_tables
 		where profile_name = ? and store_kind = ?
 	`, service.profileName, string(storeKind)).Scan(
 		&store.ProfileName,
