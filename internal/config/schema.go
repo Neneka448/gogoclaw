@@ -7,7 +7,25 @@ type SysConfig struct {
 	Channels  ChannelsConfig   `json:"channels"`
 	Gateway   GatewayConfig    `json:"gateway"`
 	Tools     []ToolConfig     `json:"tools"`
+	MCP       MCPConfig        `json:"mcp"`
 	Cron      CronConfig       `json:"cron"`
+}
+
+type MCPConfig struct {
+	MCPServers map[string]MCPServerConfig `json:"mcpServers"`
+}
+
+type MCPServerConfig struct {
+	Enabled              bool              `json:"enabled"`
+	Command              string            `json:"command"`
+	Args                 []string          `json:"args,omitempty"`
+	Env                  map[string]string `json:"env,omitempty"`
+	Cwd                  string            `json:"cwd,omitempty"`
+	URL                  string            `json:"url"`
+	Headers              map[string]string `json:"headers,omitempty"`
+	Timeout              int               `json:"timeout,omitempty"`
+	KeepAlive            int               `json:"keepAlive,omitempty"`
+	DisableStandaloneSSE bool              `json:"disableStandaloneSSE,omitempty"`
 }
 
 type ChannelsConfig struct {
@@ -167,6 +185,9 @@ func CreateDefaultConfig() SysConfig {
 			},
 		},
 		Tools: []ToolConfig{},
+		MCP: MCPConfig{
+			MCPServers: map[string]MCPServerConfig{},
+		},
 		Cron: CronConfig{
 			Enabled:  true,
 			Timezone: "Europe/London",

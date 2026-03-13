@@ -4,6 +4,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/channels"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/cron"
+	mcppkg "github.com/Neneka448/gogoclaw/internal/mcp"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
@@ -27,4 +28,5 @@ type SystemContext struct {
 	VectorStore     vectorstore.Service
 	CronService     cron.Service
 	CronEnabled     bool
+	MCPService      mcppkg.Service
 }

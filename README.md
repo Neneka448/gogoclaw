@@ -163,6 +163,8 @@ Current user-facing commands:
 - auth: authenticate an OAuth-backed provider, currently Codex
 - agent: send a direct message through the agent runtime
 - gateway: start the long-running channel gateway
+- mcp list: show configured MCP servers and their current status
+- mcp restart --name <server>: reconnect one configured MCP server in a one-shot diagnostic run
 - version: print build metadata
 
 Global flags:
@@ -253,6 +255,33 @@ Example:
       "enable": true
     }
   },
+  "mcp": {
+    "mcpServers": {
+      "filesystem": {
+        "enabled": true,
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/Users/you/.gogoclaw/workspace"
+        ],
+        "env": {
+          "NODE_NO_WARNINGS": "1"
+        },
+        "cwd": "/Users/you/.gogoclaw/workspace"
+      },
+      "docs": {
+        "enabled": true,
+        "url": "http://127.0.0.1:8787/mcp",
+        "headers": {
+          "Authorization": "Bearer <token>"
+        },
+        "timeout": 30,
+        "keepAlive": 15,
+        "disableStandaloneSSE": true
+      }
+    }
+  },
   "tools": []
 }
 ```
@@ -263,6 +292,8 @@ Notes:
 - provider lookup is based on the profile's provider field
 - embedding models are configured separately under the embedding section
 - terminal tool timeout can be configured through the tools array
+- MCP servers are configured under mcp.mcpServers and currently support stdio plus Streamable HTTP
+- MCP HTTP auth is currently static-header based; OAuth and dynamic registration are not implemented
 - if no custom workspace is provided during onboarding, it defaults to <profile>/workspace
 
 ## Workspace Conventions

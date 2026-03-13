@@ -259,6 +259,11 @@ func (g *gateway) Stop() error {
 			return err
 		}
 	}
+	if g.context.MCPService != nil {
+		if err := g.context.MCPService.Close(); err != nil {
+			return err
+		}
+	}
 	if g.context.SessionManager != nil {
 		if err := g.context.SessionManager.Close(); err != nil {
 			return err

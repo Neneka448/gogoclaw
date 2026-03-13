@@ -42,4 +42,7 @@ func TestConfigManagerMergesChannelDefaultsForLegacyConfig(t *testing.T) {
 	if len(config.Embedding.Providers) != 1 || config.Embedding.Providers[0].Name != "voyageai" {
 		t.Fatalf("config.Embedding.Providers = %#v, want default voyageai provider", config.Embedding.Providers)
 	}
+	if config.MCP.MCPServers == nil {
+		t.Fatal("config.MCP.MCPServers = nil, want empty map")
+	}
 }

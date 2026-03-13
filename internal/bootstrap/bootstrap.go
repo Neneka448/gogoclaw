@@ -10,6 +10,7 @@ import (
 	appcontext "github.com/Neneka448/gogoclaw/internal/context"
 	"github.com/Neneka448/gogoclaw/internal/cron"
 	"github.com/Neneka448/gogoclaw/internal/gateway"
+	mcppkg "github.com/Neneka448/gogoclaw/internal/mcp"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
@@ -49,6 +50,10 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	mcpService, err := mcppkg.NewService(profile.Workspace, sysConfig.MCP, mcppkg.Options{FailFast: true})
+	if err != nil {
+		return nil, err
+	}
 	messageBus := messagebus.NewMessageBus()
 	channelRegistry := channels.NewRegistry()
 	if err := channelRegistry.Register(channels.NewCLIChannel(sysConfig.Channels.CLI, nil)); err != nil {
@@ -84,14 +89,29 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		VectorStore:     vectorstore.NewSQLiteVecService(profile.Workspace, "default", *embeddingProfile),
 		CronService:     cronService,
 		CronEnabled:     sysConfig.Cron.Enabled,
+		MCPService:      mcpService,
 	}
-	if err := registerBuiltinTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus); err != nil {
+	if err := registerTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus, mcpService); err != nil {
+		_ = mcpService.Close()
 		return nil, err
 	}
 
 	gateway := gateway.NewGateway(sysContext)
 
 	return &gateway, nil
+}
+
+func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, error) {
+	configManager := config.NewConfigManager(configPath)
+	sysConfig, err := configManager.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	profile, err := configManager.GetAgentProfileConfig("default")
+	if err != nil {
+		return nil, err
+	}
+	return mcppkg.NewService(profile.Workspace, sysConfig.MCP, mcppkg.Options{FailFast: failFast})
 }
 
 func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus) error {
@@ -113,11 +133,26 @@ func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConf
 	return nil
 }
 
+func registerTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, mcpService mcppkg.Service) error {
+	if err := registerBuiltinTools(registry, workspace, sysConfig, skillRegistry, bus); err != nil {
+		return err
+	}
+	if mcpService == nil {
+		return nil
+	}
+	for _, descriptor := range mcpService.ToolDescriptors() {
+		if err := registry.RegisterTool(descriptor.Name, descriptor); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func executeCronRequest(baseContext appcontext.SystemContext, sysConfig *config.SysConfig, workspace string, skillRegistry skills.Registry, request cron.ExecutionRequest) error {
 	tempBus := messagebus.NewMessageBus()
 	defer tempBus.Close()
 	tempTools := tools.NewToolRegistry()
-	if err := registerBuiltinTools(tempTools, workspace, sysConfig, skillRegistry, tempBus); err != nil {
+	if err := registerTools(tempTools, workspace, sysConfig, skillRegistry, tempBus, baseContext.MCPService); err != nil {
 		return err
 	}
 	cronContext := baseContext
