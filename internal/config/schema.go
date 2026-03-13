@@ -7,6 +7,7 @@ type SysConfig struct {
 	Channels  ChannelsConfig   `json:"channels"`
 	Gateway   GatewayConfig    `json:"gateway"`
 	Tools     []ToolConfig     `json:"tools"`
+	Cron      CronConfig       `json:"cron"`
 }
 
 type ChannelsConfig struct {
@@ -92,6 +93,10 @@ type ToolConfig struct {
 	Timeout int    `json:"timeout"`
 }
 
+type CronConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
 func CreateDefaultConfig() SysConfig {
 	return SysConfig{
 		Agents: AgentConfig{
@@ -161,5 +166,8 @@ func CreateDefaultConfig() SysConfig {
 			},
 		},
 		Tools: []ToolConfig{},
+		Cron: CronConfig{
+			Enabled: true,
+		},
 	}
 }
