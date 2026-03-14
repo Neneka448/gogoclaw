@@ -157,6 +157,9 @@ func onboard(ctx *onboardContext) error {
 	if err := workspacepkg.EnsureBootstrapFiles(ctx.Workspace); err != nil {
 		return fmt.Errorf("prepare workspace bootstrap files: %w", err)
 	}
+	if err := workspacepkg.EnsureDefaultSkills(ctx.Workspace); err != nil {
+		return fmt.Errorf("prepare workspace default skills: %w", err)
+	}
 
 	if err := writeConfig(ctx); err != nil {
 		return fmt.Errorf("write config: %w", err)
