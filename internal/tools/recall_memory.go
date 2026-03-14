@@ -57,7 +57,7 @@ func NewRecallMemoryTool(memoryService memory.Service) ToolDescriptor {
 						},
 						"top_k": map[string]any{
 							"type":        "integer",
-							"description": "Maximum number of memories to return. Defaults to 5 if not specified.",
+							"description": "Maximum number of memories to return. Defaults to the configured recall top-k value if not specified (5 in the default configuration).",
 						},
 						"min_similarity": map[string]any{
 							"type":        "number",
