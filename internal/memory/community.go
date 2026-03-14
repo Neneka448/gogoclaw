@@ -45,9 +45,8 @@ func bfs(start string, adjacency map[string][]string, visited map[string]bool) [
 	visited[start] = true
 	var component []string
 
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
+	for head := 0; head < len(queue); head++ {
+		current := queue[head]
 		component = append(component, current)
 
 		for _, neighbor := range adjacency[current] {
@@ -62,7 +61,7 @@ func bfs(start string, adjacency map[string][]string, visited map[string]bool) [
 }
 
 // FindCommunityContaining returns the connected component that contains nodeID,
-// or nil if nodeID is isolated or not present.
+// or nil if nodeID is not present. An isolated node returns a single-element slice.
 func FindCommunityContaining(nodeID string, nodeIDs []string, edges []MemoryEdge) []string {
 	communities := FindConnectedComponents(nodeIDs, edges)
 	for _, community := range communities {

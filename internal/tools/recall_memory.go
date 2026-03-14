@@ -61,7 +61,7 @@ func NewRecallMemoryTool(memoryService memory.Service) ToolDescriptor {
 						},
 						"min_similarity": map[string]any{
 							"type":        "number",
-							"description": "Minimum similarity threshold (0-1). Defaults to 0.6 if not specified.",
+							"description": "Minimum similarity threshold (0-1). Set to 0 to return all results regardless of similarity. Omit or set to a negative value to use the configured default (typically 0.6).",
 						},
 					},
 					"required": []string{"query"},

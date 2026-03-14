@@ -195,7 +195,11 @@ func (s *Store) ListEdgesForNodes(nodeIDs []string) ([]MemoryEdge, error) {
 		if err := rows.Scan(&edge.SourceID, &edge.TargetID, &edge.Weight, &createdAt); err != nil {
 			return nil, err
 		}
-		edge.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		parsedTime, parseErr := time.Parse(time.RFC3339Nano, createdAt)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse edge created_at %q: %w", createdAt, parseErr)
+		}
+		edge.CreatedAt = parsedTime
 		edges = append(edges, edge)
 	}
 	return edges, rows.Err()
@@ -247,8 +251,15 @@ func scanNode(row scannable) (*MemoryNode, error) {
 
 	node.Kind = NodeKind(kindStr)
 	node.Status = NodeStatus(statusStr)
-	node.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-	node.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	var parseErr error
+	node.CreatedAt, parseErr = time.Parse(time.RFC3339Nano, createdAt)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse node created_at %q: %w", createdAt, parseErr)
+	}
+	node.UpdatedAt, parseErr = time.Parse(time.RFC3339Nano, updatedAt)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse node updated_at %q: %w", updatedAt, parseErr)
+	}
 	if sourceIDsJSON != "" {
 		_ = json.Unmarshal([]byte(sourceIDsJSON), &node.SourceNodeIDs)
 	}

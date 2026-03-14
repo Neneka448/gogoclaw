@@ -66,6 +66,9 @@ type SearchResult struct {
 
 var sqliteIdentifierSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
 
+// ThresholdSearchRequest filters search results by a threshold value.
+// For cosine metric, Threshold is interpreted as minimum similarity (1-distance);
+// for other metrics (e.g. L2), Threshold is interpreted as maximum distance.
 type ThresholdSearchRequest struct {
 	StoreKind  StoreKind
 	Query      []float32

@@ -92,10 +92,10 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		CronService:     cronService,
 		CronEnabled:     sysConfig.Cron.Enabled,
 		MCPService:      mcpService,
-		MemoryEnabled:   sysConfig.Memory.Enabled,
+		MemoryEnabled:   sysConfig.Memory.Enabled && textEmbeddingProvider != nil,
 	}
 
-	if sysConfig.Memory.Enabled && textEmbeddingProvider != nil {
+	if sysContext.MemoryEnabled {
 		if err := config.ValidateMemoryConfig(sysConfig.Memory); err != nil {
 			_ = mcpService.Close()
 			return nil, fmt.Errorf("invalid memory config: %w", err)

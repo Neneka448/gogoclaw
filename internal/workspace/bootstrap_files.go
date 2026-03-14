@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -42,7 +43,7 @@ func EnsureBootstrapFiles(workspacePath string) error {
 			return fmt.Errorf("stat bootstrap file %s: %w", targetPath, err)
 		}
 
-		content, err := bootstrapTemplates.ReadFile(filepath.Join("templates", fileName))
+		content, err := bootstrapTemplates.ReadFile(path.Join("templates", fileName))
 		if err != nil {
 			return fmt.Errorf("read embedded bootstrap template %s: %w", fileName, err)
 		}
@@ -73,7 +74,7 @@ func EnsureMemorySkill(workspacePath string) error {
 		return fmt.Errorf("create memory skill directory: %w", err)
 	}
 
-	content, err := bootstrapTemplates.ReadFile(filepath.Join("templates", memorySkillFile))
+	content, err := bootstrapTemplates.ReadFile(path.Join("templates", memorySkillFile))
 	if err != nil {
 		return fmt.Errorf("read memory skill template: %w", err)
 	}
