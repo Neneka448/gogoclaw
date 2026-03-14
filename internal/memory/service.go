@@ -72,6 +72,12 @@ func (s *service) Initialize() error {
 }
 
 func (s *service) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
+	if s.store == nil {
+		if err := s.Initialize(); err != nil {
+			return fmt.Errorf("initialize memory service: %w", err)
+		}
+	}
+
 	sessionContent := formatSessionMessages(messages)
 	if strings.TrimSpace(sessionContent) == "" {
 		return nil
@@ -114,6 +120,12 @@ func (s *service) Recall(queryText string, topK int, minSimilarity float64) ([]M
 	}
 	if minSimilarity < 0 {
 		minSimilarity = s.config.RecallMinSimilarity
+	}
+
+	if s.store == nil {
+		if err := s.Initialize(); err != nil {
+			return nil, fmt.Errorf("initialize memory service: %w", err)
+		}
 	}
 
 	queryEmbedding, err := s.embedQuery(queryText)
