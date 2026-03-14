@@ -426,8 +426,18 @@ func (al *agentLoop) ingestSessionMemory(currentSession session.Session) {
 	if len(messages) == 0 {
 		return
 	}
+	digest := session.MessagesDigest(messages)
+	if digest != "" && digest == currentSession.GetMemoryIngestedDigest() {
+		return
+	}
 	sessionID := currentSession.GetSessionID()
 	if err := al.context.MemoryService.IngestSession(sessionID, messages); err != nil {
 		slog.Error("ingest session memory failed", "session", sessionID, "err", err)
+		return
+	}
+	if digest != "" {
+		if err := currentSession.MarkMemoryIngested(digest); err != nil {
+			slog.Error("mark session memory ingested failed", "session", sessionID, "err", err)
+		}
 	}
 }

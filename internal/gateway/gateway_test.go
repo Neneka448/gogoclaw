@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,7 +51,7 @@ func TestGatewayStartDispatchesOutboundMessages(t *testing.T) {
 	}
 
 	deadline := time.After(2 * time.Second)
-	for len(fake.received) == 0 {
+	for len(fake.snapshotReceived()) == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for outbound dispatch")
@@ -58,8 +60,9 @@ func TestGatewayStartDispatchesOutboundMessages(t *testing.T) {
 		}
 	}
 
-	if fake.received[0].Message != "hello" {
-		t.Fatalf("fake.received[0].Message = %q, want hello", fake.received[0].Message)
+	received := fake.snapshotReceived()
+	if received[0].Message != "hello" {
+		t.Fatalf("received[0].Message = %q, want hello", received[0].Message)
 	}
 }
 
@@ -137,7 +140,11 @@ func TestGatewayCanRestartAfterStop(t *testing.T) {
 	}
 
 	deadline := time.After(2 * time.Second)
-	for len(fake.received) == 0 || fake.received[len(fake.received)-1].Message != "restart" {
+	for {
+		received := fake.snapshotReceived()
+		if len(received) > 0 && received[len(received)-1].Message == "restart" {
+			break
+		}
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for restarted gateway dispatch")
@@ -195,6 +202,7 @@ type channelsTestChannel struct {
 	name     string
 	enabled  bool
 	received []messagebus.Message
+	mu       sync.Mutex
 }
 
 type fakeGatewayCronManager struct {
@@ -213,6 +221,14 @@ type fakeGatewayVectorStore struct {
 
 type fakeGatewayMemoryService struct {
 	initializeCalls int
+	mu              sync.Mutex
+	sessionIDs      []string
+}
+
+type countingSessionManager struct {
+	base      session.SessionManager
+	mu        sync.Mutex
+	listCalls int
 }
 
 type fakeGatewayCronService struct {
@@ -289,6 +305,9 @@ func (service *fakeGatewayMemoryService) Initialize() error {
 }
 
 func (service *fakeGatewayMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	service.sessionIDs = append(service.sessionIDs, sessionID)
 	return nil
 }
 
@@ -298,6 +317,21 @@ func (service *fakeGatewayMemoryService) Recall(queryText string, topK int, minS
 
 func (service *fakeGatewayMemoryService) GetNode(nodeID string) (*memory.MemoryNode, error) {
 	return nil, nil
+}
+
+func (manager *countingSessionManager) GetOrCreateSession(sessionID string, senderID string) (session.Session, error) {
+	return manager.base.GetOrCreateSession(sessionID, senderID)
+}
+
+func (manager *countingSessionManager) ListSessionIDs() ([]string, error) {
+	manager.mu.Lock()
+	manager.listCalls++
+	manager.mu.Unlock()
+	return manager.base.ListSessionIDs()
+}
+
+func (manager *countingSessionManager) Close() error {
+	return manager.base.Close()
 }
 
 func (service *fakeGatewayCronService) EnsureRoot() error {
@@ -364,8 +398,108 @@ func (c *channelsTestChannel) Stop() error {
 }
 
 func (c *channelsTestChannel) Send(message messagebus.Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.received = append(c.received, message)
 	return nil
+}
+
+func (c *channelsTestChannel) snapshotReceived() []messagebus.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]messagebus.Message(nil), c.received...)
+}
+
+type blockingGatewayProvider struct {
+	mu            sync.Mutex
+	requests      []openai.ChatCompletionRequest
+	firstStarted  chan struct{}
+	secondStarted chan struct{}
+	releaseFirst  chan struct{}
+}
+
+type backlogGatewayProvider struct {
+	mu            sync.Mutex
+	requests      []string
+	sharedStarted chan struct{}
+	otherStarted  chan struct{}
+	releaseShared chan struct{}
+}
+
+func newBlockingGatewayProvider() *blockingGatewayProvider {
+	return &blockingGatewayProvider{
+		firstStarted:  make(chan struct{}),
+		secondStarted: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+	}
+}
+
+func newBacklogGatewayProvider() *backlogGatewayProvider {
+	return &backlogGatewayProvider{
+		sharedStarted: make(chan struct{}),
+		otherStarted:  make(chan struct{}),
+		releaseShared: make(chan struct{}),
+	}
+}
+
+func (stub *blockingGatewayProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	stub.mu.Lock()
+	callIndex := len(stub.requests)
+	stub.requests = append(stub.requests, request)
+	stub.mu.Unlock()
+
+	switch callIndex {
+	case 0:
+		close(stub.firstStarted)
+		<-stub.releaseFirst
+	case 1:
+		close(stub.secondStarted)
+	}
+
+	return provider.NormalizedResponse{Content: "done"}, nil
+}
+
+func (stub *blockingGatewayProvider) Requests() []openai.ChatCompletionRequest {
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	requests := make([]openai.ChatCompletionRequest, len(stub.requests))
+	copy(requests, stub.requests)
+	return requests
+}
+
+func (stub *backlogGatewayProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	content := latestUserMessage(request)
+
+	stub.mu.Lock()
+	stub.requests = append(stub.requests, content)
+	stub.mu.Unlock()
+
+	switch content {
+	case "shared-0":
+		close(stub.sharedStarted)
+		<-stub.releaseShared
+	case "other":
+		close(stub.otherStarted)
+	}
+
+	return provider.NormalizedResponse{Content: "done"}, nil
+}
+
+func latestUserMessage(request openai.ChatCompletionRequest) string {
+	for i := len(request.Messages) - 1; i >= 0; i-- {
+		if request.Messages[i].Role == openai.ChatMessageRoleUser {
+			return request.Messages[i].Content
+		}
+	}
+	return ""
+}
+
+func closeIfOpen(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
 }
 
 func osStderrSwap(buffer *bytes.Buffer) func() {
@@ -430,5 +564,254 @@ func TestGatewayStartsAndStopsCronManager(t *testing.T) {
 	}
 	if manager.stopCalls != 1 {
 		t.Fatalf("manager.stopCalls = %d, want 1", manager.stopCalls)
+	}
+}
+
+func TestGatewaySerializesInboundMessagesPerSession(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	providerStub := newBlockingGatewayProvider()
+	sessionManager := session.NewSessionManager(workspace)
+
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ConfigManager:  newGatewayTestConfigManager(t),
+		ToolRegistry:   tools.NewToolRegistry(),
+		SessionManager: sessionManager,
+	})
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := gw.Stop(); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	first := messagebus.Message{ChannelID: "cli", ChatID: "shared", SenderID: "user-1", Message: "first"}
+	second := messagebus.Message{ChannelID: "cli", ChatID: "shared", SenderID: "user-1", Message: "second"}
+	if err := bus.Put(first, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put(first) error = %v", err)
+	}
+	select {
+	case <-providerStub.firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first request")
+	}
+
+	if err := bus.Put(second, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put(second) error = %v", err)
+	}
+	select {
+	case <-providerStub.secondStarted:
+		t.Fatal("second request started before first finished")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(providerStub.releaseFirst)
+	select {
+	case <-providerStub.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second request")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("cli", "shared"), "user-1")
+		if err != nil {
+			t.Fatalf("GetOrCreateSession() error = %v", err)
+		}
+		messages := currentSession.GetMessages(10)
+		if len(messages) == 4 {
+			if messages[0].Content != "first" || messages[1].Content != "done" || messages[2].Content != "second" || messages[3].Content != "done" {
+				t.Fatalf("messages = %#v, want serialized first/done/second/done", messages)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for serialized session, messages = %#v", messages)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestGatewayBackloggedSessionDoesNotBlockOtherSessions(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	providerStub := newBacklogGatewayProvider()
+	sessionManager := session.NewSessionManager(workspace)
+
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ConfigManager:  newGatewayTestConfigManager(t),
+		ToolRegistry:   tools.NewToolRegistry(),
+		SessionManager: sessionManager,
+	}).(*gateway)
+	gw.workerCount = 2
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeIfOpen(providerStub.releaseShared)
+		if err := gw.Stop(); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	if err := bus.Put(messagebus.Message{ChannelID: "cli", ChatID: "shared", SenderID: "user-1", Message: "shared-0"}, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put(shared-0) error = %v", err)
+	}
+	select {
+	case <-providerStub.sharedStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked shared session")
+	}
+
+	for i := 1; i <= 40; i++ {
+		if err := bus.Put(messagebus.Message{
+			ChannelID: "cli",
+			ChatID:    "shared",
+			SenderID:  "user-1",
+			Message:   "shared-" + strconv.Itoa(i),
+		}, messagebus.InboundQueue); err != nil {
+			t.Fatalf("Put(shared-%d) error = %v", i, err)
+		}
+	}
+	if err := bus.Put(messagebus.Message{ChannelID: "cli", ChatID: "other", SenderID: "user-2", Message: "other"}, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put(other) error = %v", err)
+	}
+
+	select {
+	case <-providerStub.otherStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("other session was blocked by shared backlog")
+	}
+}
+
+func TestGatewayStopWaitsForActiveSessionWorkers(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	registry := channels.NewRegistry()
+	channel := &channelsTestChannel{name: "cli", enabled: true}
+	if err := registry.Register(channel); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	providerStub := newBlockingGatewayProvider()
+	sessionManager := session.NewSessionManager(workspace)
+
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:      bus,
+		Provider:        providerStub,
+		ConfigManager:   newGatewayTestConfigManager(t),
+		ToolRegistry:    tools.NewToolRegistry(),
+		SessionManager:  sessionManager,
+		ChannelRegistry: registry,
+	})
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if err := bus.Put(messagebus.Message{
+		ChannelID: "cli",
+		ChatID:    "shutdown",
+		SenderID:  "user-1",
+		Message:   "finish before stop",
+	}, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	select {
+	case <-providerStub.firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first request")
+	}
+
+	stopErrCh := make(chan error, 1)
+	go func() {
+		stopErrCh <- gw.Stop()
+	}()
+
+	select {
+	case err := <-stopErrCh:
+		t.Fatalf("Stop() returned too early: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(providerStub.releaseFirst)
+	select {
+	case err := <-stopErrCh:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Stop()")
+	}
+
+	channel.mu.Lock()
+	received := append([]messagebus.Message(nil), channel.received...)
+	channel.mu.Unlock()
+	if len(received) == 0 || received[len(received)-1].Message != "done" {
+		t.Fatalf("received = %#v, want final outbound reply", received)
+	}
+
+	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("cli", "shutdown"), "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	messages := currentSession.GetMessages(10)
+	if len(messages) != 2 || messages[0].Content != "finish before stop" || messages[1].Content != "done" {
+		t.Fatalf("messages = %#v, want persisted user/assistant pair", messages)
+	}
+}
+
+func TestGatewayEnsureRuntimeReadySyncsDirtySessionsToMemory(t *testing.T) {
+	workspace := t.TempDir()
+	baseSessionManager := session.NewSessionManager(workspace)
+	currentSession, err := baseSessionManager.GetOrCreateSession(session.MakeSessionID("cli", "recover"), "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.AppendMessages([]openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "remember this"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "stored"},
+	}); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
+	}
+	if err := currentSession.WriteSessionFile(); err != nil {
+		t.Fatalf("WriteSessionFile() error = %v", err)
+	}
+
+	sessionManager := &countingSessionManager{base: baseSessionManager}
+	memoryService := &fakeGatewayMemoryService{}
+	gw := &gateway{
+		context: appcontext.SystemContext{
+			SessionManager: sessionManager,
+			MemoryService:  memoryService,
+			MemoryEnabled:  true,
+			VectorStore:    &fakeGatewayVectorStore{},
+		},
+	}
+
+	if err := gw.ensureRuntimeReady(); err != nil {
+		t.Fatalf("ensureRuntimeReady() error = %v", err)
+	}
+	if memoryService.initializeCalls != 1 {
+		t.Fatalf("initializeCalls = %d, want 1", memoryService.initializeCalls)
+	}
+	if len(memoryService.sessionIDs) != 1 || memoryService.sessionIDs[0] != "cli:recover" {
+		t.Fatalf("sessionIDs = %#v, want [\"cli:recover\"]", memoryService.sessionIDs)
+	}
+
+	if err := gw.ensureRuntimeReady(); err != nil {
+		t.Fatalf("second ensureRuntimeReady() error = %v", err)
+	}
+	if len(memoryService.sessionIDs) != 1 {
+		t.Fatalf("len(sessionIDs) = %d, want 1 after digest guard", len(memoryService.sessionIDs))
+	}
+	if sessionManager.listCalls != 1 {
+		t.Fatalf("listCalls = %d, want 1 after one-time recovery sync", sessionManager.listCalls)
 	}
 }

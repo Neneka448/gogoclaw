@@ -11,8 +11,19 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+func newSessionManagerForTest(t *testing.T, workspace string) SessionManager {
+	t.Helper()
+	manager := NewSessionManager(workspace)
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	return manager
+}
+
 func TestSessionRespectsMemoryWindow(t *testing.T) {
-	manager := NewSessionManager(t.TempDir())
+	manager := newSessionManagerForTest(t, t.TempDir())
 	session, err := manager.GetOrCreateSession("session-1", "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
@@ -36,7 +47,7 @@ func TestSessionRespectsMemoryWindow(t *testing.T) {
 }
 
 func TestSessionBacktracksWindowToIncludeAssistantToolCall(t *testing.T) {
-	manager := NewSessionManager(t.TempDir())
+	manager := newSessionManagerForTest(t, t.TempDir())
 	session, err := manager.GetOrCreateSession("session-1", "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
@@ -77,7 +88,7 @@ func TestSessionBacktracksWindowToIncludeAssistantToolCall(t *testing.T) {
 }
 
 func TestSessionReturnsCopies(t *testing.T) {
-	manager := NewSessionManager(t.TempDir())
+	manager := newSessionManagerForTest(t, t.TempDir())
 	session, err := manager.GetOrCreateSession("session-1", "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
@@ -107,7 +118,7 @@ func TestSessionReturnsCopies(t *testing.T) {
 
 func TestSessionInitializesJSONFile(t *testing.T) {
 	workspace := t.TempDir()
-	manager := NewSessionManager(workspace)
+	manager := newSessionManagerForTest(t, workspace)
 	session, err := manager.GetOrCreateSession("telegram:chat-1", "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
@@ -140,7 +151,7 @@ func TestSessionInitializesJSONFile(t *testing.T) {
 }
 
 func TestSessionManagerCachesSessionInMemory(t *testing.T) {
-	manager := NewSessionManager(t.TempDir())
+	manager := newSessionManagerForTest(t, t.TempDir())
 	first, err := manager.GetOrCreateSession("telegram:chat-1", "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
@@ -156,7 +167,7 @@ func TestSessionManagerCachesSessionInMemory(t *testing.T) {
 
 func TestSessionManagerCloseFlushesPendingMessages(t *testing.T) {
 	workspace := t.TempDir()
-	manager := NewSessionManager(workspace)
+	manager := newSessionManagerForTest(t, workspace)
 	session, err := manager.GetOrCreateSession("telegram:chat-1", "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
@@ -186,13 +197,50 @@ func TestSessionManagerCloseFlushesPendingMessages(t *testing.T) {
 	}
 }
 
+func TestSessionManagerListSessionIDs(t *testing.T) {
+	workspace := t.TempDir()
+	manager := newSessionManagerForTest(t, workspace)
+	for _, sessionID := range []string{"cli:default", "feishu:chat-1"} {
+		currentSession, err := manager.GetOrCreateSession(sessionID, "user-1")
+		if err != nil {
+			t.Fatalf("GetOrCreateSession(%s) error = %v", sessionID, err)
+		}
+		if err := currentSession.WriteSessionFile(); err != nil {
+			t.Fatalf("WriteSessionFile(%s) error = %v", sessionID, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "sessions", "achrive"), 0755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "sessions", "achrive", "ignored.json"), []byte("{}"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	sessionIDs, err := manager.ListSessionIDs()
+	if err != nil {
+		t.Fatalf("ListSessionIDs() error = %v", err)
+	}
+	if len(sessionIDs) != 2 || sessionIDs[0] != "cli:default" || sessionIDs[1] != "feishu:chat-1" {
+		t.Fatalf("sessionIDs = %#v, want [\"cli:default\", \"feishu:chat-1\"]", sessionIDs)
+	}
+}
+
+func TestSessionManagerRejectsUnsafeSessionIDs(t *testing.T) {
+	manager := newSessionManagerForTest(t, t.TempDir())
+	for _, sessionID := range []string{"../escape", "nested/session", `nested\session`, "   "} {
+		if _, err := manager.GetOrCreateSession(sessionID, "user-1"); err == nil {
+			t.Fatalf("GetOrCreateSession(%q) error = nil, want validation failure", sessionID)
+		}
+	}
+}
+
 func TestSessionArchiveAndReset(t *testing.T) {
 	previousNow := sessionNow
 	sessionNow = func() time.Time { return time.Unix(1700000000, 0) }
 	defer func() { sessionNow = previousNow }()
 
 	workspace := t.TempDir()
-	manager := NewSessionManager(workspace)
+	manager := newSessionManagerForTest(t, workspace)
 	currentSession, err := manager.GetOrCreateSession("feishu:chat-1", "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)

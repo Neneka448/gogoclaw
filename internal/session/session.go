@@ -1,13 +1,17 @@
 package session
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -26,8 +30,10 @@ type Session interface {
 	Close() error
 	GetSessionID() string
 	GetMessages(memoryWindow int) []openai.ChatCompletionMessage
+	GetMemoryIngestedDigest() string
 	AppendMessage(message openai.ChatCompletionMessage) error
 	AppendMessages(messages []openai.ChatCompletionMessage) error
+	MarkMemoryIngested(digest string) error
 	ReadSessionFile() error
 	WriteSessionFile() error
 	GetSessionFilePath() string
@@ -36,6 +42,7 @@ type Session interface {
 
 type SessionManager interface {
 	GetOrCreateSession(sessionID string, senderID string) (Session, error)
+	ListSessionIDs() ([]string, error)
 	Close() error
 }
 
@@ -45,8 +52,9 @@ type SessionFile struct {
 }
 
 type SessionMeta struct {
-	SessionKey string `json:"session_key"`
-	SenderID   string `json:"sender_id"`
+	SessionKey     string `json:"session_key"`
+	SenderID       string `json:"sender_id"`
+	IngestedDigest string `json:"ingested_digest,omitempty"`
 }
 
 type fileSession struct {
@@ -74,7 +82,31 @@ func NewSessionManager(workspacePath string) SessionManager {
 	}
 }
 
+func ValidateSessionID(sessionID string) error {
+	normalized := strings.TrimSpace(sessionID)
+	if normalized == "" {
+		return fmt.Errorf("session id cannot be empty")
+	}
+	if strings.ContainsAny(normalized, `/\`) {
+		return fmt.Errorf("session id cannot contain path separators")
+	}
+	if normalized == "." || normalized == ".." {
+		return fmt.Errorf("session id cannot be dot path segments")
+	}
+	for _, r := range normalized {
+		if r == 0 || unicode.IsControl(r) {
+			return fmt.Errorf("session id cannot contain control characters")
+		}
+	}
+	return nil
+}
+
 func (manager *sessionManager) GetOrCreateSession(sessionID string, senderID string) (Session, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if err := ValidateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 
@@ -130,6 +162,32 @@ func (manager *sessionManager) Close() error {
 	return nil
 }
 
+func (manager *sessionManager) ListSessionIDs() ([]string, error) {
+	sessionsDir := filepath.Join(manager.workspacePath, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return nil, fmt.Errorf("create sessions directory: %w", err)
+	}
+
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read sessions directory: %w", err)
+	}
+
+	sessionIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		sessionIDs = append(sessionIDs, strings.TrimSuffix(name, ".json"))
+	}
+	sort.Strings(sessionIDs)
+	return sessionIDs, nil
+}
+
 func (session *fileSession) Close() error {
 	return session.WriteSessionFile()
 }
@@ -140,6 +198,17 @@ func (session *fileSession) GetSessionID() string {
 
 func (session *fileSession) GetSessionFilePath() string {
 	return session.filePath
+}
+
+func (session *fileSession) GetMemoryIngestedDigest() string {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if err := session.ensureLoadedLocked(); err != nil {
+		return ""
+	}
+
+	return session.data.Meta.IngestedDigest
 }
 
 func (session *fileSession) ArchiveAndReset() (string, error) {
@@ -161,6 +230,7 @@ func (session *fileSession) ArchiveAndReset() (string, error) {
 	}
 
 	session.data.Messages = []openai.ChatCompletionMessage{}
+	session.data.Meta.IngestedDigest = ""
 	session.flushRequested = false
 	session.lastWriteErr = nil
 	if err := session.writeSessionFileLocked(); err != nil {
@@ -232,6 +302,20 @@ func (session *fileSession) AppendMessages(messages []openai.ChatCompletionMessa
 	session.data.Messages = append(session.data.Messages, cloneMessages(messages)...)
 	session.scheduleFlushLocked()
 	return nil
+}
+
+func (session *fileSession) MarkMemoryIngested(digest string) error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if err := session.ensureLoadedLocked(); err != nil {
+		return err
+	}
+	if session.data.Meta.IngestedDigest == digest {
+		return nil
+	}
+	session.data.Meta.IngestedDigest = digest
+	return session.writeSessionFileLocked()
 }
 
 func (session *fileSession) ReadSessionFile() error {
@@ -334,8 +418,9 @@ func (session *fileSession) archiveSnapshotLocked(snapshot SessionFile) (string,
 func (session *fileSession) snapshotLocked() SessionFile {
 	snapshot := SessionFile{
 		Meta: SessionMeta{
-			SessionKey: session.data.Meta.SessionKey,
-			SenderID:   session.data.Meta.SenderID,
+			SessionKey:     session.data.Meta.SessionKey,
+			SenderID:       session.data.Meta.SenderID,
+			IngestedDigest: session.data.Meta.IngestedDigest,
 		},
 		Messages: cloneMessages(session.data.Messages),
 	}
@@ -361,8 +446,37 @@ func (session *fileSession) writeSnapshotToPath(snapshot SessionFile, targetPath
 	if err != nil {
 		return fmt.Errorf("encode session file: %w", err)
 	}
-	if err := os.WriteFile(targetPath, encoded, 0644); err != nil {
-		return fmt.Errorf("write session file: %w", err)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("create session file directory: %w", err)
+	}
+	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), filepath.Base(targetPath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp session file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	cleanup := func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+	}
+	if _, err := tempFile.Write(encoded); err != nil {
+		cleanup()
+		return fmt.Errorf("write temp session file: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("sync temp session file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("close temp session file: %w", err)
+	}
+	if err := os.Chmod(tempPath, 0644); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("chmod temp session file: %w", err)
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("replace session file: %w", err)
 	}
 
 	return nil
@@ -424,6 +538,15 @@ func cloneMessages(messages []openai.ChatCompletionMessage) []openai.ChatComplet
 	}
 
 	return clonedMessages
+}
+
+func MessagesDigest(messages []openai.ChatCompletionMessage) string {
+	encoded, err := json.Marshal(cloneMessages(messages))
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", sum)
 }
 
 func MakeSessionID(channelID string, chatID string) string {

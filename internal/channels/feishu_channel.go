@@ -30,6 +30,7 @@ type FeishuChannel struct {
 	wsClient   *larkws.Client
 	startOnce  sync.Once
 	started    bool
+	accepting  bool
 	mu         sync.Mutex
 	toolMu     sync.Mutex
 	toolCalls  map[string]*pendingToolCallBatch
@@ -83,6 +84,7 @@ func NewFeishuChannel(cfg config.FeishuChannelConfig, bus messagebus.MessageBus,
 		workspace:  strings.TrimSpace(workspace),
 		toolCalls:  make(map[string]*pendingToolCallBatch),
 		seen:       make(map[string]struct{}),
+		accepting:  cfg.Enabled,
 	}
 }
 
@@ -120,7 +122,10 @@ func (c *FeishuChannel) Start() error {
 			larkws.WithEventHandler(eventHandler),
 			larkws.WithLogLevel(larkcore.LogLevelError),
 		)
+		c.mu.Lock()
 		c.started = true
+		c.accepting = true
+		c.mu.Unlock()
 		go func() {
 			_ = c.wsClient.Start(context.Background())
 		}()
@@ -130,6 +135,9 @@ func (c *FeishuChannel) Start() error {
 }
 
 func (c *FeishuChannel) Stop() error {
+	c.mu.Lock()
+	c.accepting = false
+	c.mu.Unlock()
 	if err := c.flushAllToolCallBatches(); err != nil {
 		return err
 	}
@@ -271,6 +279,9 @@ func (c *FeishuChannel) handleMessageReceive(_ context.Context, event *larkim.P2
 	if message.MessageID != "" && !c.markMessage(message.MessageID) {
 		return nil
 	}
+	if !c.acceptsInbound() {
+		return nil
+	}
 	if isBotSender(body) {
 		return nil
 	}
@@ -285,6 +296,12 @@ func (c *FeishuChannel) handleMessageReceive(_ context.Context, event *larkim.P2
 	}
 
 	return c.messageBus.Put(message, messagebus.InboundQueue)
+}
+
+func (c *FeishuChannel) acceptsInbound() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.accepting
 }
 
 func parseFeishuInboundMessage(body map[string]any) (messagebus.Message, bool) {
