@@ -51,7 +51,7 @@ func TestGatewayStartDispatchesOutboundMessages(t *testing.T) {
 	}
 
 	deadline := time.After(2 * time.Second)
-	for len(fake.received) == 0 {
+	for len(fake.snapshotReceived()) == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for outbound dispatch")
@@ -60,8 +60,9 @@ func TestGatewayStartDispatchesOutboundMessages(t *testing.T) {
 		}
 	}
 
-	if fake.received[0].Message != "hello" {
-		t.Fatalf("fake.received[0].Message = %q, want hello", fake.received[0].Message)
+	received := fake.snapshotReceived()
+	if received[0].Message != "hello" {
+		t.Fatalf("received[0].Message = %q, want hello", received[0].Message)
 	}
 }
 
@@ -139,7 +140,11 @@ func TestGatewayCanRestartAfterStop(t *testing.T) {
 	}
 
 	deadline := time.After(2 * time.Second)
-	for len(fake.received) == 0 || fake.received[len(fake.received)-1].Message != "restart" {
+	for {
+		received := fake.snapshotReceived()
+		if len(received) > 0 && received[len(received)-1].Message == "restart" {
+			break
+		}
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for restarted gateway dispatch")
@@ -376,6 +381,12 @@ func (c *channelsTestChannel) Send(message messagebus.Message) error {
 	defer c.mu.Unlock()
 	c.received = append(c.received, message)
 	return nil
+}
+
+func (c *channelsTestChannel) snapshotReceived() []messagebus.Message {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]messagebus.Message(nil), c.received...)
 }
 
 type blockingGatewayProvider struct {

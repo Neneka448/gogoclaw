@@ -37,12 +37,14 @@ type Service interface {
 }
 
 type service struct {
-	mu          sync.Mutex
-	store       *Store
-	vectorStore vectorstore.Service
-	embedding   provider.EmbeddingProvider
-	summarizer  *Summarizer
-	config      config.MemoryConfig
+	mu              sync.Mutex
+	initMu          sync.Mutex
+	store           *Store
+	vectorStore     vectorstore.Service
+	embedding       provider.EmbeddingProvider
+	summarizer      *Summarizer
+	config          config.MemoryConfig
+	vectorsRepaired bool
 }
 
 func NewService(
@@ -62,6 +64,9 @@ func NewService(
 }
 
 func (s *service) Initialize() error {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+
 	if s.store == nil {
 		db := s.vectorStore.DB()
 		if db == nil {
@@ -72,7 +77,14 @@ func (s *service) Initialize() error {
 	if err := s.store.Initialize(); err != nil {
 		return err
 	}
-	return s.repairActiveVectors()
+	if s.vectorsRepaired {
+		return nil
+	}
+	if err := s.repairActiveVectors(); err != nil {
+		return err
+	}
+	s.vectorsRepaired = true
+	return nil
 }
 
 func (s *service) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {

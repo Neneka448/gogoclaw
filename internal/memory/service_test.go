@@ -149,6 +149,9 @@ func TestServiceInitializeRepairsActiveVectors(t *testing.T) {
 	if err := svc.Initialize(); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
+	if err := svc.Initialize(); err != nil {
+		t.Fatalf("second Initialize() error = %v", err)
+	}
 	if len(vectorStore.upserted) != 1 || vectorStore.upserted[0] != "st-repair" {
 		t.Fatalf("vectorStore.upserted = %#v, want [\"st-repair\"]", vectorStore.upserted)
 	}
