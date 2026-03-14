@@ -66,12 +66,32 @@ type SearchResult struct {
 
 var sqliteIdentifierSanitizer = regexp.MustCompile(`[^a-z0-9_]+`)
 
+// ThresholdSearchRequest filters search results by a threshold value.
+// For cosine metric, Threshold is interpreted as minimum similarity (1-distance);
+// for other metrics (e.g. L2), Threshold is interpreted as maximum distance.
+type ThresholdSearchRequest struct {
+	StoreKind  StoreKind
+	Query      []float32
+	Metric     DistanceMetric
+	MaxResults int
+	Threshold  float64
+	ExternalID string
+}
+
+type DeleteRequest struct {
+	StoreKind  StoreKind
+	ExternalID string
+}
+
 type Service interface {
 	Start() error
 	Stop() error
 	Path() string
+	DB() *sql.DB
 	Upsert(request UpsertRequest) error
+	Delete(request DeleteRequest) error
 	SearchTopK(request SearchRequest) ([]SearchResult, error)
+	SearchByThreshold(request ThresholdSearchRequest) ([]SearchResult, error)
 }
 
 type sqliteVecService struct {
@@ -177,6 +197,13 @@ func (service *sqliteVecService) Path() string {
 	return service.dbPath
 }
 
+func (service *sqliteVecService) DB() *sql.DB {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	return service.db
+}
+
 func (service *sqliteVecService) Upsert(request UpsertRequest) error {
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -235,6 +262,53 @@ func (service *sqliteVecService) Upsert(request UpsertRequest) error {
 	return nil
 }
 
+func (service *sqliteVecService) Delete(request DeleteRequest) error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	if !service.started || service.db == nil {
+		return fmt.Errorf("sqlite-vec service is not started")
+	}
+	store, err := service.loadProfileStoreDefinition(request.StoreKind)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.ExternalID) == "" {
+		return fmt.Errorf("sqlite-vec external id is required")
+	}
+
+	tx, err := service.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sqlite-vec delete transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var rowID int64
+	if err := tx.QueryRow(
+		fmt.Sprintf(`select rowid from %s where external_id = ?`, quoteSQLiteIdentifier(store.MetadataTable)),
+		request.ExternalID,
+	).Scan(&rowID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("load sqlite-vec metadata rowid: %w", err)
+	}
+
+	if service.extensionLoaded && store.OutputDimension > 0 {
+		if _, err := tx.Exec(fmt.Sprintf(`delete from %s where rowid = ?`, quoteSQLiteIdentifier(store.VectorTableName)), rowID); err != nil {
+			return fmt.Errorf("delete sqlite-vec vector row: %w", err)
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`delete from %s where external_id = ?`, quoteSQLiteIdentifier(store.MetadataTable)), request.ExternalID); err != nil {
+		return fmt.Errorf("delete sqlite-vec metadata row: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite-vec delete transaction: %w", err)
+	}
+	return nil
+}
+
 func (service *sqliteVecService) SearchTopK(request SearchRequest) ([]SearchResult, error) {
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -259,6 +333,67 @@ func (service *sqliteVecService) SearchTopK(request SearchRequest) ([]SearchResu
 	}
 
 	return service.searchFallback(store, request, metric)
+}
+
+func (service *sqliteVecService) SearchByThreshold(request ThresholdSearchRequest) ([]SearchResult, error) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	if !service.started || service.db == nil {
+		return nil, fmt.Errorf("sqlite-vec service is not started")
+	}
+	store, err := service.loadProfileStoreDefinition(request.StoreKind)
+	if err != nil {
+		return nil, err
+	}
+	if len(request.Query) == 0 {
+		return nil, fmt.Errorf("sqlite-vec search query is required")
+	}
+	if store.OutputDimension > 0 && len(request.Query) != store.OutputDimension {
+		return nil, fmt.Errorf("sqlite-vec search dimension mismatch: got %d want %d", len(request.Query), store.OutputDimension)
+	}
+	metric := normalizeDistanceMetric(request.Metric)
+	maxResults := request.MaxResults
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+
+	var candidates []SearchResult
+	if service.extensionLoaded && metric == DistanceMetricL2 {
+		candidates, err = service.searchWithSQLiteVec(store, SearchRequest{
+			StoreKind:  request.StoreKind,
+			Query:      request.Query,
+			Limit:      maxResults,
+			Metric:     metric,
+			ExternalID: request.ExternalID,
+		}, metric)
+	} else {
+		candidates, err = service.searchFallback(store, SearchRequest{
+			StoreKind:  request.StoreKind,
+			Query:      request.Query,
+			Limit:      maxResults,
+			Metric:     metric,
+			ExternalID: request.ExternalID,
+		}, metric)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]SearchResult, 0, len(candidates))
+	for _, candidate := range candidates {
+		if metric == DistanceMetricCosine {
+			similarity := 1.0 - candidate.Distance
+			if similarity >= request.Threshold {
+				filtered = append(filtered, candidate)
+			}
+		} else {
+			if candidate.Distance <= request.Threshold {
+				filtered = append(filtered, candidate)
+			}
+		}
+	}
+	return filtered, nil
 }
 
 func (service *sqliteVecService) loadSQLiteVecExtension(db *sql.DB) (bool, error) {

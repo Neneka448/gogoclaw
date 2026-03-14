@@ -1,0 +1,125 @@
+package memory
+
+import (
+	"database/sql"
+	"testing"
+
+	"github.com/Neneka448/gogoclaw/internal/config"
+	"github.com/Neneka448/gogoclaw/internal/provider"
+	"github.com/Neneka448/gogoclaw/internal/vectorstore"
+	openai "github.com/sashabaranov/go-openai"
+)
+
+type fakeMemoryVectorStore struct {
+	upserted []string
+	deleted  []string
+}
+
+func (store *fakeMemoryVectorStore) Start() error {
+	return nil
+}
+
+func (store *fakeMemoryVectorStore) Stop() error {
+	return nil
+}
+
+func (store *fakeMemoryVectorStore) Path() string {
+	return ""
+}
+
+func (store *fakeMemoryVectorStore) DB() *sql.DB {
+	return nil
+}
+
+func (store *fakeMemoryVectorStore) Upsert(request vectorstore.UpsertRequest) error {
+	store.upserted = append(store.upserted, request.ExternalID)
+	return nil
+}
+
+func (store *fakeMemoryVectorStore) Delete(request vectorstore.DeleteRequest) error {
+	store.deleted = append(store.deleted, request.ExternalID)
+	return nil
+}
+
+func (store *fakeMemoryVectorStore) SearchTopK(request vectorstore.SearchRequest) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+
+func (store *fakeMemoryVectorStore) SearchByThreshold(request vectorstore.ThresholdSearchRequest) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+
+type fakeMemoryEmbeddingProvider struct{}
+
+func (embeddingProvider *fakeMemoryEmbeddingProvider) TextEmbeddings(params provider.TextEmbeddingParams) (*provider.EmbeddingResponse, error) {
+	return &provider.EmbeddingResponse{
+		Data: []provider.EmbeddingData{{
+			Embedding: provider.EmbeddingVector{Values: []float64{1, 0, 0}},
+		}},
+	}, nil
+}
+
+func (embeddingProvider *fakeMemoryEmbeddingProvider) MultimodalEmbeddings(params provider.MultimodalEmbeddingParams) (*provider.EmbeddingResponse, error) {
+	return nil, nil
+}
+
+type fakeMemoryLLM struct {
+	content string
+}
+
+func (llm *fakeMemoryLLM) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	return provider.NormalizedResponse{Content: llm.content}, nil
+}
+
+func TestServiceConsolidateCommunityDeletesSourceVectors(t *testing.T) {
+	store := newTestStore(t)
+	for _, node := range []MemoryNode{
+		{ID: "st-1", Kind: NodeKindShortTerm, Status: NodeStatusActive, Level: 0, What: "fix auth bug", Summary: "fix auth bug"},
+		{ID: "st-2", Kind: NodeKindShortTerm, Status: NodeStatusActive, Level: 0, What: "fix auth bug again", Summary: "fix auth bug again"},
+	} {
+		if err := store.InsertNode(node); err != nil {
+			t.Fatalf("InsertNode(%s) error = %v", node.ID, err)
+		}
+	}
+
+	vectorStore := &fakeMemoryVectorStore{}
+	cfg := config.CreateDefaultConfig().Memory
+	svc := &service{
+		store:       store,
+		vectorStore: vectorStore,
+		embedding:   &fakeMemoryEmbeddingProvider{},
+		summarizer: NewSummarizer(&fakeMemoryLLM{
+			content: `{"who":"user","what":"repeated auth fixes","when":"recurring","where":"repo","why":"stabilize auth","how":"compare the failing cases and reuse the fix path","result":"mostly successful"}`,
+		}, "test"),
+		config: cfg,
+	}
+
+	if err := svc.consolidateCommunity([]string{"st-1", "st-2"}, NodeKindShortTerm, 0); err != nil {
+		t.Fatalf("consolidateCommunity() error = %v", err)
+	}
+
+	if len(vectorStore.upserted) != 1 {
+		t.Fatalf("len(vectorStore.upserted) = %d, want 1", len(vectorStore.upserted))
+	}
+	if len(vectorStore.deleted) != 2 {
+		t.Fatalf("len(vectorStore.deleted) = %d, want 2", len(vectorStore.deleted))
+	}
+
+	for _, id := range []string{"st-1", "st-2"} {
+		node, err := store.GetNode(id)
+		if err != nil {
+			t.Fatalf("GetNode(%s) error = %v", id, err)
+		}
+		if node == nil || node.Status != NodeStatusConsolidated {
+			t.Fatalf("node %s status = %v, want consolidated", id, node.Status)
+		}
+	}
+
+	activeLongTerm, err := store.ListActiveNodesByKindAndLevel(NodeKindLongTerm, 1)
+	if err != nil {
+		t.Fatalf("ListActiveNodesByKindAndLevel() error = %v", err)
+	}
+	if len(activeLongTerm) != 1 {
+		t.Fatalf("len(activeLongTerm) = %d, want 1", len(activeLongTerm))
+	}
+}

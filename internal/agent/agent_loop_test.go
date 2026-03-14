@@ -1,16 +1,18 @@
 package agent
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	internalcontext "github.com/Neneka448/gogoclaw/internal/context"
+	"github.com/Neneka448/gogoclaw/internal/memory"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
@@ -30,6 +32,37 @@ func (provider *fakeProvider) ChatCompletion(request openai.ChatCompletionReques
 	response := provider.responses[0]
 	provider.responses = provider.responses[1:]
 	return response, nil
+}
+
+type fakeMemoryService struct {
+	initializeCalls int
+	ingestCalls     int
+	sessionIDs      []string
+	messages        [][]openai.ChatCompletionMessage
+	blockCh         <-chan struct{}
+}
+
+func (service *fakeMemoryService) Initialize() error {
+	service.initializeCalls++
+	return nil
+}
+
+func (service *fakeMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
+	service.ingestCalls++
+	service.sessionIDs = append(service.sessionIDs, sessionID)
+	service.messages = append(service.messages, append([]openai.ChatCompletionMessage(nil), messages...))
+	if service.blockCh != nil {
+		<-service.blockCh
+	}
+	return nil
+}
+
+func (service *fakeMemoryService) Recall(queryText string, topK int, minSimilarity float64) ([]memory.MemoryNode, error) {
+	return nil, nil
+}
+
+func (service *fakeMemoryService) GetNode(nodeID string) (*memory.MemoryNode, error) {
+	return nil, nil
 }
 
 type fakeTool struct {
@@ -554,6 +587,75 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 	}
 	if !strings.Contains(archiveFiles[0], filepath.Join("sessions", "achrive")) {
 		t.Fatalf("archive file path = %q, want achrive folder", archiveFiles[0])
+	}
+}
+
+func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
+	configPath := writeTestConfig(t)
+	workspace := tempWorkspaceFromConfig(t, configPath)
+	sessionManager := session.NewSessionManager(workspace)
+	bus := messagebus.NewMessageBus()
+	blockCh := make(chan struct{})
+	memoryService := &fakeMemoryService{blockCh: blockCh}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		ConfigManager:  config.NewConfigManager(configPath),
+		MessageBus:     bus,
+		Provider:       &fakeProvider{},
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+		MemoryService:  memoryService,
+		MemoryEnabled:  true,
+	})
+
+	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("feishu", "chat-1"), "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		if err := currentSession.AppendMessage(openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: "history-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatalf("AppendMessage() error = %v", err)
+		}
+	}
+	if err := currentSession.WriteSessionFile(); err != nil {
+		t.Fatalf("WriteSessionFile() error = %v", err)
+	}
+
+	doneCh := make(chan error, 1)
+	go func() {
+		doneCh <- loop.ProcessMessage(messagebus.Message{
+			ChannelID:   "feishu",
+			Message:     "/new",
+			MessageID:   "msg-1",
+			MessageType: "text",
+			ChatID:      "chat-1",
+			SenderID:    "user-1",
+		})
+	}()
+
+	select {
+	case err := <-doneCh:
+		t.Fatalf("ProcessMessage() returned before memory ingestion completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if memoryService.ingestCalls != 1 {
+		t.Fatalf("memoryService.ingestCalls = %d, want 1", memoryService.ingestCalls)
+	}
+	if got := len(memoryService.messages[0]); got != 12 {
+		t.Fatalf("len(memoryService.messages[0]) = %d, want 12", got)
+	}
+
+	close(blockCh)
+
+	if err := <-doneCh; err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+	if got := currentSession.GetMessages(10); len(got) != 0 {
+		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
 	}
 }
 
