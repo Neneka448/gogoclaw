@@ -20,6 +20,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/systemprompt"
 	"github.com/Neneka448/gogoclaw/internal/tools"
 	"github.com/Neneka448/gogoclaw/internal/vectorstore"
+	workspacepkg "github.com/Neneka448/gogoclaw/internal/workspace"
 )
 
 func Bootstrap(configPath string) (*gateway.Gateway, error) {
@@ -46,6 +47,12 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	}
 	textEmbeddingProvider, modalEmbeddingProvider, err := buildEmbeddingProviders(configManager, embeddingProfile)
 	if err != nil {
+		return nil, err
+	}
+	if err := workspacepkg.EnsureMemorySkill(profile.Workspace); err != nil {
+		return nil, err
+	}
+	if err := workspacepkg.EnsureDefaultSkills(profile.Workspace); err != nil {
 		return nil, err
 	}
 	skillRegistry, err := skills.LoadWorkspaceSkills(profile.Workspace)

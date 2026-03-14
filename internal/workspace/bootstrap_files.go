@@ -1,8 +1,10 @@
 package workspace
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,11 +18,12 @@ const (
 	userFile         = "USER.md"
 	heartbeatFile    = "HEARTBEAT.md"
 	memorySkillFile  = "MEMORY_SKILL.md"
+	skillFileName    = "SKILL.md"
 )
 
 var bootstrapFileNames = []string{agentsFile, soulFile, toolsFile, userFile, heartbeatFile}
 
-//go:embed templates/*.md
+//go:embed templates/*.md templates/skills
 var bootstrapTemplates embed.FS
 
 func BootstrapFileNames() []string {
@@ -83,4 +86,98 @@ func EnsureMemorySkill(workspacePath string) error {
 	}
 
 	return nil
+}
+
+// EnsureDefaultSkills deploys embedded default skill templates into the workspace
+// skills directory. If a skill's SKILL.md already exists, the entire skill is
+// skipped (existing skills are preserved). New skills are deployed with all
+// bundled resources (agents, scripts, references, etc.).
+func EnsureDefaultSkills(workspacePath string) error {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+
+	skillEntries, err := bootstrapTemplates.ReadDir("templates/skills")
+	if err != nil {
+		return fmt.Errorf("read embedded skill templates: %w", err)
+	}
+
+	for _, entry := range skillEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillName := entry.Name()
+		targetDir := filepath.Join(workspacePath, "skills", skillName)
+		targetPath := filepath.Join(targetDir, skillFileName)
+
+		if _, err := os.Stat(targetPath); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat skill file %s: %w", targetPath, err)
+		}
+
+		embeddedRoot := filepath.Join("templates", "skills", skillName)
+		if err := deployEmbeddedDir(bootstrapTemplates, embeddedRoot, targetDir); err != nil {
+			return fmt.Errorf("deploy skill %s: %w", skillName, err)
+		}
+	}
+
+	return nil
+}
+
+// deployEmbeddedDir recursively copies all files from an embedded FS directory
+// to a target directory on disk.
+func deployEmbeddedDir(fsys embed.FS, embeddedRoot, targetDir string) error {
+	return fs.WalkDir(fsys, embeddedRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(embeddedRoot, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(targetDir, relPath)
+
+		if d.IsDir() {
+			return os.MkdirAll(targetPath, 0755)
+		}
+
+		content, err := fsys.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded file %s: %w", path, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return fmt.Errorf("create directory for %s: %w", targetPath, err)
+		}
+
+		mode := fs.FileMode(0644)
+		if isExecutableScript(path, content) {
+			mode = 0755
+		}
+
+		return os.WriteFile(targetPath, content, mode)
+	})
+}
+
+func isExecutableScript(path string, content []byte) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".sh", ".py":
+		return true
+	}
+
+	if len(content) == 0 {
+		return false
+	}
+
+	// Check for shebang (#!) on the first line.
+	lineEnd := bytes.IndexByte(content, '\n')
+	if lineEnd == -1 {
+		lineEnd = len(content)
+	}
+	firstLine := string(content[:lineEnd])
+
+	return strings.HasPrefix(firstLine, "#!")
 }
