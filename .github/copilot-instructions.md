@@ -10,9 +10,16 @@ When reviewing code in this repository, optimize for signal, not coverage.
 
 ## Severity calibration
 
-- Treat these as high priority: data loss, duplicate execution, broken recovery, stuck processing, deadlocks, global throughput collapse, shutdown or startup races, persistence lifecycle gaps, security vulnerabilities, backward compatibility breaks, and unbounded resource growth.
-- Treat issues as medium priority only when there is a concrete and realistic failure mode.
+- High priority means a supported-platform, high-confidence defect that can cause data loss, unrecoverable corruption, duplicate execution, deadlocks, global throughput collapse, broken shutdown or startup recovery, or a security boundary break reachable from remote or otherwise untrusted input.
+- Do not label an issue as high if it depends on unsupported platforms, local-only CLI misuse, rare operator action, or unusually large historical state or traffic.
+- Medium priority means a real issue with a concrete failure mode, but one that depends on local operator input, large data volume, repeated restarts, non-default deployment assumptions, or degraded latency or cost without correctness loss.
+- Low priority means test-only issues, unsupported-platform compatibility, cleanup opportunities, dead code, style, naming, or typo comments.
 - Avoid low-priority comments unless the author explicitly asks for cleanup or broad maintainability review.
+
+## Platform scope
+
+- This repository currently targets macOS and Linux.
+- Do not file comments based only on Windows behavior unless the change explicitly claims Windows support or introduces cross-platform abstraction that is intended to work there too.
 
 ## Repository context
 
@@ -33,6 +40,8 @@ When reviewing code in this repository, optimize for signal, not coverage.
 ## Review style
 
 - Prefer fewer, higher-confidence comments.
+- Leave at most 2 comments unless the pull request contains multiple independent high-confidence defects.
 - Every comment should explain the concrete failure mode, the trigger condition, the user or operational impact, and the smallest safe fix direction.
 - Suppress speculative comments unless the risk is substantial and the reasoning is concrete.
 - If a concern is valid but not urgent, say explicitly that it is medium or low priority and why.
+- Do not repeat the same concern in later review rounds unless the new diff materially changes the failure mode or severity.

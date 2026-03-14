@@ -34,19 +34,21 @@ type Gateway interface {
 }
 
 type gateway struct {
-	context           context.SystemContext
-	inboundStopCh     chan struct{}
-	mu                sync.Mutex
-	started           bool
-	inboundWG         sync.WaitGroup
-	outboundWG        sync.WaitGroup
-	workerWG          sync.WaitGroup
-	workerCount       int
-	schedulerMu       sync.Mutex
-	schedulerCond     *sync.Cond
-	schedulerStopping bool
-	sessionMailboxes  map[string]*sessionMailbox
-	readySessions     []string
+	context             context.SystemContext
+	inboundStopCh       chan struct{}
+	mu                  sync.Mutex
+	started             bool
+	dirtySessionsSynced bool
+	inboundWG           sync.WaitGroup
+	outboundWG          sync.WaitGroup
+	workerWG            sync.WaitGroup
+	workerCount         int
+	recoveryMu          sync.Mutex
+	schedulerMu         sync.Mutex
+	schedulerCond       *sync.Cond
+	schedulerStopping   bool
+	sessionMailboxes    map[string]*sessionMailbox
+	readySessions       []string
 }
 
 func NewGateway(context context.SystemContext) Gateway {
@@ -339,7 +341,7 @@ func (g *gateway) ensureRuntimeReady() error {
 			}
 			return err
 		}
-		if err := g.syncDirtySessionsToMemory(); err != nil {
+		if err := g.ensureDirtySessionsSynced(); err != nil {
 			if g.context.VectorStore != nil {
 				_ = g.context.VectorStore.Stop()
 			}
@@ -347,6 +349,34 @@ func (g *gateway) ensureRuntimeReady() error {
 		}
 	}
 
+	return nil
+}
+
+func (g *gateway) ensureDirtySessionsSynced() error {
+	g.mu.Lock()
+	if g.dirtySessionsSynced {
+		g.mu.Unlock()
+		return nil
+	}
+	g.mu.Unlock()
+
+	g.recoveryMu.Lock()
+	defer g.recoveryMu.Unlock()
+
+	g.mu.Lock()
+	if g.dirtySessionsSynced {
+		g.mu.Unlock()
+		return nil
+	}
+	g.mu.Unlock()
+
+	if err := g.syncDirtySessionsToMemory(); err != nil {
+		return err
+	}
+
+	g.mu.Lock()
+	g.dirtySessionsSynced = true
+	g.mu.Unlock()
 	return nil
 }
 

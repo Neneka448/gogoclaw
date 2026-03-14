@@ -8,6 +8,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/bootstrap"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -30,6 +31,9 @@ var agentCmd = &cobra.Command{
 		}
 		if strings.TrimSpace(sessionID) == "" {
 			return fmt.Errorf("flag --session requires a non-empty value")
+		}
+		if err := session.ValidateSessionID(sessionID); err != nil {
+			return fmt.Errorf("flag --session is invalid: %w", err)
 		}
 
 		configPath, err := resolveConfigPath(cfgFile)

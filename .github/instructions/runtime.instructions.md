@@ -6,6 +6,7 @@ applyTo: "cmd/**/*.go,internal/agent/**/*.go,internal/channels/**/*.go,internal/
 
 When reviewing runtime, transport, session, memory, or persistence code in this repository:
 
+- This repository targets macOS and Linux. Ignore Windows-only compatibility concerns unless the code explicitly claims cross-platform support.
 - Assume message sources can be bursty, duplicated, delayed, retried, or partially delivered.
 - Look for cross-session interference, especially designs where one slow or blocked session can delay unrelated sessions.
 - Look for shutdown sequences that can drop in-flight work, close dependencies too early, or panic on late writes.
@@ -16,6 +17,9 @@ When reviewing runtime, transport, session, memory, or persistence code in this 
 - Look for startup work that scales with total historical data and may become operationally expensive over time.
 - Prefer comments only when the code creates a realistic correctness or operability problem.
 - Do not leave style-only, naming-only, or typo-only comments in these paths.
+- Treat local CLI or operator-supplied inputs as medium priority unless the same path is reachable from remote or untrusted sources.
+- Treat startup work that scales with total historical sessions or nodes as medium by default; escalate only when the code would predictably break normal supported deployments, not just very large workspaces.
+- Do not repeat a previously raised issue on the same pull request unless the new diff materially changes it.
 
 When you raise a concern in these paths, prioritize:
 

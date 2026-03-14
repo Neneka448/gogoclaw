@@ -81,6 +81,17 @@ type fakeToolRegistry struct {
 	tools map[string]tools.ToolDescriptor
 }
 
+func newAgentTestSessionManager(t *testing.T, workspace string) session.SessionManager {
+	t.Helper()
+	manager := session.NewSessionManager(workspace)
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	return manager
+}
+
 func (registry *fakeToolRegistry) RegisterTool(name string, tool tools.ToolDescriptor) error {
 	if registry.tools == nil {
 		registry.tools = make(map[string]tools.ToolDescriptor)
@@ -107,7 +118,7 @@ func (registry *fakeToolRegistry) GetAllTools() []tools.ToolDescriptor {
 
 func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 	configPath := writeTestConfig(t)
-	sessionManager := session.NewSessionManager(t.TempDir())
+	sessionManager := newAgentTestSessionManager(t, t.TempDir())
 	bus := messagebus.NewMessageBus()
 	imagePath := filepath.Join(t.TempDir(), "chart.png")
 	if err := os.WriteFile(imagePath, []byte("png"), 0644); err != nil {
@@ -286,7 +297,7 @@ func TestExtractOutboundToolPayloadExtractsMediaPaths(t *testing.T) {
 
 func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 	configPath := writeTestConfig(t)
-	sessionManager := session.NewSessionManager(t.TempDir())
+	sessionManager := newAgentTestSessionManager(t, t.TempDir())
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -343,7 +354,7 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 
 func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 	configPath := writeTestConfigWithIterations(t, 1)
-	sessionManager := session.NewSessionManager(t.TempDir())
+	sessionManager := newAgentTestSessionManager(t, t.TempDir())
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -425,7 +436,7 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 
 func TestAgentLoopContinuesAfterToolExecutionError(t *testing.T) {
 	configPath := writeTestConfig(t)
-	sessionManager := session.NewSessionManager(t.TempDir())
+	sessionManager := newAgentTestSessionManager(t, t.TempDir())
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -532,7 +543,7 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 
 	configPath := writeTestConfig(t)
 	workspace := t.TempDir()
-	sessionManager := session.NewSessionManager(workspace)
+	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{}
 
@@ -593,7 +604,7 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 	configPath := writeTestConfig(t)
 	workspace := tempWorkspaceFromConfig(t, configPath)
-	sessionManager := session.NewSessionManager(workspace)
+	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
 	blockCh := make(chan struct{})
 	memoryService := &fakeMemoryService{blockCh: blockCh}
@@ -661,7 +672,7 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 
 func TestAgentLoopInjectsSkillSystemPrompt(t *testing.T) {
 	configPath := writeTestConfig(t)
-	sessionManager := session.NewSessionManager(t.TempDir())
+	sessionManager := newAgentTestSessionManager(t, t.TempDir())
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
 			provider.NormalizedResponse{Content: "done"},

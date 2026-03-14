@@ -225,6 +225,12 @@ type fakeGatewayMemoryService struct {
 	sessionIDs      []string
 }
 
+type countingSessionManager struct {
+	base      session.SessionManager
+	mu        sync.Mutex
+	listCalls int
+}
+
 type fakeGatewayCronService struct {
 	manager   *fakeGatewayCronManager
 	loadCalls int
@@ -311,6 +317,21 @@ func (service *fakeGatewayMemoryService) Recall(queryText string, topK int, minS
 
 func (service *fakeGatewayMemoryService) GetNode(nodeID string) (*memory.MemoryNode, error) {
 	return nil, nil
+}
+
+func (manager *countingSessionManager) GetOrCreateSession(sessionID string, senderID string) (session.Session, error) {
+	return manager.base.GetOrCreateSession(sessionID, senderID)
+}
+
+func (manager *countingSessionManager) ListSessionIDs() ([]string, error) {
+	manager.mu.Lock()
+	manager.listCalls++
+	manager.mu.Unlock()
+	return manager.base.ListSessionIDs()
+}
+
+func (manager *countingSessionManager) Close() error {
+	return manager.base.Close()
 }
 
 func (service *fakeGatewayCronService) EnsureRoot() error {
@@ -748,8 +769,8 @@ func TestGatewayStopWaitsForActiveSessionWorkers(t *testing.T) {
 
 func TestGatewayEnsureRuntimeReadySyncsDirtySessionsToMemory(t *testing.T) {
 	workspace := t.TempDir()
-	sessionManager := session.NewSessionManager(workspace)
-	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("cli", "recover"), "user-1")
+	baseSessionManager := session.NewSessionManager(workspace)
+	currentSession, err := baseSessionManager.GetOrCreateSession(session.MakeSessionID("cli", "recover"), "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
 	}
@@ -763,6 +784,7 @@ func TestGatewayEnsureRuntimeReadySyncsDirtySessionsToMemory(t *testing.T) {
 		t.Fatalf("WriteSessionFile() error = %v", err)
 	}
 
+	sessionManager := &countingSessionManager{base: baseSessionManager}
 	memoryService := &fakeGatewayMemoryService{}
 	gw := &gateway{
 		context: appcontext.SystemContext{
@@ -788,5 +810,8 @@ func TestGatewayEnsureRuntimeReadySyncsDirtySessionsToMemory(t *testing.T) {
 	}
 	if len(memoryService.sessionIDs) != 1 {
 		t.Fatalf("len(sessionIDs) = %d, want 1 after digest guard", len(memoryService.sessionIDs))
+	}
+	if sessionManager.listCalls != 1 {
+		t.Fatalf("listCalls = %d, want 1 after one-time recovery sync", sessionManager.listCalls)
 	}
 }

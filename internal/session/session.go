@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -81,7 +82,31 @@ func NewSessionManager(workspacePath string) SessionManager {
 	}
 }
 
+func ValidateSessionID(sessionID string) error {
+	normalized := strings.TrimSpace(sessionID)
+	if normalized == "" {
+		return fmt.Errorf("session id cannot be empty")
+	}
+	if strings.ContainsAny(normalized, `/\`) {
+		return fmt.Errorf("session id cannot contain path separators")
+	}
+	if normalized == "." || normalized == ".." {
+		return fmt.Errorf("session id cannot be dot path segments")
+	}
+	for _, r := range normalized {
+		if r == 0 || unicode.IsControl(r) {
+			return fmt.Errorf("session id cannot contain control characters")
+		}
+	}
+	return nil
+}
+
 func (manager *sessionManager) GetOrCreateSession(sessionID string, senderID string) (Session, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if err := ValidateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 
