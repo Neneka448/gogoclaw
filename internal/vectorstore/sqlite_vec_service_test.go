@@ -110,6 +110,20 @@ func TestResolveSQLiteVecExtensionPathFindsWorkspaceArtifact(t *testing.T) {
 	}
 }
 
+func TestResolveSQLiteVecExtensionEntryPointUsesSQLiteFilenameRules(t *testing.T) {
+	resolved := resolveSQLiteVecExtensionEntryPoint("/tmp/sqlite-vec/vec0.dylib")
+	if resolved != "sqlite3_vec_init" {
+		t.Fatalf("resolveSQLiteVecExtensionEntryPoint() = %q, want sqlite3_vec_init", resolved)
+	}
+}
+
+func TestResolveSQLiteVecExtensionEntryPointStripsLibPrefixAndSymbols(t *testing.T) {
+	resolved := resolveSQLiteVecExtensionEntryPoint("/tmp/sqlite-vec/libhello-world1.so")
+	if resolved != "sqlite3_helloworld_init" {
+		t.Fatalf("resolveSQLiteVecExtensionEntryPoint() = %q, want sqlite3_helloworld_init", resolved)
+	}
+}
+
 func TestSQLiteVecServiceUpsertAndSearchTopKFallback(t *testing.T) {
 	workspace := t.TempDir()
 	service := NewSQLiteVecService(workspace, "default", config.EmbeddingProfileConfig{

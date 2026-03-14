@@ -149,6 +149,8 @@ func (service *sqliteVecService) Start() error {
 	if err != nil {
 		return fmt.Errorf("open sqlite-vec database: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return fmt.Errorf("ping sqlite-vec database: %w", err)
@@ -412,7 +414,7 @@ func (service *sqliteVecService) loadSQLiteVecExtension(db *sql.DB) (bool, error
 		if !ok {
 			return fmt.Errorf("unexpected sqlite driver connection type: %T", driverConn)
 		}
-		if err := sqliteConn.LoadExtension(service.extensionPath, ""); err != nil {
+		if err := sqliteConn.LoadExtension(service.extensionPath, resolveSQLiteVecExtensionEntryPoint(service.extensionPath)); err != nil {
 			return err
 		}
 		return nil
@@ -420,11 +422,25 @@ func (service *sqliteVecService) loadSQLiteVecExtension(db *sql.DB) (bool, error
 		return false, fmt.Errorf("load sqlite-vec extension %s: %w", service.extensionPath, err)
 	}
 
-	if _, err := db.Exec("select vec_version()"); err != nil {
+	if err := verifySQLiteVecExtension(conn); err != nil {
 		return false, fmt.Errorf("verify sqlite-vec extension: %w", err)
 	}
 
 	return true, nil
+}
+
+func verifySQLiteVecExtension(conn *sql.Conn) error {
+	ctx := context.Background()
+	if _, err := conn.ExecContext(ctx, `drop table if exists temp.gogoclaw_vec_verify`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `create virtual table temp.gogoclaw_vec_verify using vec0(embedding float[1])`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `drop table temp.gogoclaw_vec_verify`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func initializeSQLiteVecMetadata(db *sql.DB) error {
@@ -775,6 +791,23 @@ func trimSQLiteExtensionSuffix(path string) string {
 	default:
 		return path
 	}
+}
+
+func resolveSQLiteVecExtensionEntryPoint(extensionPath string) string {
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(trimSQLiteExtensionSuffix(extensionPath))))
+	base = strings.TrimPrefix(base, "lib")
+
+	var builder strings.Builder
+	for i := 0; i < len(base); i++ {
+		if base[i] >= 'a' && base[i] <= 'z' {
+			builder.WriteByte(base[i])
+		}
+	}
+	if builder.Len() == 0 {
+		return "sqlite3_extension_init"
+	}
+
+	return "sqlite3_" + builder.String() + "_init"
 }
 
 func normalizeSQLiteIdentifier(value string) string {

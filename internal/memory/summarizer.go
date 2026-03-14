@@ -3,6 +3,7 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -60,6 +61,9 @@ func (s *Summarizer) SummarizeSession(sessionContent string) (*sessionSummaryOut
 		},
 		MaxCompletionTokens: 2048,
 		Temperature:         0.1,
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
 	})
 
 	response, err := s.llm.ChatCompletion(request)
@@ -70,11 +74,11 @@ func (s *Summarizer) SummarizeSession(sessionContent string) (*sessionSummaryOut
 	content := strings.TrimSpace(response.GetContent())
 	content = stripMarkdownCodeFence(content)
 
-	var output sessionSummaryOutput
-	if err := json.Unmarshal([]byte(content), &output); err != nil {
+	output, err := parseSessionSummaryOutput(content)
+	if err != nil {
 		return nil, fmt.Errorf("parse session summary JSON: %w (content: %s)", err, truncateForError(content, 500))
 	}
-	return &output, nil
+	return output, nil
 }
 
 const communitySummaryPrompt = `You are a memory consolidation agent. You are given several memory entries that describe similar scenarios or tasks. Your job is to merge them into a single higher-level memory that captures the common pattern, accumulated strategy, and key lessons.
@@ -111,6 +115,9 @@ func (s *Summarizer) SummarizeCommunity(nodes []MemoryNode) (*sessionSummaryOutp
 		},
 		MaxCompletionTokens: 2048,
 		Temperature:         0.1,
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
 	})
 
 	response, err := s.llm.ChatCompletion(request)
@@ -121,11 +128,99 @@ func (s *Summarizer) SummarizeCommunity(nodes []MemoryNode) (*sessionSummaryOutp
 	content := strings.TrimSpace(response.GetContent())
 	content = stripMarkdownCodeFence(content)
 
-	var output sessionSummaryOutput
-	if err := json.Unmarshal([]byte(content), &output); err != nil {
+	output, err := parseSessionSummaryOutput(content)
+	if err != nil {
 		return nil, fmt.Errorf("parse community summary JSON: %w (content: %s)", err, truncateForError(content, 500))
 	}
-	return &output, nil
+	return output, nil
+}
+
+type rawSessionSummaryOutput struct {
+	Who    json.RawMessage `json:"who"`
+	What   json.RawMessage `json:"what"`
+	When   json.RawMessage `json:"when"`
+	Where  json.RawMessage `json:"where"`
+	Why    json.RawMessage `json:"why"`
+	How    json.RawMessage `json:"how"`
+	Result json.RawMessage `json:"result"`
+}
+
+func parseSessionSummaryOutput(content string) (*sessionSummaryOutput, error) {
+	var raw rawSessionSummaryOutput
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		return nil, err
+	}
+
+	return &sessionSummaryOutput{
+		Who:    normalizeSummaryField(raw.Who),
+		What:   normalizeSummaryField(raw.What),
+		When:   normalizeSummaryField(raw.When),
+		Where:  normalizeSummaryField(raw.Where),
+		Why:    normalizeSummaryField(raw.Why),
+		How:    normalizeSummaryField(raw.How),
+		Result: normalizeSummaryField(raw.Result),
+	}, nil
+}
+
+func normalizeSummaryField(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+
+	var texts []string
+	if err := json.Unmarshal(raw, &texts); err == nil {
+		parts := make([]string, 0, len(texts))
+		for _, item := range texts {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			parts = append(parts, item)
+		}
+		return strings.Join(parts, ", ")
+	}
+
+	var values []any
+	if err := json.Unmarshal(raw, &values); err == nil {
+		parts := make([]string, 0, len(values))
+		for _, value := range values {
+			part := normalizeSummaryValue(value)
+			if part == "" {
+				continue
+			}
+			parts = append(parts, part)
+		}
+		return strings.Join(parts, ", ")
+	}
+
+	return strings.TrimSpace(string(raw))
+}
+
+func normalizeSummaryValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case nil:
+		return ""
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(encoded))
+	}
 }
 
 func stripMarkdownCodeFence(content string) string {
