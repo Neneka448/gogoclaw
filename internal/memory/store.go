@@ -281,7 +281,9 @@ func scanNode(row scannable) (*MemoryNode, error) {
 		return nil, fmt.Errorf("parse node updated_at %q: %w", updatedAt, parseErr)
 	}
 	if sourceIDsJSON != "" {
-		_ = json.Unmarshal([]byte(sourceIDsJSON), &node.SourceNodeIDs)
+		if err := json.Unmarshal([]byte(sourceIDsJSON), &node.SourceNodeIDs); err != nil {
+			return nil, fmt.Errorf("unmarshal source_node_ids for node %v: %w", node.ID, err)
+		}
 	}
 	return &node, nil
 }
