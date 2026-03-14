@@ -124,6 +124,18 @@ func (g *gateway) Start() error {
 		}
 	}
 
+	if g.context.MemoryService != nil && g.context.MemoryEnabled {
+		if err := g.context.MemoryService.Initialize(); err != nil {
+			if g.context.VectorStore != nil {
+				_ = g.context.VectorStore.Stop()
+			}
+			g.mu.Lock()
+			g.started = false
+			g.mu.Unlock()
+			return err
+		}
+	}
+
 	if g.context.CronService != nil && g.context.CronEnabled {
 		if err := g.context.CronService.LoadAll(); err != nil {
 			if g.context.VectorStore != nil {
