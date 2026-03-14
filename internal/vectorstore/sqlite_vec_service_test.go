@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
@@ -366,6 +367,54 @@ func TestSQLiteVecServiceSearchByThresholdNotStarted(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("SearchByThreshold() error = nil, want not-started error")
+	}
+}
+
+func TestBuildSQLiteVecSearchQueryExcludesExternalID(t *testing.T) {
+	query, args, err := buildSQLiteVecSearchQuery(profileStoreDefinition{
+		VectorTableName: "gogoclaw_vec_default_text_vectors",
+		MetadataTable:   "gogoclaw_vec_default_text_records",
+	}, SearchRequest{
+		Query:      []float32{1, 0, 0},
+		Limit:      5,
+		ExternalID: "alpha",
+	})
+	if err != nil {
+		t.Fatalf("buildSQLiteVecSearchQuery() error = %v", err)
+	}
+	if !strings.Contains(query, "and m.external_id <> ?") {
+		t.Fatalf("query = %q, want external_id exclusion clause", query)
+	}
+	if len(args) != 3 {
+		t.Fatalf("len(args) = %d, want 3", len(args))
+	}
+	if externalID, ok := args[1].(string); !ok || externalID != "alpha" {
+		t.Fatalf("args[1] = %#v, want alpha", args[1])
+	}
+	if limit, ok := args[2].(int); !ok || limit != 5 {
+		t.Fatalf("args[2] = %#v, want 5", args[2])
+	}
+}
+
+func TestBuildSQLiteVecSearchQueryWithoutExternalID(t *testing.T) {
+	query, args, err := buildSQLiteVecSearchQuery(profileStoreDefinition{
+		VectorTableName: "gogoclaw_vec_default_text_vectors",
+		MetadataTable:   "gogoclaw_vec_default_text_records",
+	}, SearchRequest{
+		Query: []float32{1, 0, 0},
+		Limit: 3,
+	})
+	if err != nil {
+		t.Fatalf("buildSQLiteVecSearchQuery() error = %v", err)
+	}
+	if strings.Contains(query, "external_id <>") {
+		t.Fatalf("query = %q, want no external_id exclusion clause", query)
+	}
+	if len(args) != 2 {
+		t.Fatalf("len(args) = %d, want 2", len(args))
+	}
+	if limit, ok := args[1].(int); !ok || limit != 3 {
+		t.Fatalf("args[1] = %#v, want 3", args[1])
 	}
 }
 

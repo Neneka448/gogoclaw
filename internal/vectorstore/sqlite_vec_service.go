@@ -359,14 +359,14 @@ func (service *sqliteVecService) SearchByThreshold(request ThresholdSearchReques
 	}
 
 	var candidates []SearchResult
-	if service.extensionLoaded && metric == DistanceMetricL2 {
+	if service.extensionLoaded && store.OutputDimension > 0 && metric == DistanceMetricL2 {
 		candidates, err = service.searchWithSQLiteVec(store, SearchRequest{
 			StoreKind:  request.StoreKind,
 			Query:      request.Query,
 			Limit:      maxResults,
 			Metric:     metric,
 			ExternalID: request.ExternalID,
-		}, metric)
+		})
 	} else {
 		candidates, err = service.searchFallback(store, SearchRequest{
 			StoreKind:  request.StoreKind,
@@ -632,19 +632,11 @@ func (service *sqliteVecService) loadProfileStoreDefinition(kind StoreKind) (pro
 }
 
 func (service *sqliteVecService) searchWithSQLiteVec(store profileStoreDefinition, request SearchRequest) ([]SearchResult, error) {
-	queryJSON, err := encodeEmbeddingJSON(request.Query)
+	query, args, err := buildSQLiteVecSearchQuery(store, request)
 	if err != nil {
 		return nil, err
 	}
-	query := fmt.Sprintf(`
-		select m.external_id, m.metadata_json, v.distance
-		from %s as v
-		join %s as m on m.rowid = v.rowid
-		where embedding match ?
-		order by distance
-		limit ?
-	`, quoteSQLiteIdentifier(store.VectorTableName), quoteSQLiteIdentifier(store.MetadataTable))
-	rows, err := service.db.Query(query, queryJSON, request.Limit)
+	rows, err := service.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search sqlite-vec virtual table: %w", err)
 	}
@@ -662,6 +654,27 @@ func (service *sqliteVecService) searchWithSQLiteVec(store profileStoreDefinitio
 		return nil, fmt.Errorf("iterate sqlite-vec search results: %w", err)
 	}
 	return results, nil
+}
+
+func buildSQLiteVecSearchQuery(store profileStoreDefinition, request SearchRequest) (string, []any, error) {
+	queryJSON, err := encodeEmbeddingJSON(request.Query)
+	if err != nil {
+		return "", nil, err
+	}
+	query := fmt.Sprintf(`
+		select m.external_id, m.metadata_json, v.distance
+		from %s as v
+		join %s as m on m.rowid = v.rowid
+		where embedding match ?
+	`, quoteSQLiteIdentifier(store.VectorTableName), quoteSQLiteIdentifier(store.MetadataTable))
+	args := []any{queryJSON}
+	if strings.TrimSpace(request.ExternalID) != "" {
+		query += " and m.external_id <> ?\n"
+		args = append(args, request.ExternalID)
+	}
+	query += "\t\torder by distance\n\t\tlimit ?\n\t"
+	args = append(args, request.Limit)
+	return query, args, nil
 }
 
 func (service *sqliteVecService) searchFallback(store profileStoreDefinition, request SearchRequest, metric DistanceMetric) ([]SearchResult, error) {
