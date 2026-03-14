@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -150,6 +151,33 @@ func deployEmbeddedDir(fsys embed.FS, embeddedRoot, targetDir string) error {
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			return fmt.Errorf("create directory for %s: %w", targetPath, err)
 		}
-		return os.WriteFile(targetPath, content, 0644)
+
+		mode := fs.FileMode(0644)
+		if isExecutableScript(path, content) {
+			mode = 0755
+		}
+
+		return os.WriteFile(targetPath, content, mode)
 	})
+}
+
+func isExecutableScript(path string, content []byte) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".sh", ".py":
+		return true
+	}
+
+	if len(content) == 0 {
+		return false
+	}
+
+	// Check for shebang (#!) on the first line.
+	lineEnd := bytes.IndexByte(content, '\n')
+	if lineEnd == -1 {
+		lineEnd = len(content)
+	}
+	firstLine := string(content[:lineEnd])
+
+	return strings.HasPrefix(firstLine, "#!")
 }
