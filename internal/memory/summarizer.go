@@ -28,6 +28,14 @@ type sessionSummaryOutput struct {
 	Result string `json:"result"`
 }
 
+func truncateForError(content string, maxLen int) string {
+	content = strings.TrimSpace(content)
+	if len(content) <= maxLen {
+		return content
+	}
+	return content[:maxLen] + "...(truncated)"
+}
+
 const sessionSummaryPrompt = `You are a memory extraction agent. Given a conversation session transcript, extract a structured 5W1H+R summary.
 
 Rules:
@@ -64,7 +72,7 @@ func (s *Summarizer) SummarizeSession(sessionContent string) (*sessionSummaryOut
 
 	var output sessionSummaryOutput
 	if err := json.Unmarshal([]byte(content), &output); err != nil {
-		return nil, fmt.Errorf("parse session summary JSON: %w (content: %s)", err, content)
+		return nil, fmt.Errorf("parse session summary JSON: %w (content: %s)", err, truncateForError(content, 500))
 	}
 	return &output, nil
 }
@@ -115,7 +123,7 @@ func (s *Summarizer) SummarizeCommunity(nodes []MemoryNode) (*sessionSummaryOutp
 
 	var output sessionSummaryOutput
 	if err := json.Unmarshal([]byte(content), &output); err != nil {
-		return nil, fmt.Errorf("parse community summary JSON: %w (content: %s)", err, content)
+		return nil, fmt.Errorf("parse community summary JSON: %w (content: %s)", err, truncateForError(content, 500))
 	}
 	return &output, nil
 }

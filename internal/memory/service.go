@@ -51,9 +51,8 @@ func NewService(
 	embeddingProvider provider.EmbeddingProvider,
 	memoryConfig config.MemoryConfig,
 ) Service {
-	db := vectorStore.DB()
 	return &service{
-		store:       NewStore(db),
+		store:       nil,
 		vectorStore: vectorStore,
 		embedding:   embeddingProvider,
 		summarizer:  NewSummarizer(llm, model),
@@ -62,6 +61,13 @@ func NewService(
 }
 
 func (s *service) Initialize() error {
+	if s.store == nil {
+		db := s.vectorStore.DB()
+		if db == nil {
+			return fmt.Errorf("memory service initialization failed: vector store DB is not initialized")
+		}
+		s.store = NewStore(db)
+	}
 	return s.store.Initialize()
 }
 
@@ -106,11 +112,11 @@ func (s *service) Recall(queryText string, topK int, minSimilarity float64) ([]M
 	if topK <= 0 {
 		topK = s.config.RecallTopK
 	}
-	if minSimilarity <= 0 {
+	if minSimilarity < 0 {
 		minSimilarity = s.config.RecallMinSimilarity
 	}
 
-	queryEmbedding, err := s.embed(queryText)
+	queryEmbedding, err := s.embedQuery(queryText)
 	if err != nil {
 		return nil, fmt.Errorf("embed recall query: %w", err)
 	}
@@ -174,7 +180,7 @@ func (s *service) GetNode(nodeID string) (*MemoryNode, error) {
 func (s *service) insertNodeWithEdgesAndCommunityCheck(node MemoryNode, kind NodeKind, level int) error {
 	embeddingText := node.EmbeddingText()
 	if strings.TrimSpace(embeddingText) == "" {
-		return fmt.Errorf("node %s has empty embedding text, skipping", node.ID)
+		return nil
 	}
 
 	embedding, err := s.embed(embeddingText)
@@ -335,14 +341,14 @@ func (s *service) consolidateCommunity(communityIDs []string, kind NodeKind, lev
 	return nil
 }
 
-func (s *service) embed(text string) ([]float32, error) {
+func (s *service) embedWithType(text string, inputType provider.EmbeddingInputType) ([]float32, error) {
 	if s.embedding == nil {
 		return nil, fmt.Errorf("embedding provider is not configured")
 	}
 
 	resp, err := s.embedding.TextEmbeddings(provider.TextEmbeddingParams{
 		Input:     []string{text},
-		InputType: provider.EmbeddingInputTypeDocument,
+		InputType: inputType,
 	})
 	if err != nil {
 		return nil, err
@@ -357,6 +363,14 @@ func (s *service) embed(text string) ([]float32, error) {
 		float32Values[i] = float32(v)
 	}
 	return float32Values, nil
+}
+
+func (s *service) embed(text string) ([]float32, error) {
+	return s.embedWithType(text, provider.EmbeddingInputTypeDocument)
+}
+
+func (s *service) embedQuery(text string) ([]float32, error) {
+	return s.embedWithType(text, provider.EmbeddingInputTypeQuery)
 }
 
 func generateNodeID(prefix string) string {
@@ -379,14 +393,25 @@ func buildSummaryText(s *sessionSummaryOutput) string {
 func formatSessionMessages(messages []openai.ChatCompletionMessage) string {
 	var builder strings.Builder
 	for _, msg := range messages {
-		if msg.Content == "" {
+		if msg.Content == "" && len(msg.ToolCalls) == 0 {
 			continue
 		}
 		role := msg.Role
 		if role == "" {
 			role = "unknown"
 		}
-		builder.WriteString(role + ": " + msg.Content + "\n\n")
+		if msg.Content != "" {
+			builder.WriteString(role + ": " + msg.Content + "\n\n")
+			continue
+		}
+		for _, tc := range msg.ToolCalls {
+			name := tc.Function.Name
+			args := tc.Function.Arguments
+			if name == "" && args == "" {
+				continue
+			}
+			builder.WriteString(fmt.Sprintf("%s: tool_call %s(%s)\n\n", role, name, args))
+		}
 	}
 	return builder.String()
 }

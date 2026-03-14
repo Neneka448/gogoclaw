@@ -41,8 +41,8 @@ func (s *Store) Initialize() error {
 			ref_count integer not null default 0,
 			source_node_ids text not null default '[]',
 			session_id text not null default '',
-			created_at text not null default current_timestamp,
-			updated_at text not null default current_timestamp
+			created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)
 	`); err != nil {
 		return fmt.Errorf("create memory nodes table: %w", err)
@@ -53,7 +53,7 @@ func (s *Store) Initialize() error {
 			source_id text not null,
 			target_id text not null,
 			weight real not null default 0,
-			created_at text not null default current_timestamp,
+			created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			primary key (source_id, target_id),
 			foreign key (source_id) references ` + memoryNodesTable + `(id),
 			foreign key (target_id) references ` + memoryNodesTable + `(id)
