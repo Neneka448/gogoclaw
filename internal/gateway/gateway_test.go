@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -385,11 +386,27 @@ type blockingGatewayProvider struct {
 	releaseFirst  chan struct{}
 }
 
+type backlogGatewayProvider struct {
+	mu            sync.Mutex
+	requests      []string
+	sharedStarted chan struct{}
+	otherStarted  chan struct{}
+	releaseShared chan struct{}
+}
+
 func newBlockingGatewayProvider() *blockingGatewayProvider {
 	return &blockingGatewayProvider{
 		firstStarted:  make(chan struct{}),
 		secondStarted: make(chan struct{}),
 		releaseFirst:  make(chan struct{}),
+	}
+}
+
+func newBacklogGatewayProvider() *backlogGatewayProvider {
+	return &backlogGatewayProvider{
+		sharedStarted: make(chan struct{}),
+		otherStarted:  make(chan struct{}),
+		releaseShared: make(chan struct{}),
 	}
 }
 
@@ -416,6 +433,41 @@ func (stub *blockingGatewayProvider) Requests() []openai.ChatCompletionRequest {
 	requests := make([]openai.ChatCompletionRequest, len(stub.requests))
 	copy(requests, stub.requests)
 	return requests
+}
+
+func (stub *backlogGatewayProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	content := latestUserMessage(request)
+
+	stub.mu.Lock()
+	stub.requests = append(stub.requests, content)
+	stub.mu.Unlock()
+
+	switch content {
+	case "shared-0":
+		close(stub.sharedStarted)
+		<-stub.releaseShared
+	case "other":
+		close(stub.otherStarted)
+	}
+
+	return provider.NormalizedResponse{Content: "done"}, nil
+}
+
+func latestUserMessage(request openai.ChatCompletionRequest) string {
+	for i := len(request.Messages) - 1; i >= 0; i-- {
+		if request.Messages[i].Role == openai.ChatMessageRoleUser {
+			return request.Messages[i].Content
+		}
+	}
+	return ""
+}
+
+func closeIfOpen(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
 }
 
 func osStderrSwap(buffer *bytes.Buffer) func() {
@@ -551,6 +603,60 @@ func TestGatewaySerializesInboundMessagesPerSession(t *testing.T) {
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+func TestGatewayBackloggedSessionDoesNotBlockOtherSessions(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	providerStub := newBacklogGatewayProvider()
+	sessionManager := session.NewSessionManager(workspace)
+
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ConfigManager:  newGatewayTestConfigManager(t),
+		ToolRegistry:   tools.NewToolRegistry(),
+		SessionManager: sessionManager,
+	}).(*gateway)
+	gw.workerCount = 2
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeIfOpen(providerStub.releaseShared)
+		if err := gw.Stop(); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	if err := bus.Put(messagebus.Message{ChannelID: "cli", ChatID: "shared", SenderID: "user-1", Message: "shared-0"}, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put(shared-0) error = %v", err)
+	}
+	select {
+	case <-providerStub.sharedStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for blocked shared session")
+	}
+
+	for i := 1; i <= 40; i++ {
+		if err := bus.Put(messagebus.Message{
+			ChannelID: "cli",
+			ChatID:    "shared",
+			SenderID:  "user-1",
+			Message:   "shared-" + strconv.Itoa(i),
+		}, messagebus.InboundQueue); err != nil {
+			t.Fatalf("Put(shared-%d) error = %v", i, err)
+		}
+	}
+	if err := bus.Put(messagebus.Message{ChannelID: "cli", ChatID: "other", SenderID: "user-2", Message: "other"}, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put(other) error = %v", err)
+	}
+
+	select {
+	case <-providerStub.otherStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("other session was blocked by shared backlog")
 	}
 }
 
