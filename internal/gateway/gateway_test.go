@@ -198,6 +198,69 @@ func TestGatewayDirectProcessAndReturnInitializesMemoryRuntime(t *testing.T) {
 	}
 }
 
+func TestGatewayDirectProcessAndReturnDrainsMemoryProgressOnNew(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := session.NewSessionManager(workspace)
+	t.Cleanup(func() {
+		if err := sessionManager.Close(); err != nil {
+			t.Fatalf("sessionManager.Close() error = %v", err)
+		}
+	})
+
+	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("cli", "chat-1"), "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "history"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	if err := currentSession.WriteSessionFile(); err != nil {
+		t.Fatalf("WriteSessionFile() error = %v", err)
+	}
+
+	bus := messagebus.NewMessageBus()
+	memoryService := &fakeGatewayMemoryService{}
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:     bus,
+		ConfigManager:  newGatewayTestConfigManager(t),
+		ToolRegistry:   tools.NewToolRegistry(),
+		SessionManager: sessionManager,
+		MemoryService:  memoryService,
+		MemoryEnabled:  true,
+	})
+
+	responses, err := gw.DirectProcessAndReturn(messagebus.Message{
+		ChannelID: "cli",
+		ChatID:    "chat-1",
+		SenderID:  "user-1",
+		Message:   "/new",
+	})
+	if err != nil {
+		t.Fatalf("DirectProcessAndReturn() error = %v", err)
+	}
+	if memoryService.ingestCalls != 1 {
+		t.Fatalf("memoryService.ingestCalls = %d, want 1", memoryService.ingestCalls)
+	}
+	if len(responses) != 2 {
+		t.Fatalf("len(responses) = %d, want 2", len(responses))
+	}
+	if responses[0].Message != "[memory]: short-term memory generating" {
+		t.Fatalf("responses[0].Message = %q, want memory progress", responses[0].Message)
+	}
+	if responses[0].Metadata["message_kind"] != "progress" {
+		t.Fatalf("responses[0].Metadata[message_kind] = %q, want progress", responses[0].Metadata["message_kind"])
+	}
+	if responses[1].Message != "🎸A new session has started" {
+		t.Fatalf("responses[1].Message = %q, want new session reply", responses[1].Message)
+	}
+	if responses[1].FinishReason != "new_session" {
+		t.Fatalf("responses[1].FinishReason = %q, want new_session", responses[1].FinishReason)
+	}
+	if got := currentSession.GetMessages(10); len(got) != 0 {
+		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
+	}
+}
+
 type channelsTestChannel struct {
 	name     string
 	enabled  bool
@@ -221,6 +284,7 @@ type fakeGatewayVectorStore struct {
 
 type fakeGatewayMemoryService struct {
 	initializeCalls int
+	ingestCalls     int
 	mu              sync.Mutex
 	sessionIDs      []string
 }
@@ -307,6 +371,7 @@ func (service *fakeGatewayMemoryService) Initialize() error {
 func (service *fakeGatewayMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
 	service.mu.Lock()
 	defer service.mu.Unlock()
+	service.ingestCalls++
 	service.sessionIDs = append(service.sessionIDs, sessionID)
 	return nil
 }

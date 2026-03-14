@@ -99,7 +99,26 @@ func (g *gateway) startAgentLoop(msg messagebus.Message) <-chan error {
 
 func (g *gateway) listenOutboundMessages(outboundQueue <-chan messagebus.Message, errCh <-chan error, printOutput bool) ([]messagebus.Message, error) {
 	results := make([]messagebus.Message, 0, 4)
+	agentDone := false
 	for {
+		if agentDone {
+			for {
+				select {
+				case outbound := <-outboundQueue:
+					if printOutput {
+						if err := g.dispatchOutboundMessage(outbound); err != nil {
+							return results, err
+						}
+					}
+					results = append(results, outbound)
+					if outbound.FinishReason != "" && outbound.FinishReason != "tool_calls" {
+						return results, nil
+					}
+				default:
+					return results, nil
+				}
+			}
+		}
 		select {
 		case outbound := <-outboundQueue:
 			if printOutput {
@@ -115,7 +134,8 @@ func (g *gateway) listenOutboundMessages(outboundQueue <-chan messagebus.Message
 			if err != nil {
 				return results, err
 			}
-			return results, nil
+			agentDone = true
+			errCh = nil
 		case <-time.After(time.Second):
 			continue
 		}
