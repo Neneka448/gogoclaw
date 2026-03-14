@@ -2,14 +2,25 @@ package gateway
 
 import (
 	"bytes"
+	"database/sql"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/channels"
+	"github.com/Neneka448/gogoclaw/internal/config"
 	appcontext "github.com/Neneka448/gogoclaw/internal/context"
 	"github.com/Neneka448/gogoclaw/internal/cron"
+	"github.com/Neneka448/gogoclaw/internal/memory"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/provider"
+	"github.com/Neneka448/gogoclaw/internal/session"
+	"github.com/Neneka448/gogoclaw/internal/tools"
+	"github.com/Neneka448/gogoclaw/internal/vectorstore"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 func TestGatewayStartDispatchesOutboundMessages(t *testing.T) {
@@ -136,6 +147,50 @@ func TestGatewayCanRestartAfterStop(t *testing.T) {
 	}
 }
 
+func TestGatewayDirectProcessAndReturnInitializesMemoryRuntime(t *testing.T) {
+	bus := messagebus.NewMessageBus()
+	vectorStore := &fakeGatewayVectorStore{}
+	memoryService := &fakeGatewayMemoryService{}
+	providerStub := &fakeGatewayProvider{
+		responses: []provider.LLMCommonResponse{provider.NormalizedResponse{Content: "done"}},
+	}
+
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ConfigManager:  newGatewayTestConfigManager(t),
+		ToolRegistry:   tools.NewToolRegistry(),
+		SessionManager: session.NewSessionManager(t.TempDir()),
+		VectorStore:    vectorStore,
+		MemoryService:  memoryService,
+		MemoryEnabled:  true,
+	})
+	t.Cleanup(func() {
+		if err := gw.Stop(); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	})
+
+	responses, err := gw.DirectProcessAndReturn(messagebus.Message{
+		ChannelID: "cli",
+		ChatID:    "chat-1",
+		SenderID:  "user-1",
+		Message:   "hello",
+	})
+	if err != nil {
+		t.Fatalf("DirectProcessAndReturn() error = %v", err)
+	}
+	if vectorStore.startCalls != 1 {
+		t.Fatalf("vectorStore.startCalls = %d, want 1", vectorStore.startCalls)
+	}
+	if memoryService.initializeCalls != 1 {
+		t.Fatalf("memoryService.initializeCalls = %d, want 1", memoryService.initializeCalls)
+	}
+	if len(responses) != 1 || responses[0].Message != "done" {
+		t.Fatalf("responses = %#v, want single done message", responses)
+	}
+}
+
 type channelsTestChannel struct {
 	name     string
 	enabled  bool
@@ -145,6 +200,19 @@ type channelsTestChannel struct {
 type fakeGatewayCronManager struct {
 	startCalls int
 	stopCalls  int
+}
+
+type fakeGatewayProvider struct {
+	responses []provider.LLMCommonResponse
+}
+
+type fakeGatewayVectorStore struct {
+	startCalls int
+	stopCalls  int
+}
+
+type fakeGatewayMemoryService struct {
+	initializeCalls int
 }
 
 type fakeGatewayCronService struct {
@@ -173,6 +241,63 @@ func (manager *fakeGatewayCronManager) Start() error {
 func (manager *fakeGatewayCronManager) Stop() error {
 	manager.stopCalls++
 	return nil
+}
+
+func (provider *fakeGatewayProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	response := provider.responses[0]
+	provider.responses = provider.responses[1:]
+	return response, nil
+}
+
+func (store *fakeGatewayVectorStore) Start() error {
+	store.startCalls++
+	return nil
+}
+
+func (store *fakeGatewayVectorStore) Stop() error {
+	store.stopCalls++
+	return nil
+}
+
+func (store *fakeGatewayVectorStore) Path() string {
+	return ""
+}
+
+func (store *fakeGatewayVectorStore) DB() *sql.DB {
+	return nil
+}
+
+func (store *fakeGatewayVectorStore) Upsert(request vectorstore.UpsertRequest) error {
+	return nil
+}
+
+func (store *fakeGatewayVectorStore) Delete(request vectorstore.DeleteRequest) error {
+	return nil
+}
+
+func (store *fakeGatewayVectorStore) SearchTopK(request vectorstore.SearchRequest) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+
+func (store *fakeGatewayVectorStore) SearchByThreshold(request vectorstore.ThresholdSearchRequest) ([]vectorstore.SearchResult, error) {
+	return nil, nil
+}
+
+func (service *fakeGatewayMemoryService) Initialize() error {
+	service.initializeCalls++
+	return nil
+}
+
+func (service *fakeGatewayMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
+	return nil
+}
+
+func (service *fakeGatewayMemoryService) Recall(queryText string, topK int, minSimilarity float64) ([]memory.MemoryNode, error) {
+	return nil, nil
+}
+
+func (service *fakeGatewayMemoryService) GetNode(nodeID string) (*memory.MemoryNode, error) {
+	return nil, nil
 }
 
 func (service *fakeGatewayCronService) EnsureRoot() error {
@@ -249,6 +374,34 @@ func osStderrSwap(buffer *bytes.Buffer) func() {
 	return func() {
 		stderrWriter = original
 	}
+}
+
+func newGatewayTestConfigManager(t *testing.T) config.ConfigManager {
+	t.Helper()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	defaultConfig := config.CreateDefaultConfig()
+	defaultConfig.Agents.Profiles["default"] = config.ProfileConfig{
+		Workspace:         tempDir,
+		Provider:          "codex",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+
+	encoded, err := json.Marshal(defaultConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	return config.NewConfigManager(configPath)
 }
 
 func TestGatewayStartsAndStopsCronManager(t *testing.T) {

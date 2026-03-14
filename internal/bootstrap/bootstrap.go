@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/cron"
 	"github.com/Neneka448/gogoclaw/internal/gateway"
 	mcppkg "github.com/Neneka448/gogoclaw/internal/mcp"
+	"github.com/Neneka448/gogoclaw/internal/memory"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
@@ -45,6 +47,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	}
 	textEmbeddingProvider, modalEmbeddingProvider, err := buildEmbeddingProviders(configManager, embeddingProfile)
 	if err != nil {
+		return nil, err
+	}
+	if err := workspacepkg.EnsureMemorySkill(profile.Workspace); err != nil {
 		return nil, err
 	}
 	if err := workspacepkg.EnsureDefaultSkills(profile.Workspace); err != nil {
@@ -94,8 +99,25 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		CronService:     cronService,
 		CronEnabled:     sysConfig.Cron.Enabled,
 		MCPService:      mcpService,
+		MemoryEnabled:   sysConfig.Memory.Enabled && textEmbeddingProvider != nil,
 	}
-	if err := registerTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus, mcpService); err != nil {
+
+	if sysContext.MemoryEnabled {
+		if err := config.ValidateMemoryConfig(sysConfig.Memory); err != nil {
+			_ = mcpService.Close()
+			return nil, fmt.Errorf("invalid memory config: %w", err)
+		}
+		memoryService := memory.NewService(
+			sysContext.VectorStore,
+			llmProvider,
+			profile.Model,
+			textEmbeddingProvider,
+			sysConfig.Memory,
+		)
+		sysContext.MemoryService = memoryService
+	}
+
+	if err := registerTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus, mcpService, sysContext.MemoryService); err != nil {
 		_ = mcpService.Close()
 		return nil, err
 	}
@@ -118,7 +140,7 @@ func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, erro
 	return mcppkg.NewService(profile.Workspace, sysConfig.MCP, mcppkg.Options{FailFast: failFast})
 }
 
-func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus) error {
+func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, memoryService memory.Service) error {
 	if err := registry.RegisterTool("read_file", tools.NewReadFileTool(workspace)); err != nil {
 		return err
 	}
@@ -134,11 +156,16 @@ func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConf
 	if err := registry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
 		return err
 	}
+	if memoryService != nil {
+		if err := registry.RegisterTool("recall_memory", tools.NewRecallMemoryTool(memoryService)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func registerTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, mcpService mcppkg.Service) error {
-	if err := registerBuiltinTools(registry, workspace, sysConfig, skillRegistry, bus); err != nil {
+func registerTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, mcpService mcppkg.Service, memoryService memory.Service) error {
+	if err := registerBuiltinTools(registry, workspace, sysConfig, skillRegistry, bus, memoryService); err != nil {
 		return err
 	}
 	if mcpService == nil {
@@ -156,7 +183,7 @@ func executeCronRequest(baseContext appcontext.SystemContext, sysConfig *config.
 	tempBus := messagebus.NewMessageBus()
 	defer tempBus.Close()
 	tempTools := tools.NewToolRegistry()
-	if err := registerTools(tempTools, workspace, sysConfig, skillRegistry, tempBus, baseContext.MCPService); err != nil {
+	if err := registerTools(tempTools, workspace, sysConfig, skillRegistry, tempBus, baseContext.MCPService, baseContext.MemoryService); err != nil {
 		return err
 	}
 	cronContext := baseContext

@@ -1,5 +1,7 @@
 package config
 
+import "fmt"
+
 type SysConfig struct {
 	Agents    AgentConfig      `json:"agents"`
 	Embedding EmbeddingConfig  `json:"embedding"`
@@ -9,6 +11,7 @@ type SysConfig struct {
 	Tools     []ToolConfig     `json:"tools"`
 	MCP       MCPConfig        `json:"mcp"`
 	Cron      CronConfig       `json:"cron"`
+	Memory    MemoryConfig     `json:"memory"`
 }
 
 type MCPConfig struct {
@@ -116,6 +119,38 @@ type CronConfig struct {
 	Timezone string `json:"timezone"`
 }
 
+type MemoryConfig struct {
+	Enabled                     bool    `json:"enabled"`
+	EdgeSimilarityThreshold     float64 `json:"edgeSimilarityThreshold"`
+	ShortTermCommunityThreshold int     `json:"shortTermCommunityThreshold"`
+	LongTermCommunityThreshold  int     `json:"longTermCommunityThreshold"`
+	RecallTopK                  int     `json:"recallTopK"`
+	RecallMinSimilarity         float64 `json:"recallMinSimilarity"`
+}
+
+// ValidateMemoryConfig returns an error if the memory configuration values are out of safe range.
+func ValidateMemoryConfig(cfg MemoryConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.EdgeSimilarityThreshold <= 0 || cfg.EdgeSimilarityThreshold > 1 {
+		return fmt.Errorf("edgeSimilarityThreshold must be in (0, 1], got %f", cfg.EdgeSimilarityThreshold)
+	}
+	if cfg.RecallMinSimilarity < 0 || cfg.RecallMinSimilarity > 1 {
+		return fmt.Errorf("recallMinSimilarity must be in [0, 1], got %f", cfg.RecallMinSimilarity)
+	}
+	if cfg.ShortTermCommunityThreshold < 2 {
+		return fmt.Errorf("shortTermCommunityThreshold must be >= 2, got %d", cfg.ShortTermCommunityThreshold)
+	}
+	if cfg.LongTermCommunityThreshold < 2 {
+		return fmt.Errorf("longTermCommunityThreshold must be >= 2, got %d", cfg.LongTermCommunityThreshold)
+	}
+	if cfg.RecallTopK < 1 {
+		return fmt.Errorf("recallTopK must be >= 1, got %d", cfg.RecallTopK)
+	}
+	return nil
+}
+
 func CreateDefaultConfig() SysConfig {
 	return SysConfig{
 		Agents: AgentConfig{
@@ -191,6 +226,14 @@ func CreateDefaultConfig() SysConfig {
 		Cron: CronConfig{
 			Enabled:  true,
 			Timezone: "Europe/London",
+		},
+		Memory: MemoryConfig{
+			Enabled:                     true,
+			EdgeSimilarityThreshold:     0.75,
+			ShortTermCommunityThreshold: 5,
+			LongTermCommunityThreshold:  5,
+			RecallTopK:                  5,
+			RecallMinSimilarity:         0.6,
 		},
 	}
 }

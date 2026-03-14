@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -60,6 +61,7 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 		return err
 	}
 	if isNewSessionCommand(msg.Message) {
+		al.ingestSessionMemory(currentSession)
 		if _, err := currentSession.ArchiveAndReset(); err != nil {
 			return err
 		}
@@ -412,4 +414,20 @@ func (al *agentLoop) getOrCreateSession(msg messagebus.Message, workspace string
 	}
 
 	return al.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
+}
+
+// ingestSessionMemory feeds the current session messages into the memory system
+// for 5W1H+R summarization and graph storage before the session is reset.
+func (al *agentLoop) ingestSessionMemory(currentSession session.Session) {
+	if al.context.MemoryService == nil || !al.context.MemoryEnabled {
+		return
+	}
+	messages := currentSession.GetMessages(0)
+	if len(messages) == 0 {
+		return
+	}
+	sessionID := currentSession.GetSessionID()
+	if err := al.context.MemoryService.IngestSession(sessionID, messages); err != nil {
+		slog.Error("ingest session memory failed", "session", sessionID, "err", err)
+	}
 }
