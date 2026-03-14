@@ -3,6 +3,7 @@ package workspace
 import (
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ const (
 
 var bootstrapFileNames = []string{agentsFile, soulFile, toolsFile, userFile, heartbeatFile}
 
-//go:embed templates/*.md templates/skills/*/SKILL.md
+//go:embed templates/*.md templates/skills
 var bootstrapTemplates embed.FS
 
 func BootstrapFileNames() []string {
@@ -55,7 +56,9 @@ func EnsureBootstrapFiles(workspacePath string) error {
 }
 
 // EnsureDefaultSkills deploys embedded default skill templates into the workspace
-// skills directory. Existing skills are preserved and not overwritten.
+// skills directory. If a skill's SKILL.md already exists, the entire skill is
+// skipped (existing skills are preserved). New skills are deployed with all
+// bundled resources (agents, scripts, references, etc.).
 func EnsureDefaultSkills(workspacePath string) error {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
@@ -81,18 +84,40 @@ func EnsureDefaultSkills(workspacePath string) error {
 			return fmt.Errorf("stat skill file %s: %w", targetPath, err)
 		}
 
-		content, err := bootstrapTemplates.ReadFile(filepath.Join("templates", "skills", skillName, skillFileName))
-		if err != nil {
-			return fmt.Errorf("read embedded skill template %s: %w", skillName, err)
-		}
-
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			return fmt.Errorf("create skill directory %s: %w", targetDir, err)
-		}
-		if err := os.WriteFile(targetPath, content, 0644); err != nil {
-			return fmt.Errorf("write skill file %s: %w", targetPath, err)
+		embeddedRoot := filepath.Join("templates", "skills", skillName)
+		if err := deployEmbeddedDir(bootstrapTemplates, embeddedRoot, targetDir); err != nil {
+			return fmt.Errorf("deploy skill %s: %w", skillName, err)
 		}
 	}
 
 	return nil
+}
+
+// deployEmbeddedDir recursively copies all files from an embedded FS directory
+// to a target directory on disk.
+func deployEmbeddedDir(fsys embed.FS, embeddedRoot, targetDir string) error {
+	return fs.WalkDir(fsys, embeddedRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(embeddedRoot, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(targetDir, relPath)
+
+		if d.IsDir() {
+			return os.MkdirAll(targetPath, 0755)
+		}
+
+		content, err := fsys.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded file %s: %w", path, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return fmt.Errorf("create directory for %s: %w", targetPath, err)
+		}
+		return os.WriteFile(targetPath, content, 0644)
+	})
 }

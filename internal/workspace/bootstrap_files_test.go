@@ -57,6 +57,38 @@ func TestEnsureDefaultSkillsCreatesSkillCreator(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultSkillsDeploysBundledResources(t *testing.T) {
+	workspacePath := t.TempDir()
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	// Verify key bundled resources exist alongside SKILL.md
+	skillRoot := filepath.Join(workspacePath, "skills", "skill-creator")
+	expectedFiles := []string{
+		"agents/grader.md",
+		"agents/analyzer.md",
+		"agents/comparator.md",
+		"references/schemas.md",
+		"scripts/run_eval.py",
+		"scripts/run_loop.py",
+		"eval-viewer/generate_review.py",
+		"assets/eval_review.html",
+	}
+	for _, rel := range expectedFiles {
+		path := filepath.Join(skillRoot, rel)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("bundled resource %s not deployed: %v", rel, err)
+			continue
+		}
+		if info.Size() == 0 {
+			t.Errorf("bundled resource %s is empty", rel)
+		}
+	}
+}
+
 func TestEnsureDefaultSkillsPreservesExistingSkill(t *testing.T) {
 	workspacePath := t.TempDir()
 	skillDir := filepath.Join(workspacePath, "skills", "skill-creator")
