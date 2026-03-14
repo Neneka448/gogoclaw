@@ -358,13 +358,24 @@ func (service *sqliteVecService) SearchByThreshold(request ThresholdSearchReques
 		maxResults = 100
 	}
 
-	candidates, err := service.searchFallback(store, SearchRequest{
-		StoreKind:  request.StoreKind,
-		Query:      request.Query,
-		Limit:      maxResults,
-		Metric:     metric,
-		ExternalID: request.ExternalID,
-	}, metric)
+	var candidates []SearchResult
+	if service.extensionLoaded && metric == DistanceMetricL2 {
+		candidates, err = service.searchWithSQLiteVec(store, SearchRequest{
+			StoreKind:  request.StoreKind,
+			Query:      request.Query,
+			Limit:      maxResults,
+			Metric:     metric,
+			ExternalID: request.ExternalID,
+		}, metric)
+	} else {
+		candidates, err = service.searchFallback(store, SearchRequest{
+			StoreKind:  request.StoreKind,
+			Query:      request.Query,
+			Limit:      maxResults,
+			Metric:     metric,
+			ExternalID: request.ExternalID,
+		}, metric)
+	}
 	if err != nil {
 		return nil, err
 	}
