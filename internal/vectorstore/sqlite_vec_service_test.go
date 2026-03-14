@@ -152,6 +152,47 @@ func TestSQLiteVecServiceUpsertAndSearchTopKFallback(t *testing.T) {
 	}
 }
 
+func TestSQLiteVecServiceDeleteRemovesEmbedding(t *testing.T) {
+	workspace := t.TempDir()
+	service := NewSQLiteVecService(workspace, "default", config.EmbeddingProfileConfig{
+		Text: config.EmbeddingModelConfig{OutputDimension: 3},
+	}).(*sqliteVecService)
+	service.extensionPath = ""
+
+	if err := service.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = service.Stop() })
+
+	if err := service.Upsert(UpsertRequest{
+		StoreKind:  StoreKindText,
+		ExternalID: "alpha",
+		Embedding:  []float32{1, 0, 0},
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	if err := service.Delete(DeleteRequest{
+		StoreKind:  StoreKindText,
+		ExternalID: "alpha",
+	}); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	results, err := service.SearchTopK(SearchRequest{
+		StoreKind: StoreKindText,
+		Query:     []float32{1, 0, 0},
+		Limit:     1,
+		Metric:    DistanceMetricCosine,
+	})
+	if err != nil {
+		t.Fatalf("SearchTopK() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("len(results) = %d, want 0", len(results))
+	}
+}
+
 func TestSQLiteVecServiceUpsertRejectsDimensionMismatch(t *testing.T) {
 	workspace := t.TempDir()
 	service := NewSQLiteVecService(workspace, "default", config.EmbeddingProfileConfig{

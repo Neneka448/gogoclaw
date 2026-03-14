@@ -225,7 +225,27 @@ func (s *Store) GetNodesByIDs(nodeIDs []string) ([]MemoryNode, error) {
 		return nil, fmt.Errorf("get nodes by ids: %w", err)
 	}
 	defer rows.Close()
-	return scanNodes(rows)
+
+	nodes, err := scanNodes(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	byID := make(map[string]MemoryNode, len(nodes))
+	for _, node := range nodes {
+		byID[node.ID] = node
+	}
+
+	ordered := make([]MemoryNode, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		node, ok := byID[nodeID]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, node)
+	}
+
+	return ordered, nil
 }
 
 type scannable interface {

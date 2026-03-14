@@ -51,6 +51,9 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 	if strings.TrimSpace(msg.Message) == "" {
 		return nil, nil
 	}
+	if err := g.ensureRuntimeReady(); err != nil {
+		return nil, err
+	}
 	outboundQueue, err := g.context.MessageBus.Get(messagebus.OutboundQueue)
 	if err != nil {
 		return nil, err
@@ -115,25 +118,11 @@ func (g *gateway) Start() error {
 	g.started = true
 	g.mu.Unlock()
 
-	if g.context.VectorStore != nil {
-		if err := g.context.VectorStore.Start(); err != nil {
-			g.mu.Lock()
-			g.started = false
-			g.mu.Unlock()
-			return err
-		}
-	}
-
-	if g.context.MemoryService != nil && g.context.MemoryEnabled {
-		if err := g.context.MemoryService.Initialize(); err != nil {
-			if g.context.VectorStore != nil {
-				_ = g.context.VectorStore.Stop()
-			}
-			g.mu.Lock()
-			g.started = false
-			g.mu.Unlock()
-			return err
-		}
+	if err := g.ensureRuntimeReady(); err != nil {
+		g.mu.Lock()
+		g.started = false
+		g.mu.Unlock()
+		return err
 	}
 
 	if g.context.CronService != nil && g.context.CronEnabled {
@@ -199,17 +188,18 @@ func (g *gateway) Start() error {
 		return err
 	}
 
+	stopCh := g.stopCh
 	g.wg.Add(2)
-	go g.consumeInboundMessages(inboundQueue)
-	go g.consumeOutboundMessages(outboundQueue)
+	go g.consumeInboundMessages(stopCh, inboundQueue)
+	go g.consumeOutboundMessages(stopCh, outboundQueue)
 	return nil
 }
 
-func (g *gateway) consumeInboundMessages(inboundQueue <-chan messagebus.Message) {
+func (g *gateway) consumeInboundMessages(stopCh <-chan struct{}, inboundQueue <-chan messagebus.Message) {
 	defer g.wg.Done()
 	for {
 		select {
-		case <-g.stopCh:
+		case <-stopCh:
 			return
 		case msg, ok := <-inboundQueue:
 			if !ok {
@@ -224,11 +214,11 @@ func (g *gateway) consumeInboundMessages(inboundQueue <-chan messagebus.Message)
 	}
 }
 
-func (g *gateway) consumeOutboundMessages(outboundQueue <-chan messagebus.Message) {
+func (g *gateway) consumeOutboundMessages(stopCh <-chan struct{}, outboundQueue <-chan messagebus.Message) {
 	defer g.wg.Done()
 	for {
 		select {
-		case <-g.stopCh:
+		case <-stopCh:
 			return
 		case msg, ok := <-outboundQueue:
 			if !ok {
@@ -260,29 +250,54 @@ func (g *gateway) Stop() error {
 		if err := g.context.ChannelRegistry.StopAll(); err != nil {
 			return err
 		}
+		g.context.ChannelRegistry = nil
 	}
 	if g.context.CronService != nil {
 		if err := g.context.CronService.Stop(); err != nil {
 			return err
 		}
+		g.context.CronService = nil
 	}
 	if g.context.VectorStore != nil {
 		if err := g.context.VectorStore.Stop(); err != nil {
 			return err
 		}
+		g.context.VectorStore = nil
 	}
 	if g.context.MCPService != nil {
 		if err := g.context.MCPService.Close(); err != nil {
 			return err
 		}
+		g.context.MCPService = nil
 	}
 	if g.context.SessionManager != nil {
 		if err := g.context.SessionManager.Close(); err != nil {
 			return err
 		}
+		g.context.SessionManager = nil
 	}
 	if g.context.MessageBus != nil {
 		if err := g.context.MessageBus.Close(); err != nil {
+			return err
+		}
+		g.context.MessageBus = nil
+	}
+
+	return nil
+}
+
+func (g *gateway) ensureRuntimeReady() error {
+	if g.context.VectorStore != nil {
+		if err := g.context.VectorStore.Start(); err != nil {
+			return err
+		}
+	}
+
+	if g.context.MemoryService != nil && g.context.MemoryEnabled {
+		if err := g.context.MemoryService.Initialize(); err != nil {
+			if g.context.VectorStore != nil {
+				_ = g.context.VectorStore.Stop()
+			}
 			return err
 		}
 	}

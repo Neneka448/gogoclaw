@@ -78,12 +78,18 @@ type ThresholdSearchRequest struct {
 	ExternalID string
 }
 
+type DeleteRequest struct {
+	StoreKind  StoreKind
+	ExternalID string
+}
+
 type Service interface {
 	Start() error
 	Stop() error
 	Path() string
 	DB() *sql.DB
 	Upsert(request UpsertRequest) error
+	Delete(request DeleteRequest) error
 	SearchTopK(request SearchRequest) ([]SearchResult, error)
 	SearchByThreshold(request ThresholdSearchRequest) ([]SearchResult, error)
 }
@@ -252,6 +258,53 @@ func (service *sqliteVecService) Upsert(request UpsertRequest) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite-vec upsert transaction: %w", err)
+	}
+	return nil
+}
+
+func (service *sqliteVecService) Delete(request DeleteRequest) error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+
+	if !service.started || service.db == nil {
+		return fmt.Errorf("sqlite-vec service is not started")
+	}
+	store, err := service.loadProfileStoreDefinition(request.StoreKind)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.ExternalID) == "" {
+		return fmt.Errorf("sqlite-vec external id is required")
+	}
+
+	tx, err := service.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sqlite-vec delete transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var rowID int64
+	if err := tx.QueryRow(
+		fmt.Sprintf(`select rowid from %s where external_id = ?`, quoteSQLiteIdentifier(store.MetadataTable)),
+		request.ExternalID,
+	).Scan(&rowID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("load sqlite-vec metadata rowid: %w", err)
+	}
+
+	if service.extensionLoaded && store.OutputDimension > 0 {
+		if _, err := tx.Exec(fmt.Sprintf(`delete from %s where rowid = ?`, quoteSQLiteIdentifier(store.VectorTableName)), rowID); err != nil {
+			return fmt.Errorf("delete sqlite-vec vector row: %w", err)
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`delete from %s where external_id = ?`, quoteSQLiteIdentifier(store.MetadataTable)), request.ExternalID); err != nil {
+		return fmt.Errorf("delete sqlite-vec metadata row: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite-vec delete transaction: %w", err)
 	}
 	return nil
 }

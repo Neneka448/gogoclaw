@@ -333,11 +333,28 @@ func (s *service) consolidateCommunity(communityIDs []string, kind NodeKind, lev
 		markStatus = NodeStatusArchived
 	}
 	for _, id := range communityIDs {
-		if err := s.store.UpdateNodeStatus(id, markStatus); err != nil {
-			return fmt.Errorf("mark node %s as %s: %w", id, markStatus, err)
+		if err := s.deactivateNode(id, markStatus); err != nil {
+			return fmt.Errorf("deactivate node %s as %s: %w", id, markStatus, err)
 		}
 	}
 
+	return nil
+}
+
+func (s *service) deactivateNode(nodeID string, status NodeStatus) error {
+	if err := s.store.UpdateNodeStatus(nodeID, status); err != nil {
+		return err
+	}
+	if err := s.vectorStore.Delete(vectorstore.DeleteRequest{
+		StoreKind:  vectorstore.StoreKindText,
+		ExternalID: nodeID,
+	}); err != nil {
+		revertErr := s.store.UpdateNodeStatus(nodeID, NodeStatusActive)
+		if revertErr != nil {
+			return fmt.Errorf("delete vector: %w (revert status: %v)", err, revertErr)
+		}
+		return fmt.Errorf("delete vector: %w", err)
+	}
 	return nil
 }
 

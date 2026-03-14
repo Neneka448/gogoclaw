@@ -14,9 +14,9 @@ type RecallMemoryTool struct {
 }
 
 type recallMemoryArgs struct {
-	Query         string  `json:"query"`
-	TopK          int     `json:"top_k,omitempty"`
-	MinSimilarity float64 `json:"min_similarity,omitempty"`
+	Query         string   `json:"query"`
+	TopK          int      `json:"top_k,omitempty"`
+	MinSimilarity *float64 `json:"min_similarity,omitempty"`
 }
 
 type recallMemoryResult struct {
@@ -84,7 +84,12 @@ func (tool *RecallMemoryTool) Execute(args string) (string, error) {
 		return encodeRecallResult(recallMemoryResult{Error: "query is required"})
 	}
 
-	nodes, err := tool.memoryService.Recall(input.Query, input.TopK, input.MinSimilarity)
+	minSimilarity := -1.0
+	if input.MinSimilarity != nil {
+		minSimilarity = *input.MinSimilarity
+	}
+
+	nodes, err := tool.memoryService.Recall(input.Query, input.TopK, minSimilarity)
 	if err != nil {
 		return encodeRecallResult(recallMemoryResult{Error: fmt.Sprintf("recall failed: %v", err)})
 	}

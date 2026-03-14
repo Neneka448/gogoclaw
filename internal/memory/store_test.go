@@ -183,3 +183,24 @@ func TestStoreInsertEdgeIgnoresDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStoreGetNodesByIDsPreservesRequestedOrder(t *testing.T) {
+	store := newTestStore(t)
+
+	for _, id := range []string{"a", "b", "c"} {
+		if err := store.InsertNode(MemoryNode{ID: id, Kind: NodeKindShortTerm, Status: NodeStatusActive}); err != nil {
+			t.Fatalf("insert node %s: %v", id, err)
+		}
+	}
+
+	nodes, err := store.GetNodesByIDs([]string{"c", "a", "b"})
+	if err != nil {
+		t.Fatalf("GetNodesByIDs() error = %v", err)
+	}
+	if len(nodes) != 3 {
+		t.Fatalf("len(nodes) = %d, want 3", len(nodes))
+	}
+	if nodes[0].ID != "c" || nodes[1].ID != "a" || nodes[2].ID != "b" {
+		t.Fatalf("node order = [%s %s %s], want [c a b]", nodes[0].ID, nodes[1].ID, nodes[2].ID)
+	}
+}
