@@ -57,6 +57,37 @@ func TestEnsureDefaultSkillsCreatesSkillCreator(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultSkillsCreatesAgentBrowser(t *testing.T) {
+	workspacePath := t.TempDir()
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	skillPath := filepath.Join(workspacePath, "skills", "agent-browser", skillFileName)
+	info, err := os.Stat(skillPath)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", skillPath, err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("agent-browser SKILL.md is empty")
+	}
+
+	// Verify key bundled resources
+	browserRoot := filepath.Join(workspacePath, "skills", "agent-browser")
+	for _, rel := range []string{
+		"references/commands.md",
+		"references/authentication.md",
+		"references/snapshot-refs.md",
+		"templates/form-automation.sh",
+	} {
+		path := filepath.Join(browserRoot, rel)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("bundled resource %s not deployed: %v", rel, err)
+		}
+	}
+}
+
 func TestEnsureDefaultSkillsDeploysBundledResources(t *testing.T) {
 	workspacePath := t.TempDir()
 
