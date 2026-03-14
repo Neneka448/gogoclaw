@@ -653,6 +653,25 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+	select {
+	case message := <-outboundQueue:
+		if message.Message != memoryProgressMessage {
+			t.Fatalf("progress message.Message = %q, want %q", message.Message, memoryProgressMessage)
+		}
+		if message.Metadata["message_kind"] != "progress" {
+			t.Fatalf("progress message.Metadata[message_kind] = %q, want progress", message.Metadata["message_kind"])
+		}
+		if message.Metadata["progress_kind"] != "memory" {
+			t.Fatalf("progress message.Metadata[progress_kind] = %q, want memory", message.Metadata["progress_kind"])
+		}
+	default:
+		t.Fatal("expected memory progress outbound message before ingestion finishes")
+	}
+
 	if memoryService.ingestCalls != 1 {
 		t.Fatalf("memoryService.ingestCalls = %d, want 1", memoryService.ingestCalls)
 	}
@@ -664,6 +683,17 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 
 	if err := <-doneCh; err != nil {
 		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+	select {
+	case message := <-outboundQueue:
+		if message.Message != newSessionReply {
+			t.Fatalf("final message.Message = %q, want %q", message.Message, newSessionReply)
+		}
+		if message.FinishReason != "new_session" {
+			t.Fatalf("final message.FinishReason = %q, want new_session", message.FinishReason)
+		}
+	default:
+		t.Fatal("expected new session outbound reply after memory ingestion finishes")
 	}
 	if got := currentSession.GetMessages(10); len(got) != 0 {
 		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
