@@ -49,9 +49,12 @@ func (store *fakeMemoryVectorStore) SearchByThreshold(request vectorstore.Thresh
 	return nil, nil
 }
 
-type fakeMemoryEmbeddingProvider struct{}
+type fakeMemoryEmbeddingProvider struct {
+	lastTextParams provider.TextEmbeddingParams
+}
 
 func (embeddingProvider *fakeMemoryEmbeddingProvider) TextEmbeddings(params provider.TextEmbeddingParams) (*provider.EmbeddingResponse, error) {
+	embeddingProvider.lastTextParams = params
 	return &provider.EmbeddingResponse{
 		Data: []provider.EmbeddingData{{
 			Embedding: provider.EmbeddingVector{Values: []float64{1, 0, 0}},
@@ -85,9 +88,10 @@ func TestServiceConsolidateCommunityDeletesSourceVectors(t *testing.T) {
 	vectorStore := &fakeMemoryVectorStore{}
 	cfg := config.CreateDefaultConfig().Memory
 	svc := &service{
-		store:       store,
-		vectorStore: vectorStore,
-		embedding:   &fakeMemoryEmbeddingProvider{},
+		store:         store,
+		vectorStore:   vectorStore,
+		embedding:     &fakeMemoryEmbeddingProvider{},
+		textEmbedding: config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
 		summarizer: NewSummarizer(&fakeMemoryLLM{
 			content: `{"who":"user","what":"repeated auth fixes","when":"recurring","where":"repo","why":"stabilize auth","how":"compare the failing cases and reuse the fix path","result":"mostly successful"}`,
 		}, "test"),
@@ -139,11 +143,12 @@ func TestServiceInitializeRepairsActiveVectors(t *testing.T) {
 
 	vectorStore := &fakeMemoryVectorStore{}
 	svc := &service{
-		store:       store,
-		vectorStore: vectorStore,
-		embedding:   &fakeMemoryEmbeddingProvider{},
-		summarizer:  NewSummarizer(&fakeMemoryLLM{content: `{"who":"user","what":"repair","when":"now","where":"repo","why":"test","how":"repair active vectors","result":"success"}`}, "test"),
-		config:      config.CreateDefaultConfig().Memory,
+		store:         store,
+		vectorStore:   vectorStore,
+		embedding:     &fakeMemoryEmbeddingProvider{},
+		textEmbedding: config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
+		summarizer:    NewSummarizer(&fakeMemoryLLM{content: `{"who":"user","what":"repair","when":"now","where":"repo","why":"test","how":"repair active vectors","result":"success"}`}, "test"),
+		config:        config.CreateDefaultConfig().Memory,
 	}
 
 	if err := svc.Initialize(); err != nil {
@@ -154,5 +159,48 @@ func TestServiceInitializeRepairsActiveVectors(t *testing.T) {
 	}
 	if len(vectorStore.upserted) != 1 || vectorStore.upserted[0] != "st-repair" {
 		t.Fatalf("vectorStore.upserted = %#v, want [\"st-repair\"]", vectorStore.upserted)
+	}
+}
+
+func TestServiceEmbedWithTypePassesConfiguredTextEmbedding(t *testing.T) {
+	embeddingProvider := &fakeMemoryEmbeddingProvider{}
+	svc := &service{
+		embedding:     embeddingProvider,
+		textEmbedding: config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
+	}
+
+	vector, err := svc.embedWithType("remember this", provider.EmbeddingInputTypeQuery)
+	if err != nil {
+		t.Fatalf("embedWithType() error = %v", err)
+	}
+	if len(vector) != 3 {
+		t.Fatalf("len(vector) = %d, want 3", len(vector))
+	}
+	if embeddingProvider.lastTextParams.Model != "voyage-4-large" {
+		t.Fatalf("lastTextParams.Model = %q, want voyage-4-large", embeddingProvider.lastTextParams.Model)
+	}
+	if embeddingProvider.lastTextParams.InputType != provider.EmbeddingInputTypeQuery {
+		t.Fatalf("lastTextParams.InputType = %q, want query", embeddingProvider.lastTextParams.InputType)
+	}
+	if len(embeddingProvider.lastTextParams.Input) != 1 || embeddingProvider.lastTextParams.Input[0] != "remember this" {
+		t.Fatalf("lastTextParams.Input = %#v, want [\"remember this\"]", embeddingProvider.lastTextParams.Input)
+	}
+	if embeddingProvider.lastTextParams.OutputDimension == nil || *embeddingProvider.lastTextParams.OutputDimension != 1024 {
+		t.Fatalf("lastTextParams.OutputDimension = %#v, want 1024", embeddingProvider.lastTextParams.OutputDimension)
+	}
+}
+
+func TestServiceEmbedWithTypeRejectsMissingTextEmbeddingModel(t *testing.T) {
+	svc := &service{
+		embedding:     &fakeMemoryEmbeddingProvider{},
+		textEmbedding: config.EmbeddingModelConfig{},
+	}
+
+	_, err := svc.embedWithType("remember this", provider.EmbeddingInputTypeDocument)
+	if err == nil {
+		t.Fatal("embedWithType() error = nil, want missing model error")
+	}
+	if err.Error() != "text embedding model is not configured" {
+		t.Fatalf("embedWithType() error = %q, want text embedding model is not configured", err.Error())
 	}
 }

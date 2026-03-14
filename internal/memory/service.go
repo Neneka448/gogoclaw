@@ -42,6 +42,7 @@ type service struct {
 	store           *Store
 	vectorStore     vectorstore.Service
 	embedding       provider.EmbeddingProvider
+	textEmbedding   config.EmbeddingModelConfig
 	summarizer      *Summarizer
 	config          config.MemoryConfig
 	vectorsRepaired bool
@@ -52,14 +53,16 @@ func NewService(
 	llm provider.LLMProviderOpenaiCompatible,
 	model string,
 	embeddingProvider provider.EmbeddingProvider,
+	textEmbedding config.EmbeddingModelConfig,
 	memoryConfig config.MemoryConfig,
 ) Service {
 	return &service{
-		store:       nil,
-		vectorStore: vectorStore,
-		embedding:   embeddingProvider,
-		summarizer:  NewSummarizer(llm, model),
-		config:      memoryConfig,
+		store:         nil,
+		vectorStore:   vectorStore,
+		embedding:     embeddingProvider,
+		textEmbedding: textEmbedding,
+		summarizer:    NewSummarizer(llm, model),
+		config:        memoryConfig,
 	}
 }
 
@@ -427,11 +430,20 @@ func (s *service) embedWithType(text string, inputType provider.EmbeddingInputTy
 	if s.embedding == nil {
 		return nil, fmt.Errorf("embedding provider is not configured")
 	}
+	if strings.TrimSpace(s.textEmbedding.Model) == "" {
+		return nil, fmt.Errorf("text embedding model is not configured")
+	}
 
-	resp, err := s.embedding.TextEmbeddings(provider.TextEmbeddingParams{
+	request := provider.TextEmbeddingParams{
+		Model:     strings.TrimSpace(s.textEmbedding.Model),
 		Input:     []string{text},
 		InputType: inputType,
-	})
+	}
+	if s.textEmbedding.OutputDimension > 0 {
+		request.OutputDimension = &s.textEmbedding.OutputDimension
+	}
+
+	resp, err := s.embedding.TextEmbeddings(request)
 	if err != nil {
 		return nil, err
 	}

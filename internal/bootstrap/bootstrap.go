@@ -112,6 +112,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 			llmProvider,
 			profile.Model,
 			textEmbeddingProvider,
+			embeddingProfile.Text,
 			sysConfig.Memory,
 		)
 		sysContext.MemoryService = memoryService
