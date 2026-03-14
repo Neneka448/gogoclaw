@@ -183,6 +183,13 @@ func (s *service) Recall(queryText string, topK int, minSimilarity float64) ([]M
 }
 
 func (s *service) GetNode(nodeID string) (*MemoryNode, error) {
+	if s.store == nil {
+		db := s.vectorStore.DB()
+		if db == nil {
+			return nil, fmt.Errorf("memory service not initialized: vector store DB is nil")
+		}
+		s.store = NewStore(db)
+	}
 	return s.store.GetNode(nodeID)
 }
 
