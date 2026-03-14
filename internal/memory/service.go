@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	mathrand "math/rand"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -404,7 +405,13 @@ func (s *service) embedQuery(text string) ([]float32, error) {
 
 func generateNodeID(prefix string) string {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to a time-seeded pseudo-random source if crypto/rand fails.
+		mathrand.Seed(time.Now().UnixNano())
+		for i := range b {
+			b[i] = byte(mathrand.Intn(256))
+		}
+	}
 	return fmt.Sprintf("%s_%d_%s", prefix, time.Now().UnixMilli(), hex.EncodeToString(b))
 }
 
