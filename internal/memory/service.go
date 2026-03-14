@@ -5,10 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	mathrand "math/rand"
 	"strings"
 	"sync"
 	"time"
-	mathrand "math/rand"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -69,7 +69,10 @@ func (s *service) Initialize() error {
 		}
 		s.store = NewStore(db)
 	}
-	return s.store.Initialize()
+	if err := s.store.Initialize(); err != nil {
+		return err
+	}
+	return s.repairActiveVectors()
 }
 
 func (s *service) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
@@ -191,6 +194,36 @@ func (s *service) GetNode(nodeID string) (*MemoryNode, error) {
 		s.store = NewStore(db)
 	}
 	return s.store.GetNode(nodeID)
+}
+
+func (s *service) repairActiveVectors() error {
+	activeNodes, err := s.store.ListActiveNodes()
+	if err != nil {
+		return fmt.Errorf("list active nodes for vector repair: %w", err)
+	}
+	for _, node := range activeNodes {
+		embeddingText := node.EmbeddingText()
+		if strings.TrimSpace(embeddingText) == "" {
+			continue
+		}
+		embedding, err := s.embed(embeddingText)
+		if err != nil {
+			return fmt.Errorf("embed active node %s during repair: %w", node.ID, err)
+		}
+		metaJSON, err := json.Marshal(node)
+		if err != nil {
+			return fmt.Errorf("marshal active node %s metadata during repair: %w", node.ID, err)
+		}
+		if err := s.vectorStore.Upsert(vectorstore.UpsertRequest{
+			StoreKind:    vectorstore.StoreKindText,
+			ExternalID:   node.ID,
+			Embedding:    embedding,
+			MetadataJSON: string(metaJSON),
+		}); err != nil {
+			return fmt.Errorf("repair active node vector %s: %w", node.ID, err)
+		}
+	}
+	return nil
 }
 
 // insertNodeWithEdgesAndCommunityCheck embeds the node, stores it in SQLite first,

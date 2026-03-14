@@ -123,3 +123,33 @@ func TestServiceConsolidateCommunityDeletesSourceVectors(t *testing.T) {
 		t.Fatalf("len(activeLongTerm) = %d, want 1", len(activeLongTerm))
 	}
 }
+
+func TestServiceInitializeRepairsActiveVectors(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.InsertNode(MemoryNode{
+		ID:      "st-repair",
+		Kind:    NodeKindShortTerm,
+		Status:  NodeStatusActive,
+		Level:   0,
+		What:    "repair missing vector",
+		Summary: "repair missing vector",
+	}); err != nil {
+		t.Fatalf("InsertNode() error = %v", err)
+	}
+
+	vectorStore := &fakeMemoryVectorStore{}
+	svc := &service{
+		store:       store,
+		vectorStore: vectorStore,
+		embedding:   &fakeMemoryEmbeddingProvider{},
+		summarizer:  NewSummarizer(&fakeMemoryLLM{content: `{"who":"user","what":"repair","when":"now","where":"repo","why":"test","how":"repair active vectors","result":"success"}`}, "test"),
+		config:      config.CreateDefaultConfig().Memory,
+	}
+
+	if err := svc.Initialize(); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if len(vectorStore.upserted) != 1 || vectorStore.upserted[0] != "st-repair" {
+		t.Fatalf("vectorStore.upserted = %#v, want [\"st-repair\"]", vectorStore.upserted)
+	}
+}

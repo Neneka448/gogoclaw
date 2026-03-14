@@ -25,17 +25,22 @@ type Gateway interface {
 }
 
 type gateway struct {
-	context context.SystemContext
-	stopCh  chan struct{}
-	mu      sync.Mutex
-	started bool
-	wg      sync.WaitGroup
+	context        context.SystemContext
+	inboundStopCh  chan struct{}
+	mu             sync.Mutex
+	workersMu      sync.Mutex
+	started        bool
+	inboundWG      sync.WaitGroup
+	outboundWG     sync.WaitGroup
+	sessionWorkers map[string]chan messagebus.Message
+	sessionWG      sync.WaitGroup
 }
 
 func NewGateway(context context.SystemContext) Gateway {
 	return &gateway{
-		context: context,
-		stopCh:  make(chan struct{}),
+		context:        context,
+		inboundStopCh:  make(chan struct{}),
+		sessionWorkers: make(map[string]chan messagebus.Message),
 	}
 }
 
@@ -112,8 +117,8 @@ func (g *gateway) Start() error {
 		g.mu.Unlock()
 		return nil
 	}
-	if g.stopCh == nil {
-		g.stopCh = make(chan struct{})
+	if g.inboundStopCh == nil {
+		g.inboundStopCh = make(chan struct{})
 	}
 	g.started = true
 	g.mu.Unlock()
@@ -188,15 +193,16 @@ func (g *gateway) Start() error {
 		return err
 	}
 
-	stopCh := g.stopCh
-	g.wg.Add(2)
+	stopCh := g.inboundStopCh
+	g.inboundWG.Add(1)
 	go g.consumeInboundMessages(stopCh, inboundQueue)
-	go g.consumeOutboundMessages(stopCh, outboundQueue)
+	g.outboundWG.Add(1)
+	go g.consumeOutboundMessages(outboundQueue)
 	return nil
 }
 
 func (g *gateway) consumeInboundMessages(stopCh <-chan struct{}, inboundQueue <-chan messagebus.Message) {
-	defer g.wg.Done()
+	defer g.inboundWG.Done()
 	for {
 		select {
 		case <-stopCh:
@@ -205,57 +211,73 @@ func (g *gateway) consumeInboundMessages(stopCh <-chan struct{}, inboundQueue <-
 			if !ok {
 				return
 			}
-			go func(message messagebus.Message) {
-				if err := <-g.startAgentLoop(message); err != nil {
-					g.logBackgroundError("inbound", message, err)
-				}
-			}(msg)
+			if err := g.enqueueInboundMessage(msg); err != nil {
+				g.logBackgroundError("inbound", msg, err)
+			}
 		}
 	}
 }
 
-func (g *gateway) consumeOutboundMessages(stopCh <-chan struct{}, outboundQueue <-chan messagebus.Message) {
-	defer g.wg.Done()
-	for {
-		select {
-		case <-stopCh:
-			return
-		case msg, ok := <-outboundQueue:
-			if !ok {
-				return
-			}
-			if msg.Metadata["source"] == "cron" {
-				continue
-			}
-			if err := g.dispatchOutboundMessage(msg); err != nil {
-				g.logBackgroundError("outbound", msg, err)
-			}
+func (g *gateway) consumeOutboundMessages(outboundQueue <-chan messagebus.Message) {
+	defer g.outboundWG.Done()
+	for msg := range outboundQueue {
+		if msg.Metadata["source"] == "cron" {
+			continue
+		}
+		if err := g.dispatchOutboundMessage(msg); err != nil {
+			g.logBackgroundError("outbound", msg, err)
 		}
 	}
 }
 
 func (g *gateway) Stop() error {
 	g.mu.Lock()
-	stopCh := g.stopCh
-	if !g.started {
-		g.mu.Unlock()
-	} else {
-		g.stopCh = nil
+	stopCh := g.inboundStopCh
+	started := g.started
+	if started {
+		g.inboundStopCh = nil
 		g.started = false
-		g.mu.Unlock()
-		close(stopCh)
-		g.wg.Wait()
 	}
+	g.mu.Unlock()
+
+	if started && stopCh != nil {
+		close(stopCh)
+	}
+	g.inboundWG.Wait()
+
 	if g.context.ChannelRegistry != nil {
 		if err := g.context.ChannelRegistry.StopAll(); err != nil {
 			return err
 		}
-		g.context.ChannelRegistry = nil
 	}
 	if g.context.CronService != nil {
 		if err := g.context.CronService.Stop(); err != nil {
 			return err
 		}
+	}
+
+	g.closeSessionWorkers()
+	g.sessionWG.Wait()
+
+	if g.context.SessionManager != nil {
+		if err := g.context.SessionManager.Close(); err != nil {
+			return err
+		}
+	}
+	if err := g.syncDirtySessionsToMemory(); err != nil {
+		return err
+	}
+	if g.context.MessageBus != nil {
+		if err := g.context.MessageBus.Close(); err != nil {
+			return err
+		}
+	}
+	g.outboundWG.Wait()
+
+	if g.context.ChannelRegistry != nil {
+		g.context.ChannelRegistry = nil
+	}
+	if g.context.CronService != nil {
 		g.context.CronService = nil
 	}
 	if g.context.VectorStore != nil {
@@ -271,17 +293,9 @@ func (g *gateway) Stop() error {
 		g.context.MCPService = nil
 	}
 	if g.context.SessionManager != nil {
-		if err := g.context.SessionManager.Close(); err != nil {
-			return err
-		}
 		g.context.SessionManager = nil
 	}
-	if g.context.MessageBus != nil {
-		if err := g.context.MessageBus.Close(); err != nil {
-			return err
-		}
-		g.context.MessageBus = nil
-	}
+	g.context.MessageBus = nil
 
 	return nil
 }
@@ -300,8 +314,102 @@ func (g *gateway) ensureRuntimeReady() error {
 			}
 			return err
 		}
+		if err := g.syncDirtySessionsToMemory(); err != nil {
+			if g.context.VectorStore != nil {
+				_ = g.context.VectorStore.Stop()
+			}
+			return err
+		}
 	}
 
+	return nil
+}
+
+func (g *gateway) enqueueInboundMessage(message messagebus.Message) error {
+	sessionID := session.MakeSessionID(message.ChannelID, message.ChatID)
+
+	g.workersMu.Lock()
+	worker, ok := g.sessionWorkers[sessionID]
+	if !ok {
+		worker = make(chan messagebus.Message, 32)
+		g.sessionWorkers[sessionID] = worker
+		g.sessionWG.Add(1)
+		go g.runSessionWorker(sessionID, worker)
+	}
+	g.workersMu.Unlock()
+
+	g.mu.Lock()
+	stopCh := g.inboundStopCh
+	g.mu.Unlock()
+
+	if stopCh == nil {
+		return nil
+	}
+
+	select {
+	case worker <- message:
+		return nil
+	case <-stopCh:
+		return nil
+	}
+}
+
+func (g *gateway) runSessionWorker(sessionID string, worker <-chan messagebus.Message) {
+	defer g.sessionWG.Done()
+	defer func() {
+		g.workersMu.Lock()
+		delete(g.sessionWorkers, sessionID)
+		g.workersMu.Unlock()
+	}()
+
+	for message := range worker {
+		if err := agent.NewAgentLoop(g.context).ProcessMessage(message); err != nil {
+			g.logBackgroundError("inbound", message, err)
+		}
+	}
+}
+
+func (g *gateway) closeSessionWorkers() {
+	g.workersMu.Lock()
+	defer g.workersMu.Unlock()
+
+	for sessionID, worker := range g.sessionWorkers {
+		close(worker)
+		delete(g.sessionWorkers, sessionID)
+	}
+}
+
+func (g *gateway) syncDirtySessionsToMemory() error {
+	if g.context.MemoryService == nil || !g.context.MemoryEnabled || g.context.SessionManager == nil {
+		return nil
+	}
+
+	sessionIDs, err := g.context.SessionManager.ListSessionIDs()
+	if err != nil {
+		return err
+	}
+	for _, sessionID := range sessionIDs {
+		currentSession, err := g.context.SessionManager.GetOrCreateSession(sessionID, "")
+		if err != nil {
+			return err
+		}
+		messages := currentSession.GetMessages(0)
+		if len(messages) == 0 {
+			continue
+		}
+		digest := session.MessagesDigest(messages)
+		if digest != "" && digest == currentSession.GetMemoryIngestedDigest() {
+			continue
+		}
+		if err := g.context.MemoryService.IngestSession(currentSession.GetSessionID(), messages); err != nil {
+			return err
+		}
+		if digest != "" {
+			if err := currentSession.MarkMemoryIngested(digest); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

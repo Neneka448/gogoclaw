@@ -1,6 +1,10 @@
 package messagebus
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"sync"
+)
 
 type QueueType string
 
@@ -16,9 +20,13 @@ type MessageBus interface {
 }
 
 type messageBus struct {
+	mu            sync.RWMutex
+	closed        bool
 	inboundQueue  chan Message
 	outboundQueue chan Message
 }
+
+var errMessageBusClosed = errors.New("message bus is closed")
 
 type Message struct {
 	ChannelID    string
@@ -40,12 +48,27 @@ func NewMessageBus() MessageBus {
 	}
 }
 
-func (mb *messageBus) Put(message Message, queueType QueueType) error {
+func (mb *messageBus) Put(message Message, queueType QueueType) (err error) {
+	mb.mu.RLock()
+	closed := mb.closed
+	inboundQueue := mb.inboundQueue
+	outboundQueue := mb.outboundQueue
+	mb.mu.RUnlock()
+	if closed {
+		return errMessageBusClosed
+	}
+
+	defer func() {
+		if recover() != nil {
+			err = errMessageBusClosed
+		}
+	}()
+
 	switch queueType {
 	case InboundQueue:
-		mb.inboundQueue <- message
+		inboundQueue <- message
 	case OutboundQueue:
-		mb.outboundQueue <- message
+		outboundQueue <- message
 	default:
 		return fmt.Errorf("unknown queue type: %s", queueType)
 	}
@@ -64,6 +87,13 @@ func (mb *messageBus) Get(queueType QueueType) (<-chan Message, error) {
 }
 
 func (mb *messageBus) Close() error {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if mb.closed {
+		return nil
+	}
+	mb.closed = true
 	close(mb.inboundQueue)
 	close(mb.outboundQueue)
 	return nil

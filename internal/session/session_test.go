@@ -186,6 +186,34 @@ func TestSessionManagerCloseFlushesPendingMessages(t *testing.T) {
 	}
 }
 
+func TestSessionManagerListSessionIDs(t *testing.T) {
+	workspace := t.TempDir()
+	manager := NewSessionManager(workspace)
+	for _, sessionID := range []string{"cli:default", "feishu:chat-1"} {
+		currentSession, err := manager.GetOrCreateSession(sessionID, "user-1")
+		if err != nil {
+			t.Fatalf("GetOrCreateSession(%s) error = %v", sessionID, err)
+		}
+		if err := currentSession.WriteSessionFile(); err != nil {
+			t.Fatalf("WriteSessionFile(%s) error = %v", sessionID, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "sessions", "achrive"), 0755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "sessions", "achrive", "ignored.json"), []byte("{}"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	sessionIDs, err := manager.ListSessionIDs()
+	if err != nil {
+		t.Fatalf("ListSessionIDs() error = %v", err)
+	}
+	if len(sessionIDs) != 2 || sessionIDs[0] != "cli:default" || sessionIDs[1] != "feishu:chat-1" {
+		t.Fatalf("sessionIDs = %#v, want [\"cli:default\", \"feishu:chat-1\"]", sessionIDs)
+	}
+}
+
 func TestSessionArchiveAndReset(t *testing.T) {
 	previousNow := sessionNow
 	sessionNow = func() time.Time { return time.Unix(1700000000, 0) }

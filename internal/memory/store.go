@@ -131,6 +131,21 @@ func (s *Store) ListActiveNodesByKindAndLevel(kind NodeKind, level int) ([]Memor
 	return scanNodes(rows)
 }
 
+func (s *Store) ListActiveNodes() ([]MemoryNode, error) {
+	rows, err := s.db.Query(`
+		select id, kind, status, level, summary, who, what, "when", "where", why, how, result,
+			ref_count, source_node_ids, session_id, created_at, updated_at
+		from `+memoryNodesTable+`
+		where status = ?
+		order by created_at asc
+	`, string(NodeStatusActive))
+	if err != nil {
+		return nil, fmt.Errorf("list all active nodes: %w", err)
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
 func (s *Store) ListActiveNodeIDs(kind NodeKind, level int) ([]string, error) {
 	rows, err := s.db.Query(`
 		select id from `+memoryNodesTable+`

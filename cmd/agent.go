@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 var (
 	message       string
 	interactAgent bool
+	sessionID     string
 )
 
 var agentCmd = &cobra.Command{
@@ -27,6 +27,9 @@ var agentCmd = &cobra.Command{
 		}
 		if strings.TrimSpace(message) == "" {
 			return fmt.Errorf("flag --message requires a non-empty message")
+		}
+		if strings.TrimSpace(sessionID) == "" {
+			return fmt.Errorf("flag --session requires a non-empty value")
 		}
 
 		configPath, err := resolveConfigPath(cfgFile)
@@ -41,7 +44,7 @@ var agentCmd = &cobra.Command{
 
 		_, err = (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
 			ChannelID: "cli",
-			ChatID:    randomNumericString(12),
+			ChatID:    strings.TrimSpace(sessionID),
 			Message:   message,
 		})
 		if err != nil {
@@ -62,6 +65,7 @@ func init() {
 	rootCmd.AddCommand(agentCmd)
 	agentCmd.Flags().StringVarP(&message, "message", "m", "", "single message to send to the agent; must be non-empty when provided")
 	agentCmd.Flags().BoolVarP(&interactAgent, "interactive", "i", false, "run the agent in interactive mode")
+	agentCmd.Flags().StringVar(&sessionID, "session", "default", "session id to reuse for CLI conversation state")
 }
 
 func resolveConfigPath(configPath string) (string, error) {
@@ -75,20 +79,4 @@ func resolveConfigPath(configPath string) (string, error) {
 	}
 
 	return filepath.Join(homeDir, ".gogoclaw", "config.json"), nil
-}
-
-func randomNumericString(length int) string {
-	if length <= 0 {
-		return ""
-	}
-
-	buffer := make([]byte, length)
-	if _, err := rand.Read(buffer); err != nil {
-		return strings.Repeat("0", length)
-	}
-	for i := range buffer {
-		buffer[i] = '0' + (buffer[i] % 10)
-	}
-
-	return string(buffer)
 }
