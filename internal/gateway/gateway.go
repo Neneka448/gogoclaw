@@ -183,6 +183,20 @@ func (g *gateway) Start() error {
 			g.mu.Unlock()
 			return err
 		}
+		if crons, err := g.context.CronService.ListCrons(); err == nil {
+			if len(crons) == 0 {
+				_, _ = fmt.Fprintf(stderrWriter, "[cron] no cron tasks found\n")
+			} else {
+				_, _ = fmt.Fprintf(stderrWriter, "[cron] loaded %d cron task(s):\n", len(crons))
+				for _, c := range crons {
+					status := "disabled"
+					if c.Config.Enabled {
+						status = "enabled"
+					}
+					_, _ = fmt.Fprintf(stderrWriter, "[cron]   %-20s  %-16s  %s\n", c.Config.CronID, c.Config.CronExpression, status)
+				}
+			}
+		}
 		if err := g.context.CronService.Start(); err != nil {
 			if g.context.VectorStore != nil {
 				_ = g.context.VectorStore.Stop()
@@ -192,6 +206,7 @@ func (g *gateway) Start() error {
 			g.mu.Unlock()
 			return err
 		}
+		_, _ = fmt.Fprintf(stderrWriter, "[cron] scheduler started\n")
 	}
 
 	if g.context.ChannelRegistry != nil {
