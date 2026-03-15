@@ -225,12 +225,6 @@ type fakeGatewayMemoryService struct {
 	sessionIDs      []string
 }
 
-type countingSessionManager struct {
-	base      session.SessionManager
-	mu        sync.Mutex
-	listCalls int
-}
-
 type fakeGatewayCronService struct {
 	manager   *fakeGatewayCronManager
 	loadCalls int
@@ -317,21 +311,6 @@ func (service *fakeGatewayMemoryService) Recall(queryText string, topK int, minS
 
 func (service *fakeGatewayMemoryService) GetNode(nodeID string) (*memory.MemoryNode, error) {
 	return nil, nil
-}
-
-func (manager *countingSessionManager) GetOrCreateSession(sessionID string, senderID string) (session.Session, error) {
-	return manager.base.GetOrCreateSession(sessionID, senderID)
-}
-
-func (manager *countingSessionManager) ListSessionIDs() ([]string, error) {
-	manager.mu.Lock()
-	manager.listCalls++
-	manager.mu.Unlock()
-	return manager.base.ListSessionIDs()
-}
-
-func (manager *countingSessionManager) Close() error {
-	return manager.base.Close()
 }
 
 func (service *fakeGatewayCronService) EnsureRoot() error {
@@ -767,10 +746,10 @@ func TestGatewayStopWaitsForActiveSessionWorkers(t *testing.T) {
 	}
 }
 
-func TestGatewayEnsureRuntimeReadySyncsDirtySessionsToMemory(t *testing.T) {
+func TestGatewayEnsureRuntimeReadyDoesNotIngestDirtySessions(t *testing.T) {
 	workspace := t.TempDir()
-	baseSessionManager := session.NewSessionManager(workspace)
-	currentSession, err := baseSessionManager.GetOrCreateSession(session.MakeSessionID("cli", "recover"), "user-1")
+	sessionManager := session.NewSessionManager(workspace)
+	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("cli", "recover"), "user-1")
 	if err != nil {
 		t.Fatalf("GetOrCreateSession() error = %v", err)
 	}
@@ -784,7 +763,6 @@ func TestGatewayEnsureRuntimeReadySyncsDirtySessionsToMemory(t *testing.T) {
 		t.Fatalf("WriteSessionFile() error = %v", err)
 	}
 
-	sessionManager := &countingSessionManager{base: baseSessionManager}
 	memoryService := &fakeGatewayMemoryService{}
 	gw := &gateway{
 		context: appcontext.SystemContext{
@@ -801,17 +779,47 @@ func TestGatewayEnsureRuntimeReadySyncsDirtySessionsToMemory(t *testing.T) {
 	if memoryService.initializeCalls != 1 {
 		t.Fatalf("initializeCalls = %d, want 1", memoryService.initializeCalls)
 	}
-	if len(memoryService.sessionIDs) != 1 || memoryService.sessionIDs[0] != "cli:recover" {
-		t.Fatalf("sessionIDs = %#v, want [\"cli:recover\"]", memoryService.sessionIDs)
+	if len(memoryService.sessionIDs) != 0 {
+		t.Fatalf("sessionIDs = %#v, want no automatic ingestion", memoryService.sessionIDs)
 	}
 
 	if err := gw.ensureRuntimeReady(); err != nil {
 		t.Fatalf("second ensureRuntimeReady() error = %v", err)
 	}
-	if len(memoryService.sessionIDs) != 1 {
-		t.Fatalf("len(sessionIDs) = %d, want 1 after digest guard", len(memoryService.sessionIDs))
+	if len(memoryService.sessionIDs) != 0 {
+		t.Fatalf("len(sessionIDs) = %d, want 0 after repeated runtime init", len(memoryService.sessionIDs))
 	}
-	if sessionManager.listCalls != 1 {
-		t.Fatalf("listCalls = %d, want 1 after one-time recovery sync", sessionManager.listCalls)
+}
+
+func TestGatewayStopDoesNotIngestDirtySessions(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := session.NewSessionManager(workspace)
+	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("cli", "shutdown"), "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.AppendMessages([]openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "remember this"},
+		{Role: openai.ChatMessageRoleAssistant, Content: "stored"},
+	}); err != nil {
+		t.Fatalf("AppendMessages() error = %v", err)
+	}
+	if err := currentSession.WriteSessionFile(); err != nil {
+		t.Fatalf("WriteSessionFile() error = %v", err)
+	}
+
+	memoryService := &fakeGatewayMemoryService{}
+	gw := NewGateway(appcontext.SystemContext{
+		SessionManager: sessionManager,
+		MemoryService:  memoryService,
+		MemoryEnabled:  true,
+		MessageBus:     messagebus.NewMessageBus(),
+	})
+
+	if err := gw.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if len(memoryService.sessionIDs) != 0 {
+		t.Fatalf("sessionIDs = %#v, want no automatic ingestion on stop", memoryService.sessionIDs)
 	}
 }
