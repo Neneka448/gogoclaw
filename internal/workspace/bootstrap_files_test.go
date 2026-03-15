@@ -88,6 +88,23 @@ func TestEnsureDefaultSkillsCreatesAgentBrowser(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultSkillsCreatesCronTask(t *testing.T) {
+	workspacePath := t.TempDir()
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	skillPath := filepath.Join(workspacePath, "skills", "cron-task", skillFileName)
+	info, err := os.Stat(skillPath)
+	if err != nil {
+		t.Fatalf("Stat(%s) error = %v", skillPath, err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("cron-task SKILL.md is empty")
+	}
+}
+
 func TestEnsureDefaultSkillsDeploysBundledResources(t *testing.T) {
 	workspacePath := t.TempDir()
 

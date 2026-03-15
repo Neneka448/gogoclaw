@@ -118,7 +118,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		sysContext.MemoryService = memoryService
 	}
 
-	if err := registerTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus, mcpService, sysContext.MemoryService); err != nil {
+	if err := registerTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus, cronService, mcpService, sysContext.MemoryService); err != nil {
 		_ = mcpService.Close()
 		return nil, err
 	}
@@ -141,7 +141,7 @@ func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, erro
 	return mcppkg.NewService(profile.Workspace, sysConfig.MCP, mcppkg.Options{FailFast: failFast})
 }
 
-func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, memoryService memory.Service) error {
+func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, memoryService memory.Service) error {
 	if err := registry.RegisterTool("read_file", tools.NewReadFileTool(workspace)); err != nil {
 		return err
 	}
@@ -157,6 +157,9 @@ func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConf
 	if err := registry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
 		return err
 	}
+	if err := registry.RegisterTool("create_cron", tools.NewCreateCronTool(cronService)); err != nil {
+		return err
+	}
 	if memoryService != nil {
 		if err := registry.RegisterTool("recall_memory", tools.NewRecallMemoryTool(memoryService)); err != nil {
 			return err
@@ -165,8 +168,8 @@ func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConf
 	return nil
 }
 
-func registerTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, mcpService mcppkg.Service, memoryService memory.Service) error {
-	if err := registerBuiltinTools(registry, workspace, sysConfig, skillRegistry, bus, memoryService); err != nil {
+func registerTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) error {
+	if err := registerBuiltinTools(registry, workspace, sysConfig, skillRegistry, bus, cronService, memoryService); err != nil {
 		return err
 	}
 	if mcpService == nil {
@@ -184,7 +187,7 @@ func executeCronRequest(baseContext appcontext.SystemContext, sysConfig *config.
 	tempBus := messagebus.NewMessageBus()
 	defer tempBus.Close()
 	tempTools := tools.NewToolRegistry()
-	if err := registerTools(tempTools, workspace, sysConfig, skillRegistry, tempBus, baseContext.MCPService, baseContext.MemoryService); err != nil {
+	if err := registerTools(tempTools, workspace, sysConfig, skillRegistry, tempBus, baseContext.CronService, baseContext.MCPService, baseContext.MemoryService); err != nil {
 		return err
 	}
 	cronContext := baseContext
