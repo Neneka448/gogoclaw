@@ -18,6 +18,20 @@ Use this skill when the user wants the agent to:
 
 Do not use this skill for one-shot work. For one-time execution, run the task directly.
 
+## Scene Detection — Roleplay Cron
+
+Before creating the task, check whether the cron involves the agent acting under a defined identity or persona. This includes ANY of the following:
+
+- Acting as a specific character (fictional or otherwise)
+- Operating as a professional role: programmer, manager, analyst, reviewer, support agent, moderator, etc.
+- Maintaining a consistent personality, tone, or speaking style across runs
+- Replying to messages or conversations in character
+- Any task where "who the agent is" matters for behavior
+
+If the task matches any of the above, call `get_skill("roleplay-cron")` and follow that skill's instructions for creating the cron. The roleplay-cron skill defines the correct file architecture (SOUL.md, SKILL.md, task.md separation) and anti-patterns to avoid. Do not proceed with the generic task skeleton below — use roleplay-cron instead.
+
+If the task is purely mechanical (data fetching, report generation, cleanup, monitoring) with no identity requirements, continue with the generic flow below.
+
 ## Required Output Shape
 
 When creating a cron task, you must produce a complete task definition, not a vague reminder.
