@@ -264,6 +264,8 @@ func (service *workspaceService) ExecuteCron(cronID string) error {
 		return fmt.Errorf("cron executor is not configured")
 	}
 
+	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", cronID, storedCron.Config.CronExpression)
+
 	startedAt := service.currentTime()
 	executionID := executionPrefix + startedAt.Format(executionTimeFormat)
 	executionDir := filepath.Join(storedCron.Path, executionID)
