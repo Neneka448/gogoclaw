@@ -38,12 +38,10 @@ type gateway struct {
 	inboundStopCh       chan struct{}
 	mu                  sync.Mutex
 	started             bool
-	dirtySessionsSynced bool
 	inboundWG           sync.WaitGroup
 	outboundWG          sync.WaitGroup
 	workerWG            sync.WaitGroup
 	workerCount         int
-	recoveryMu          sync.Mutex
 	schedulerMu         sync.Mutex
 	schedulerCond       *sync.Cond
 	schedulerStopping   bool
@@ -291,9 +289,6 @@ func (g *gateway) Stop() error {
 			return err
 		}
 	}
-	if err := g.syncDirtySessionsToMemory(); err != nil {
-		return err
-	}
 	if g.context.MessageBus != nil {
 		if err := g.context.MessageBus.Close(); err != nil {
 			return err
@@ -341,42 +336,8 @@ func (g *gateway) ensureRuntimeReady() error {
 			}
 			return err
 		}
-		if err := g.ensureDirtySessionsSynced(); err != nil {
-			if g.context.VectorStore != nil {
-				_ = g.context.VectorStore.Stop()
-			}
-			return err
-		}
 	}
 
-	return nil
-}
-
-func (g *gateway) ensureDirtySessionsSynced() error {
-	g.mu.Lock()
-	if g.dirtySessionsSynced {
-		g.mu.Unlock()
-		return nil
-	}
-	g.mu.Unlock()
-
-	g.recoveryMu.Lock()
-	defer g.recoveryMu.Unlock()
-
-	g.mu.Lock()
-	if g.dirtySessionsSynced {
-		g.mu.Unlock()
-		return nil
-	}
-	g.mu.Unlock()
-
-	if err := g.syncDirtySessionsToMemory(); err != nil {
-		return err
-	}
-
-	g.mu.Lock()
-	g.dirtySessionsSynced = true
-	g.mu.Unlock()
 	return nil
 }
 
@@ -511,39 +472,6 @@ func (g *gateway) resetSchedulerStateLocked() {
 	clear(g.sessionMailboxes)
 }
 
-func (g *gateway) syncDirtySessionsToMemory() error {
-	if g.context.MemoryService == nil || !g.context.MemoryEnabled || g.context.SessionManager == nil {
-		return nil
-	}
-
-	sessionIDs, err := g.context.SessionManager.ListSessionIDs()
-	if err != nil {
-		return err
-	}
-	for _, sessionID := range sessionIDs {
-		currentSession, err := g.context.SessionManager.GetOrCreateSession(sessionID, "")
-		if err != nil {
-			return err
-		}
-		messages := currentSession.GetMessages(0)
-		if len(messages) == 0 {
-			continue
-		}
-		digest := session.MessagesDigest(messages)
-		if digest != "" && digest == currentSession.GetMemoryIngestedDigest() {
-			continue
-		}
-		if err := g.context.MemoryService.IngestSession(currentSession.GetSessionID(), messages); err != nil {
-			return err
-		}
-		if digest != "" {
-			if err := currentSession.MarkMemoryIngested(digest); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
 
 func (g *gateway) logBackgroundError(direction string, message messagebus.Message, err error) {
 	if err == nil {
