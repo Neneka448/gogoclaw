@@ -191,6 +191,18 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 		t.Fatalf("messages[3] = %#v, want final assistant message", messages[3])
 	}
 
+	content, err := os.ReadFile(sessionStore.GetSessionFilePath())
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+	var data session.SessionFile
+	if err := json.Unmarshal(content, &data); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if data.Meta.Channel != inboundMessage.ChannelID {
+		t.Fatalf("Meta.Channel = %q, want %q", data.Meta.Channel, inboundMessage.ChannelID)
+	}
+
 	if len(providerStub.requests) != 2 {
 		t.Fatalf("len(requests) = %d, want 2", len(providerStub.requests))
 	}

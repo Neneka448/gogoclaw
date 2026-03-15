@@ -446,7 +446,21 @@ func (al *agentLoop) getOrCreateSession(msg messagebus.Message, workspace string
 		al.context.SessionManager = session.NewSessionManager(workspace)
 	}
 
-	return al.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
+	currentSession, err := al.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
+	if err != nil {
+		return nil, err
+	}
+	if err := currentSession.UpdateMetadata(msg.ChannelID, sessionTypeFromMessage(msg)); err != nil {
+		return nil, err
+	}
+	return currentSession, nil
+}
+
+func sessionTypeFromMessage(msg messagebus.Message) string {
+	if len(msg.Metadata) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(msg.Metadata["session_type"])
 }
 
 type pendingSessionMemoryIngestion struct {

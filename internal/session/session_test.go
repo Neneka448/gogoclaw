@@ -145,8 +145,39 @@ func TestSessionInitializesJSONFile(t *testing.T) {
 	if data.Meta.SenderID != "user-1" {
 		t.Fatalf("Meta.SenderID = %q, want user-1", data.Meta.SenderID)
 	}
+	if data.Meta.Channel != "telegram" {
+		t.Fatalf("Meta.Channel = %q, want telegram", data.Meta.Channel)
+	}
 	if len(data.Messages) != 1 || data.Messages[0].Content != "hello" {
 		t.Fatalf("Messages = %#v, want one hello message", data.Messages)
+	}
+}
+
+func TestSessionUpdateMetadataPersistsType(t *testing.T) {
+	workspace := t.TempDir()
+	manager := newSessionManagerForTest(t, workspace)
+	currentSession, err := manager.GetOrCreateSession("cli:default", "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.UpdateMetadata("cli", "direct"); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(workspace, "sessions", "cli:default.json"))
+	if err != nil {
+		t.Fatalf("os.ReadFile() error = %v", err)
+	}
+
+	var data SessionFile
+	if err := json.Unmarshal(content, &data); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if data.Meta.Channel != "cli" {
+		t.Fatalf("Meta.Channel = %q, want cli", data.Meta.Channel)
+	}
+	if data.Meta.Type != "direct" {
+		t.Fatalf("Meta.Type = %q, want direct", data.Meta.Type)
 	}
 }
 

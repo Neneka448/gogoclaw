@@ -50,6 +50,9 @@ var agentCmd = &cobra.Command{
 			ChannelID: "cli",
 			ChatID:    strings.TrimSpace(sessionID),
 			Message:   message,
+			Metadata: map[string]string{
+				"session_type": cliSessionType(),
+			},
 		})
 		if err != nil {
 			return err
@@ -63,6 +66,13 @@ var agentCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func cliSessionType() string {
+	if interactAgent {
+		return "interactive"
+	}
+	return "direct"
 }
 
 func init() {
