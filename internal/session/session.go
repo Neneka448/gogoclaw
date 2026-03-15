@@ -31,6 +31,7 @@ type Session interface {
 	GetSessionID() string
 	GetMessages(memoryWindow int) []openai.ChatCompletionMessage
 	GetMemoryIngestedDigest() string
+	UpdateMetadata(channel string, sessionType string) error
 	AppendMessage(message openai.ChatCompletionMessage) error
 	AppendMessages(messages []openai.ChatCompletionMessage) error
 	MarkMemoryIngested(digest string) error
@@ -54,6 +55,8 @@ type SessionFile struct {
 type SessionMeta struct {
 	SessionKey     string `json:"session_key"`
 	SenderID       string `json:"sender_id"`
+	Channel        string `json:"channel,omitempty"`
+	Type           string `json:"type,omitempty"`
 	IngestedDigest string `json:"ingested_digest,omitempty"`
 }
 
@@ -125,6 +128,7 @@ func (manager *sessionManager) GetOrCreateSession(sessionID string, senderID str
 			Meta: SessionMeta{
 				SessionKey: sessionID,
 				SenderID:   senderID,
+				Channel:    inferSessionChannel(sessionID),
 			},
 			Messages: []openai.ChatCompletionMessage{},
 		},
@@ -209,6 +213,34 @@ func (session *fileSession) GetMemoryIngestedDigest() string {
 	}
 
 	return session.data.Meta.IngestedDigest
+}
+
+func (session *fileSession) UpdateMetadata(channel string, sessionType string) error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if err := session.ensureLoadedLocked(); err != nil {
+		return err
+	}
+
+	updated := false
+	channel = strings.TrimSpace(channel)
+	if channel == "" {
+		channel = inferSessionChannel(session.id)
+	}
+	if channel != "" && session.data.Meta.Channel != channel {
+		session.data.Meta.Channel = channel
+		updated = true
+	}
+	sessionType = strings.TrimSpace(sessionType)
+	if sessionType != "" && session.data.Meta.Type != sessionType {
+		session.data.Meta.Type = sessionType
+		updated = true
+	}
+	if !updated {
+		return nil
+	}
+	return session.writeSessionFileLocked()
 }
 
 func (session *fileSession) ArchiveAndReset() (string, error) {
@@ -363,6 +395,7 @@ func (session *fileSession) readSessionFileLocked() error {
 			Meta: SessionMeta{
 				SessionKey: session.id,
 				SenderID:   session.senderID,
+				Channel:    inferSessionChannel(session.id),
 			},
 			Messages: []openai.ChatCompletionMessage{},
 		}
@@ -386,6 +419,9 @@ func (session *fileSession) readSessionFileLocked() error {
 	}
 	if data.Meta.SenderID == "" {
 		data.Meta.SenderID = session.senderID
+	}
+	if data.Meta.Channel == "" {
+		data.Meta.Channel = inferSessionChannel(data.Meta.SessionKey)
 	}
 	if data.Messages == nil {
 		data.Messages = []openai.ChatCompletionMessage{}
@@ -420,6 +456,8 @@ func (session *fileSession) snapshotLocked() SessionFile {
 		Meta: SessionMeta{
 			SessionKey:     session.data.Meta.SessionKey,
 			SenderID:       session.data.Meta.SenderID,
+			Channel:        session.data.Meta.Channel,
+			Type:           session.data.Meta.Type,
 			IngestedDigest: session.data.Meta.IngestedDigest,
 		},
 		Messages: cloneMessages(session.data.Messages),
@@ -429,6 +467,9 @@ func (session *fileSession) snapshotLocked() SessionFile {
 	}
 	if snapshot.Meta.SenderID == "" {
 		snapshot.Meta.SenderID = session.senderID
+	}
+	if snapshot.Meta.Channel == "" {
+		snapshot.Meta.Channel = inferSessionChannel(snapshot.Meta.SessionKey)
 	}
 	if snapshot.Messages == nil {
 		snapshot.Messages = []openai.ChatCompletionMessage{}
@@ -538,6 +579,18 @@ func cloneMessages(messages []openai.ChatCompletionMessage) []openai.ChatComplet
 	}
 
 	return clonedMessages
+}
+
+func inferSessionChannel(sessionID string) string {
+	normalized := strings.TrimSpace(sessionID)
+	if normalized == "" {
+		return ""
+	}
+	channel, _, found := strings.Cut(normalized, ":")
+	if !found {
+		return ""
+	}
+	return strings.TrimSpace(channel)
 }
 
 func MessagesDigest(messages []openai.ChatCompletionMessage) string {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,7 +199,34 @@ func TestGatewayDirectProcessAndReturnInitializesMemoryRuntime(t *testing.T) {
 	}
 }
 
-func TestGatewayDirectProcessAndReturnSyncsSessionBeforeNew(t *testing.T) {
+func TestGatewayDirectProcessAndReturnReturnsRecoveredPanic(t *testing.T) {
+	bus := messagebus.NewMessageBus()
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       &panicGatewayProvider{},
+		ConfigManager:  newGatewayTestConfigManager(t),
+		ToolRegistry:   tools.NewToolRegistry(),
+		SessionManager: session.NewSessionManager(t.TempDir()),
+	})
+	t.Cleanup(func() {
+		_ = gw.Stop()
+	})
+
+	_, err := gw.DirectProcessAndReturn(messagebus.Message{
+		ChannelID: "cli",
+		ChatID:    "chat-1",
+		SenderID:  "user-1",
+		Message:   "hello",
+	})
+	if err == nil {
+		t.Fatal("DirectProcessAndReturn() error = nil, want recovered panic")
+	}
+	if !strings.Contains(err.Error(), "agent loop panic: provider exploded") {
+		t.Fatalf("err = %v, want recovered panic message", err)
+	}
+}
+
+func TestGatewayDirectProcessAndReturnEmitsMemoryProgressOnNew(t *testing.T) {
 	workspace := t.TempDir()
 	sessionManager := session.NewSessionManager(workspace)
 	t.Cleanup(func() {
@@ -241,14 +269,20 @@ func TestGatewayDirectProcessAndReturnSyncsSessionBeforeNew(t *testing.T) {
 	if memoryService.ingestCalls != 1 {
 		t.Fatalf("memoryService.ingestCalls = %d, want 1", memoryService.ingestCalls)
 	}
-	if len(responses) != 1 {
-		t.Fatalf("len(responses) = %d, want 1", len(responses))
+	if len(responses) != 2 {
+		t.Fatalf("len(responses) = %d, want 2", len(responses))
 	}
-	if responses[0].Message != "🎸A new session has started" {
-		t.Fatalf("responses[0].Message = %q, want new session reply", responses[0].Message)
+	if responses[0].Message != "[memory]: short-term memory generating" {
+		t.Fatalf("responses[0].Message = %q, want memory progress", responses[0].Message)
 	}
-	if responses[0].FinishReason != "new_session" {
-		t.Fatalf("responses[0].FinishReason = %q, want new_session", responses[0].FinishReason)
+	if responses[0].Metadata["message_kind"] != "progress" {
+		t.Fatalf("responses[0].Metadata[message_kind] = %q, want progress", responses[0].Metadata["message_kind"])
+	}
+	if responses[1].Message != "🎸A new session has started" {
+		t.Fatalf("responses[1].Message = %q, want new session reply", responses[1].Message)
+	}
+	if responses[1].FinishReason != "new_session" {
+		t.Fatalf("responses[1].FinishReason = %q, want new_session", responses[1].FinishReason)
 	}
 	if got := currentSession.GetMessages(10); len(got) != 0 {
 		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
@@ -270,6 +304,8 @@ type fakeGatewayCronManager struct {
 type fakeGatewayProvider struct {
 	responses []provider.LLMCommonResponse
 }
+
+type panicGatewayProvider struct{}
 
 type fakeGatewayVectorStore struct {
 	startCalls int
@@ -316,6 +352,10 @@ func (provider *fakeGatewayProvider) ChatCompletion(request openai.ChatCompletio
 	response := provider.responses[0]
 	provider.responses = provider.responses[1:]
 	return response, nil
+}
+
+func (provider *panicGatewayProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	panic("provider exploded")
 }
 
 func (store *fakeGatewayVectorStore) Start() error {
