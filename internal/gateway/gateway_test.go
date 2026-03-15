@@ -198,7 +198,7 @@ func TestGatewayDirectProcessAndReturnInitializesMemoryRuntime(t *testing.T) {
 	}
 }
 
-func TestGatewayDirectProcessAndReturnDrainsMemoryProgressOnNew(t *testing.T) {
+func TestGatewayDirectProcessAndReturnSyncsSessionBeforeNew(t *testing.T) {
 	workspace := t.TempDir()
 	sessionManager := session.NewSessionManager(workspace)
 	t.Cleanup(func() {
@@ -241,20 +241,14 @@ func TestGatewayDirectProcessAndReturnDrainsMemoryProgressOnNew(t *testing.T) {
 	if memoryService.ingestCalls != 1 {
 		t.Fatalf("memoryService.ingestCalls = %d, want 1", memoryService.ingestCalls)
 	}
-	if len(responses) != 2 {
-		t.Fatalf("len(responses) = %d, want 2", len(responses))
+	if len(responses) != 1 {
+		t.Fatalf("len(responses) = %d, want 1", len(responses))
 	}
-	if responses[0].Message != "[memory]: short-term memory generating" {
-		t.Fatalf("responses[0].Message = %q, want memory progress", responses[0].Message)
+	if responses[0].Message != "🎸A new session has started" {
+		t.Fatalf("responses[0].Message = %q, want new session reply", responses[0].Message)
 	}
-	if responses[0].Metadata["message_kind"] != "progress" {
-		t.Fatalf("responses[0].Metadata[message_kind] = %q, want progress", responses[0].Metadata["message_kind"])
-	}
-	if responses[1].Message != "🎸A new session has started" {
-		t.Fatalf("responses[1].Message = %q, want new session reply", responses[1].Message)
-	}
-	if responses[1].FinishReason != "new_session" {
-		t.Fatalf("responses[1].FinishReason = %q, want new_session", responses[1].FinishReason)
+	if responses[0].FinishReason != "new_session" {
+		t.Fatalf("responses[0].FinishReason = %q, want new_session", responses[0].FinishReason)
 	}
 	if got := currentSession.GetMessages(10); len(got) != 0 {
 		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
@@ -308,6 +302,7 @@ func (manager *fakeGatewayCronManager) RegisterCron(cronTask cron.Cron) error {
 func (manager *fakeGatewayCronManager) GetCron(cronID string) (cron.Cron, error) {
 	return nil, cron.ErrCronNotFound
 }
+
 
 func (manager *fakeGatewayCronManager) DeleteCron(cronID string) error {
 	return nil

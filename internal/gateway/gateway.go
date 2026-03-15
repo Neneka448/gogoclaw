@@ -104,7 +104,10 @@ func (g *gateway) listenOutboundMessages(outboundQueue <-chan messagebus.Message
 		if agentDone {
 			for {
 				select {
-				case outbound := <-outboundQueue:
+				case outbound, ok := <-outboundQueue:
+					if !ok {
+						return results, nil
+					}
 					if printOutput {
 						if err := g.dispatchOutboundMessage(outbound); err != nil {
 							return results, err
@@ -120,7 +123,10 @@ func (g *gateway) listenOutboundMessages(outboundQueue <-chan messagebus.Message
 			}
 		}
 		select {
-		case outbound := <-outboundQueue:
+		case outbound, ok := <-outboundQueue:
+			if !ok {
+				return results, nil
+			}
 			if printOutput {
 				if err := g.dispatchOutboundMessage(outbound); err != nil {
 					return results, err
