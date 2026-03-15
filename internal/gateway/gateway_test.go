@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,6 +199,33 @@ func TestGatewayDirectProcessAndReturnInitializesMemoryRuntime(t *testing.T) {
 	}
 }
 
+func TestGatewayDirectProcessAndReturnReturnsRecoveredPanic(t *testing.T) {
+	bus := messagebus.NewMessageBus()
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       &panicGatewayProvider{},
+		ConfigManager:  newGatewayTestConfigManager(t),
+		ToolRegistry:   tools.NewToolRegistry(),
+		SessionManager: session.NewSessionManager(t.TempDir()),
+	})
+	t.Cleanup(func() {
+		_ = gw.Stop()
+	})
+
+	_, err := gw.DirectProcessAndReturn(messagebus.Message{
+		ChannelID: "cli",
+		ChatID:    "chat-1",
+		SenderID:  "user-1",
+		Message:   "hello",
+	})
+	if err == nil {
+		t.Fatal("DirectProcessAndReturn() error = nil, want recovered panic")
+	}
+	if !strings.Contains(err.Error(), "agent loop panic: provider exploded") {
+		t.Fatalf("err = %v, want recovered panic message", err)
+	}
+}
+
 func TestGatewayDirectProcessAndReturnEmitsMemoryProgressOnNew(t *testing.T) {
 	workspace := t.TempDir()
 	sessionManager := session.NewSessionManager(workspace)
@@ -277,6 +305,8 @@ type fakeGatewayProvider struct {
 	responses []provider.LLMCommonResponse
 }
 
+type panicGatewayProvider struct{}
+
 type fakeGatewayVectorStore struct {
 	startCalls int
 	stopCalls  int
@@ -322,6 +352,10 @@ func (provider *fakeGatewayProvider) ChatCompletion(request openai.ChatCompletio
 	response := provider.responses[0]
 	provider.responses = provider.responses[1:]
 	return response, nil
+}
+
+func (provider *panicGatewayProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	panic("provider exploded")
 }
 
 func (store *fakeGatewayVectorStore) Start() error {

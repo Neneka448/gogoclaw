@@ -22,7 +22,7 @@ var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Run the agent command flow",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		if cmd.Flags().Changed("message") && strings.TrimSpace(message) == "" {
 			return fmt.Errorf("flag --message requires a non-empty message")
 		}
@@ -44,9 +44,13 @@ var agentCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer (*gatewayRef).Stop()
+		defer func() {
+			if stopErr := (*gatewayRef).Stop(); stopErr != nil && runErr == nil {
+				runErr = stopErr
+			}
+		}()
 
-		_, err = (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
+		_, runErr = (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
 			ChannelID: "cli",
 			ChatID:    strings.TrimSpace(sessionID),
 			Message:   message,
@@ -54,8 +58,8 @@ var agentCmd = &cobra.Command{
 				"session_type": cliSessionType(),
 			},
 		})
-		if err != nil {
-			return err
+		if runErr != nil {
+			return runErr
 		}
 		// for _, response := range responses {
 		// 	if strings.TrimSpace(response.Message) == "" {

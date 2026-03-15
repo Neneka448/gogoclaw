@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,11 @@ func (g *gateway) startAgentLoop(msg messagebus.Message) <-chan error {
 	agentLoop := agent.NewAgentLoop(g.context)
 	errCh := make(chan error, 1)
 	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				errCh <- fmt.Errorf("agent loop panic: %v\n%s", recovered, debug.Stack())
+			}
+		}()
 		errCh <- agentLoop.ProcessMessage(msg)
 	}()
 
