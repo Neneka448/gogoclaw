@@ -28,6 +28,24 @@ When reviewing code in this repository, optimize for signal, not coverage.
 - Prefer cross-file reasoning over narrow line-level nits.
 - Review changes in terms of the full lifecycle: produce, queue, process, persist, stop, restart, and recover.
 
+## Runtime verification
+
+- For changes under gateway, agent, session, memory, message_bus, channels, or vectorstore, trace the full runtime path before commenting; do not infer behavior from a local diff alone.
+- Verify trigger conditions, guards, persisted state, and prior side effects before claiming a branch will execute or a user-visible message will appear.
+- Treat tests as assertions of current behavior, not proof of intended behavior. If suggesting that a test is wrong, first confirm the production path actually reaches the asserted state.
+- For message-flow changes, reason end to end through: request entry, runtime initialization, session loading, memory sync or ingest, outbound queue writes, queue draining or dispatch, and shutdown.
+- Do not leave a review comment that depends on a path condition unless that condition is explicitly proven from the code.
+
+## Comment gate for lifecycle code
+
+- Before leaving a comment on lifecycle-sensitive code, confirm all of the following from the code:
+- What exact event triggers this path.
+- What earlier code can prevent this path from running.
+- What session, persisted, or in-memory state affects the outcome.
+- What concrete user-visible behavior changes as a result.
+- Why the current code or test is incorrect under the actual runtime flow.
+- If any of these answers are unclear, do not leave the comment.
+
 ## What to inspect first
 
 - Concurrency and serialization guarantees.

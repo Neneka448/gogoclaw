@@ -66,6 +66,9 @@ func TestCLIChannelFormatsMessages(t *testing.T) {
 	buffer := &bytes.Buffer{}
 	channel := NewCLIChannel(config.CLIChannelConfig{ChannelConfig: config.ChannelConfig{Enabled: true}}, buffer)
 
+	if err := channel.Send(messagebus.Message{Message: "[memory]: short-term memory generating", Metadata: map[string]string{"message_kind": "progress"}}); err != nil {
+		t.Fatalf("Send(progress) error = %v", err)
+	}
 	if err := channel.Send(messagebus.Message{Message: "search()", FinishReason: "tool_calls"}); err != nil {
 		t.Fatalf("Send(tool call) error = %v", err)
 	}
@@ -73,7 +76,7 @@ func TestCLIChannelFormatsMessages(t *testing.T) {
 		t.Fatalf("Send(message) error = %v", err)
 	}
 
-	want := "[tool call]: search()\n[message]:\ndone\n"
+	want := "\x1b[36m[memory]: short-term memory generating\x1b[0m\n[tool call]: search()\n[message]:\ndone\n"
 	if buffer.String() != want {
 		t.Fatalf("buffer.String() = %q, want %q", buffer.String(), want)
 	}

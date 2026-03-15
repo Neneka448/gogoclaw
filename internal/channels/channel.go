@@ -125,6 +125,9 @@ type CLIChannel struct {
 	mu     sync.Mutex
 }
 
+const cliProgressColorCyan = "\x1b[36m"
+const cliColorReset = "\x1b[0m"
+
 func NewCLIChannel(cfg config.CLIChannelConfig, writer io.Writer) Channel {
 	if writer == nil {
 		writer = os.Stdout
@@ -156,6 +159,11 @@ func (c *CLIChannel) Send(message messagebus.Message) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if isProgressMessage(message) {
+		_, err := fmt.Fprintf(c.writer, "%s%s%s\n", cliProgressColorCyan, message.Message, cliColorReset)
+		return err
+	}
+
 	if message.FinishReason == "tool_calls" {
 		_, err := fmt.Fprintf(c.writer, "[tool call]: %s\n", message.Message)
 		return err
@@ -167,4 +175,8 @@ func (c *CLIChannel) Send(message messagebus.Message) error {
 
 	_, err := fmt.Fprintf(c.writer, "[message]:\n%s\n", message.Message)
 	return err
+}
+
+func isProgressMessage(message messagebus.Message) bool {
+	return message.Metadata != nil && message.Metadata["message_kind"] == "progress"
 }

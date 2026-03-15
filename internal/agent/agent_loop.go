@@ -31,6 +31,7 @@ type outboundToolPayload struct {
 
 const newSessionCommand = "/new"
 const newSessionReply = "🎸A new session has started"
+const memoryProgressMessage = "[memory]: short-term memory generating"
 
 func NewAgentLoop(context context.SystemContext) AgentLoop {
 	return &agentLoop{
@@ -61,7 +62,13 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 		return err
 	}
 	if isNewSessionCommand(msg.Message) {
-		al.ingestSessionMemory(currentSession)
+		pending := al.prepareSessionMemoryIngestion(currentSession)
+		if pending != nil {
+			if err := al.publishProgressMessage(msg, memoryProgressMessage, "memory"); err != nil {
+				return err
+			}
+		}
+		al.ingestSessionMemory(currentSession, pending)
 		if _, err := currentSession.ArchiveAndReset(); err != nil {
 			return err
 		}
@@ -270,6 +277,32 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 	}, messagebus.OutboundQueue)
 }
 
+func (al *agentLoop) publishProgressMessage(source messagebus.Message, content string, progressKind string) error {
+	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
+		return nil
+	}
+	metadata := cloneMetadata(source.Metadata)
+	if metadata == nil {
+		metadata = make(map[string]string, 2)
+	}
+	metadata["message_kind"] = "progress"
+	if strings.TrimSpace(progressKind) != "" {
+		metadata["progress_kind"] = progressKind
+	}
+	return al.context.MessageBus.Put(messagebus.Message{
+		ChannelID:    source.ChannelID,
+		Message:      content,
+		MessageID:    source.MessageID,
+		MessageType:  source.MessageType,
+		ChatID:       source.ChatID,
+		SenderID:     source.SenderID,
+		MediaPaths:   cloneMediaPaths(source.MediaPaths),
+		ReplyTo:      source.ReplyTo,
+		Metadata:     metadata,
+		FinishReason: "",
+	}, messagebus.OutboundQueue)
+}
+
 func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages []executedToolMessage) error {
 	for _, executed := range messages {
 		if executed.SuppressOutboundResult {
@@ -416,28 +449,47 @@ func (al *agentLoop) getOrCreateSession(msg messagebus.Message, workspace string
 	return al.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
 }
 
-// ingestSessionMemory feeds the current session messages into the memory system
-// for 5W1H+R summarization and graph storage before the session is reset.
-func (al *agentLoop) ingestSessionMemory(currentSession session.Session) {
+type pendingSessionMemoryIngestion struct {
+	sessionID string
+	messages  []Openai.ChatCompletionMessage
+	digest    string
+}
+
+func (al *agentLoop) prepareSessionMemoryIngestion(currentSession session.Session) *pendingSessionMemoryIngestion {
 	if al.context.MemoryService == nil || !al.context.MemoryEnabled {
-		return
+		return nil
 	}
 	messages := currentSession.GetMessages(0)
 	if len(messages) == 0 {
-		return
+		return nil
 	}
 	digest := session.MessagesDigest(messages)
 	if digest != "" && digest == currentSession.GetMemoryIngestedDigest() {
+		return nil
+	}
+	return &pendingSessionMemoryIngestion{
+		sessionID: currentSession.GetSessionID(),
+		messages:  messages,
+		digest:    digest,
+	}
+}
+
+// ingestSessionMemory feeds the current session messages into the memory system
+// for 5W1H+R summarization and graph storage before the session is reset.
+func (al *agentLoop) ingestSessionMemory(currentSession session.Session, pending *pendingSessionMemoryIngestion) {
+	if pending == nil {
+		pending = al.prepareSessionMemoryIngestion(currentSession)
+	}
+	if pending == nil {
 		return
 	}
-	sessionID := currentSession.GetSessionID()
-	if err := al.context.MemoryService.IngestSession(sessionID, messages); err != nil {
-		slog.Error("ingest session memory failed", "session", sessionID, "err", err)
+	if err := al.context.MemoryService.IngestSession(pending.sessionID, pending.messages); err != nil {
+		slog.Error("ingest session memory failed", "session", pending.sessionID, "err", err)
 		return
 	}
-	if digest != "" {
-		if err := currentSession.MarkMemoryIngested(digest); err != nil {
-			slog.Error("mark session memory ingested failed", "session", sessionID, "err", err)
+	if pending.digest != "" {
+		if err := currentSession.MarkMemoryIngested(pending.digest); err != nil {
+			slog.Error("mark session memory ingested failed", "session", pending.sessionID, "err", err)
 		}
 	}
 }
