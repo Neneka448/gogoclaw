@@ -4,43 +4,66 @@
 
 <h1 align="center">gogoclaw</h1>
 
-<p align="center">file-first, skill-driven agent runtime</p>
+<p align="center">everything is bash, everything is files</p>
 
-gogoclaw is a Go-based agent runtime for building file-first, skill-driven AI workflows.
+gogoclaw is a Go-based autonomous agent runtime built around file-first, skill-first, and cron-driven execution.
 
 It started from a coding-agent runtime shape inspired by OpenClaw and similar systems, but the project direction is now broader: keep the ReAct loop simple, use Tools + Skills + system prompt composition as the main extension surface, and let durable state live in the workspace as files.
 
-The long-term goal is not a monolithic AI app, but a runtime spine that can support:
+The goal is not a monolithic assistant application, but a runtime spine that can support:
 
 - foreground agents for user-facing conversation
 - background agents for autonomous task execution
-- cron-driven agents that poll, inspect, and continue file-based workflows
+- cron-driven agents that poll, inspect, and continue file-based work
 - shared skill layers across multiple agent profiles
-
-## Positioning
-
-gogoclaw currently sits in the middle ground between a chat agent shell and an agent operating system.
-
-What it is today:
-
-- a modular ReAct agent runtime with tool-calling
-- a workspace-scoped system for prompts, skills, sessions, and runtime files
-- a channel-aware gateway that can run in CLI or long-lived service mode
-- a file-friendly foundation for future delegated and background agent workflows
-
-What it is becoming:
-
-- a profile-aware multi-agent runtime
-- a foreground/background execution model where the loop stays the same and only output routing changes
-- a skill-first system where most task workflows are expressed through files, skills, and scripts rather than hardcoded orchestration logic
 
 ## Design Principles
 
 - Keep the ReAct loop stable. The core agent loop should remain small and predictable.
-- Extend through Tools + Skills + system prompt composition. New workflows should usually land there first.
+- Extend through Tools + Skills + system prompt composition. New behavior should usually land there first.
 - Prefer files as durable state. Sessions, prompts, skills, cron tasks, artifacts, and future task boards should remain inspectable on disk.
 - Keep runtime layers explicit. Provider, gateway, tools, sessions, channels, memory, and prompt assembly should stay separable.
-- Let system abstractions stay minimal. Profile-aware invocation, output routing, and shared skill resolution belong in the runtime; task workflows belong in skills and scripts.
+- Let system abstractions stay minimal. Profile-aware invocation, output routing, and shared skill resolution belong in the runtime; task logic belongs in skills and scripts.
+
+## Core Concepts
+
+### Everything Is File
+
+In gogoclaw, almost every durable module outside the runtime core is expected to live as local files in the workspace.
+
+That includes prompt fragments, skills, session state, cron definitions, generated artifacts, and future task-oriented state. File-first means files are the default integration boundary. If a capability needs memory, state handoff, generated output, task context, or execution artifacts, the preferred shape is to write them into the workspace rather than hide them inside an opaque service layer.
+
+The point is not just persistence. The point is inspectability: humans and agents should both be able to read, diff, repair, and continue the system by looking at files on disk.
+
+### Everything Is Bash
+
+In gogoclaw, surrounding capabilities are meant to be driven by skills and the scripts they carry, rather than by hardcoding every behavior into the runtime itself.
+
+Once a CLI tool exists, the agent should be able to learn and use that CLI through a skill. Compared with a raw tool definition, a skill can teach not only what a command does, but also the working style around it: when to use it, how to combine it with files, what pitfalls to avoid, and what practical patterns actually work.
+
+This is one of the limits of tools alone. A tool can expose a name, parameters, and a short description, but that protocol is not a good place to dump all the practical knowledge an agent needs. Skills are where that experience should live.
+
+The runtime provides the stable execution core. Around that core, practical behavior should come from skills, shell scripts, and file-based conventions that can be iterated quickly and understood locally. This keeps the system closer to how engineers actually work in repositories and workspaces.
+
+### Skill-First
+
+Skill-first means new product behavior should usually be expressed through skills before it becomes a runtime feature.
+
+In gogoclaw, a skill is natural language as protocol. It is intentionally lightweight, easy to write, and easy to move. A skill is not required to be code. In practice, it can be a short written protocol, a bundle of notes plus references, or any transferable instruction format that teaches the agent how to do a job.
+
+A good skill should be enough to teach the agent how to use a capability well. That includes not just the existence of a function, but the surrounding practice: references, scripts, examples, local conventions, and practical heuristics.
+
+That is why skills can carry much more than a single prompt snippet. A skill can include references, scripts, templates, and supporting files, and can behave almost like a small service package inside the workspace.
+
+If something can be solved with a good skill, a script, and a file convention, it usually should be. The runtime should only absorb the minimal abstractions that many skills need to share, such as invocation, output routing, or visibility rules.
+
+### Cron-Driven
+
+Cron-driven is the main decoupling mechanism for autonomous behavior.
+
+Instead of making every capability depend on direct calls between agents or tightly coupled orchestration, gogoclaw leans toward scheduled polling, scheduled inspection, and scheduled continuation. That allows agents to perceive system state actively, continue work independently, and coordinate through files and shared conventions.
+
+This weakens direct invocation coupling, spreads runtime behavior out into smaller autonomous loops, and makes the system feel closer to real human collaboration: check the current state, pick up work, update artifacts, and continue from there.
 
 ## Status
 
@@ -65,52 +88,7 @@ Still evolving:
 - agent-to-agent invocation and background execution
 - foreground/background output sink abstraction
 - shared skill visibility and layered skill resolution
-- task-board style autonomous workflows built on top of skills and files
-
-## Why This Project
-
-Many agent systems become hard to extend because prompting, tools, transport, memory, orchestration, and state persistence are all mixed together.
-
-gogoclaw keeps these layers explicit:
-
-- agent: runs the ReAct loop and model/tool interaction
-- provider: wraps chat and embedding backends
-- tools: exposes model-callable capabilities
-- session: persists conversation state to workspace files
-- channels: handles foreground delivery through CLI or external transports
-- cron: schedules autonomous prompts and task polling
-- memory: extracts, stores, and recalls durable memory
-- systemprompt and skills: assemble the runtime behavior from files in the workspace
-- gateway: coordinates message flow and runtime lifecycle
-
-That separation is the main reason the codebase can evolve from a direct chat runtime into a multi-agent, file-oriented system without replacing the core loop.
-
-## Features
-
-Current runtime features:
-
-- interactive and non-interactive onboarding
-- default workspace bootstrap with AGENTS.md, SOUL.md, TOOLS.md, USER.md, HEARTBEAT.md, and bundled default skills
-- workspace-local skill discovery from skills/<skill-name>/SKILL.md
-- OpenAI-compatible provider abstraction
-- built-in provider presets for openrouter and codex
-- Codex OAuth login flow via local callback server
-- direct CLI execution through the gateway and message bus
-- persistent sessions stored as JSON files inside the workspace
-- session archive/reset flow via /new
-- CLI progress output and tool-call visibility
-- optional Feishu channel integration with richer outbound rendering
-- cron task creation and cron-backed autonomous execution
-- optional memory recall over workspace-backed vector storage
-- MCP server management and MCP tool registration
-
-Planned architecture features:
-
-- profile-aware agent invocation
-- invoke_agent style delegation tool
-- foreground/background output sink separation
-- shared skills with visibility metadata
-- cron-first autonomous agents and board-driven task workflows built through skills and files
+- task-board style autonomous execution built on top of skills and files
 
 ## Project Layout
 
@@ -423,14 +401,14 @@ Near-term roadmap:
 - foreground/background output sink separation
 - shared skills resolution with visibility metadata
 
-Workflow roadmap on top of that foundation:
+Execution roadmap on top of that foundation:
 
 - file-first background task execution via skills and scripts
-- task-board style workflows driven by cron and local files
+- task-board style execution driven by cron and local files
 - richer group-chat delegation and task coordination
 - stronger multimodal and structured channel responses
 
-The intention is to keep system abstractions small and let most domain workflows be expressed through workspace files, skills, and scripts.
+The intention is to keep system abstractions small and let most domain behavior be expressed through workspace files, skills, and scripts.
 
 ## Development
 
