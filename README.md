@@ -1,4 +1,10 @@
-# gogoclaw
+<p align="center">
+  <img src="docs/logo.png" alt="gogoclaw banner" width="100%" />
+</p>
+
+<h1 align="center">gogoclaw</h1>
+
+<p align="center">file-first, skill-driven agent runtime</p>
 
 gogoclaw is a Go-based agent runtime for building file-first, skill-driven AI workflows.
 
