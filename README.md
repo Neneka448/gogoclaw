@@ -27,7 +27,7 @@ The goal is not a monolithic assistant application, but a runtime spine that can
 
 ## Core Concepts
 
-### Everything Is File
+### Everything Is Files
 
 In gogoclaw, almost every durable module outside the runtime core is expected to live as local files in the workspace.
 
@@ -154,6 +154,18 @@ make sqlite-vec-install WORKSPACE=/path/to/workspace
 ## Troubleshooting
 
 - [docs/troubleshooting.md](docs/troubleshooting.md): build issues, including sqlite-vec and cgo-related failures
+
+## Release Binaries
+
+Each release publishes native binaries for:
+
+- Linux x86_64: `gogoclaw_linux_amd64_<version>`
+- macOS Intel: `gogoclaw_darwin_amd64_<version>`
+- macOS Apple Silicon: `gogoclaw_darwin_arm64_<version>`
+
+Apple Silicon Macs should download the `darwin_arm64` binary. Intel Macs should download `darwin_amd64`.
+
+If you want the full vectorstore and memory stack, install the matching sqlite-vec extension for your platform after downloading the binary.
 
 ## Quick Start
 
