@@ -53,11 +53,11 @@ func (al *agentLoop) buildTools() []Openai.Tool {
 }
 
 func (al *agentLoop) loop(msg messagebus.Message) error {
-	config, err := al.context.ConfigManager.GetAgentProfileConfig("default")
+	runtimeConfig, err := al.resolveRuntimeContext()
 	if err != nil {
 		return err
 	}
-	currentSession, err := al.getOrCreateSession(msg, config.Workspace)
+	currentSession, err := al.getOrCreateSession(msg, runtimeConfig.Workspace)
 	if err != nil {
 		return err
 	}
@@ -83,17 +83,17 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 		}
 	}
 
-	maxIterations := config.MaxToolIterations
+	maxIterations := runtimeConfig.Profile.MaxToolIterations
 	tools := al.buildTools()
 	completed := false
 
 	for i := 0; i < maxIterations; i++ {
-		messages := al.buildMessage(currentSession, config.MemoryWindow)
+		messages := al.buildMessage(currentSession, runtimeConfig.Profile.MemoryWindow)
 		params := provider.BuildOpenaiRequestParams(provider.ChatCompletionParams{
-			Model:               config.Model,
+			Model:               runtimeConfig.Profile.Model,
 			Messages:            messages,
-			MaxCompletionTokens: config.MaxTokens,
-			Temperature:         config.Temperature,
+			MaxCompletionTokens: runtimeConfig.Profile.MaxTokens,
+			Temperature:         runtimeConfig.Profile.Temperature,
 			Tools:               tools,
 		})
 		response, err := al.context.Provider.ChatCompletion(params)
@@ -143,6 +143,40 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 	}
 
 	return nil
+}
+
+func (al *agentLoop) resolveRuntimeContext() (context.RuntimeContext, error) {
+	runtime := al.context.Runtime
+	if strings.TrimSpace(runtime.ProfileName) != "" {
+		if strings.TrimSpace(runtime.Workspace) == "" {
+			runtime.Workspace = runtime.Profile.Workspace
+		}
+		if strings.TrimSpace(string(runtime.InvocationMode)) == "" {
+			runtime.InvocationMode = context.InvocationModeForeground
+		}
+		return runtime, nil
+	}
+	if al.context.ConfigManager == nil {
+		return context.RuntimeContext{}, fmt.Errorf("runtime context is not resolved")
+	}
+	profile, err := al.context.ConfigManager.GetAgentProfileConfig(defaultAgentProfileName)
+	if err != nil {
+		return context.RuntimeContext{}, err
+	}
+	embeddingProfileName, embeddingProfile, err := resolveEmbeddingProfile(al.context.ConfigManager, defaultAgentProfileName, profile)
+	if err != nil {
+		return context.RuntimeContext{}, err
+	}
+	runtime = context.RuntimeContext{
+		ProfileName:          defaultAgentProfileName,
+		Profile:              *profile,
+		EmbeddingProfileName: embeddingProfileName,
+		EmbeddingProfile:     *embeddingProfile,
+		Workspace:            profile.Workspace,
+		InvocationMode:       context.InvocationModeForeground,
+	}
+	al.context.Runtime = runtime
+	return runtime, nil
 }
 
 func isNewSessionCommand(message string) bool {
@@ -244,6 +278,7 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 	if strings.TrimSpace(message.Content) == "" {
 		return nil
 	}
+	metadata := al.outboundMetadata(source.Metadata)
 
 	return al.context.MessageBus.Put(messagebus.Message{
 		ChannelID:    source.ChannelID,
@@ -254,7 +289,7 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 		SenderID:     source.SenderID,
 		MediaPaths:   cloneMediaPaths(source.MediaPaths),
 		ReplyTo:      source.ReplyTo,
-		Metadata:     cloneMetadata(source.Metadata),
+		Metadata:     metadata,
 		FinishReason: finishReason,
 	}, messagebus.OutboundQueue)
 }
@@ -263,6 +298,7 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
+	metadata := al.outboundMetadata(source.Metadata)
 	return al.context.MessageBus.Put(messagebus.Message{
 		ChannelID:    source.ChannelID,
 		Message:      content,
@@ -272,7 +308,7 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 		SenderID:     source.SenderID,
 		MediaPaths:   cloneMediaPaths(source.MediaPaths),
 		ReplyTo:      source.ReplyTo,
-		Metadata:     cloneMetadata(source.Metadata),
+		Metadata:     metadata,
 		FinishReason: finishReason,
 	}, messagebus.OutboundQueue)
 }
@@ -281,7 +317,7 @@ func (al *agentLoop) publishProgressMessage(source messagebus.Message, content s
 	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
-	metadata := cloneMetadata(source.Metadata)
+	metadata := al.outboundMetadata(source.Metadata)
 	if metadata == nil {
 		metadata = make(map[string]string, 2)
 	}
@@ -309,7 +345,7 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 			continue
 		}
 		message := executed.Message
-		outbound := cloneMetadata(source.Metadata)
+		outbound := al.outboundMetadata(source.Metadata)
 		if outbound == nil {
 			outbound = make(map[string]string, 1)
 		}
@@ -332,6 +368,27 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 	}
 
 	return nil
+}
+
+func (al *agentLoop) outboundMetadata(source map[string]string) map[string]string {
+	metadata := cloneMetadata(source)
+	if metadata == nil {
+		metadata = make(map[string]string, 4)
+	}
+	runtime := al.context.Runtime
+	if strings.TrimSpace(runtime.ProfileName) != "" {
+		metadata["agent_profile"] = runtime.ProfileName
+	}
+	if strings.TrimSpace(runtime.EmbeddingProfileName) != "" {
+		metadata["embedding_profile"] = runtime.EmbeddingProfileName
+	}
+	if strings.TrimSpace(runtime.Workspace) != "" {
+		metadata["workspace"] = runtime.Workspace
+	}
+	if strings.TrimSpace(string(runtime.InvocationMode)) != "" {
+		metadata["invocation_mode"] = string(runtime.InvocationMode)
+	}
+	return metadata
 }
 
 func (al *agentLoop) prepareToolsForTurn(message messagebus.Message) {
@@ -369,7 +426,7 @@ func (al *agentLoop) publishToolCallMessages(source messagebus.Message, toolCall
 			SenderID:     source.SenderID,
 			MediaPaths:   cloneMediaPaths(source.MediaPaths),
 			ReplyTo:      source.ReplyTo,
-			Metadata:     cloneMetadata(source.Metadata),
+			Metadata:     al.outboundMetadata(source.Metadata),
 			FinishReason: "tool_calls",
 		}, messagebus.OutboundQueue); err != nil {
 			return err

@@ -325,6 +325,11 @@ type fakeGatewayCronService struct {
 	loadErr   error
 }
 
+type fakeGatewayInvoker struct {
+	ensureCalls []string
+	closeCalls  int
+}
+
 func (manager *fakeGatewayCronManager) RegisterCron(cronTask cron.Cron) error {
 	return nil
 }
@@ -457,6 +462,26 @@ func (service *fakeGatewayCronService) DeleteCron(cronID string) error {
 }
 
 func (service *fakeGatewayCronService) ExecuteCron(cronID string) error {
+	return nil
+}
+
+func (invoker *fakeGatewayInvoker) Invoke(request appcontext.InvocationRequest) error {
+	return nil
+}
+
+func (invoker *fakeGatewayInvoker) InvokeAsync(request appcontext.InvocationRequest) (<-chan error, error) {
+	errCh := make(chan error, 1)
+	errCh <- nil
+	return errCh, nil
+}
+
+func (invoker *fakeGatewayInvoker) EnsureProfile(profileName string) error {
+	invoker.ensureCalls = append(invoker.ensureCalls, profileName)
+	return nil
+}
+
+func (invoker *fakeGatewayInvoker) Close() error {
+	invoker.closeCalls++
 	return nil
 }
 
@@ -643,6 +668,29 @@ func TestGatewayStartsAndStopsCronManager(t *testing.T) {
 	}
 	if manager.stopCalls != 1 {
 		t.Fatalf("manager.stopCalls = %d, want 1", manager.stopCalls)
+	}
+}
+
+func TestGatewayStartClosesInvokerWhenCronLoadFails(t *testing.T) {
+	bus := messagebus.NewMessageBus()
+	invoker := &fakeGatewayInvoker{}
+	service := &fakeGatewayCronService{loadErr: errors.New("load failed")}
+
+	gw := NewGateway(appcontext.SystemContext{
+		MessageBus:  bus,
+		CronService: service,
+		CronEnabled: true,
+		Invoker:     invoker,
+	})
+	err := gw.Start()
+	if err == nil || !strings.Contains(err.Error(), "load failed") {
+		t.Fatalf("Start() error = %v, want load failed", err)
+	}
+	if invoker.closeCalls != 1 {
+		t.Fatalf("invoker.closeCalls = %d, want 1", invoker.closeCalls)
+	}
+	if len(invoker.ensureCalls) != 1 || invoker.ensureCalls[0] != "default" {
+		t.Fatalf("invoker.ensureCalls = %#v, want [default]", invoker.ensureCalls)
 	}
 }
 

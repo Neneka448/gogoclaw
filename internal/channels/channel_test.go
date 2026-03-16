@@ -229,7 +229,7 @@ func TestFeishuChannelResolveMediaPathUsesWorkspaceForRelativePaths(t *testing.T
 	}
 
 	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, workspace)
-	resolved, ok := channel.resolveMediaPath(relativePath)
+	resolved, ok := channel.resolveMediaPath(relativePath, nil)
 	if !ok {
 		t.Fatal("resolveMediaPath() ok = false, want true")
 	}
@@ -240,7 +240,7 @@ func TestFeishuChannelResolveMediaPathUsesWorkspaceForRelativePaths(t *testing.T
 
 func TestFeishuChannelResolveMediaPathRejectsMissingRelativeFile(t *testing.T) {
 	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, t.TempDir())
-	if resolved, ok := channel.resolveMediaPath(filepath.Join("tmp", "missing.png")); ok {
+	if resolved, ok := channel.resolveMediaPath(filepath.Join("tmp", "missing.png"), nil); ok {
 		t.Fatalf("resolveMediaPath() = %q, want not found", resolved)
 	}
 }

@@ -16,6 +16,7 @@ var (
 	message       string
 	interactAgent bool
 	sessionID     string
+	agentProfile  string
 )
 
 var agentCmd = &cobra.Command{
@@ -56,6 +57,7 @@ var agentCmd = &cobra.Command{
 			Message:   message,
 			Metadata: map[string]string{
 				"session_type": cliSessionType(),
+				"agent_profile": strings.TrimSpace(agentProfile),
 			},
 		})
 		if runErr != nil {
@@ -84,6 +86,7 @@ func init() {
 	agentCmd.Flags().StringVarP(&message, "message", "m", "", "single message to send to the agent; must be non-empty when provided")
 	agentCmd.Flags().BoolVarP(&interactAgent, "interactive", "i", false, "run the agent in interactive mode")
 	agentCmd.Flags().StringVar(&sessionID, "session", "default", "session id to reuse for CLI conversation state")
+	agentCmd.Flags().StringVar(&agentProfile, "profile", "default", "agent profile name to run")
 }
 
 func resolveConfigPath(configPath string) (string, error) {

@@ -15,6 +15,44 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/vectorstore"
 )
 
+type InvocationMode string
+
+const (
+	InvocationModeForeground InvocationMode = "foreground"
+	InvocationModeBackground InvocationMode = "background"
+	InvocationModeCron       InvocationMode = "cron"
+)
+
+type RuntimeContext struct {
+	ProfileName          string
+	Profile              config.ProfileConfig
+	EmbeddingProfileName string
+	EmbeddingProfile     config.EmbeddingProfileConfig
+	Workspace            string
+	InvocationMode       InvocationMode
+}
+
+type InvocationOverrides struct {
+	MessageBus             messagebus.MessageBus
+	ReplaceMessageBus      bool
+	ChannelRegistry        channels.Registry
+	ReplaceChannelRegistry bool
+}
+
+type InvocationRequest struct {
+	ProfileName string
+	Message     messagebus.Message
+	Mode        InvocationMode
+	Overrides   InvocationOverrides
+}
+
+type InvocationService interface {
+	Invoke(request InvocationRequest) error
+	InvokeAsync(request InvocationRequest) (<-chan error, error)
+	EnsureProfile(profileName string) error
+	Close() error
+}
+
 type SystemContext struct {
 	MessageBus      messagebus.MessageBus
 	Provider        provider.LLMProviderOpenaiCompatible
@@ -32,4 +70,6 @@ type SystemContext struct {
 	MCPService      mcppkg.Service
 	MemoryService   memory.Service
 	MemoryEnabled   bool
+	Runtime         RuntimeContext
+	Invoker         InvocationService
 }

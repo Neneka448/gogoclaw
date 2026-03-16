@@ -43,6 +43,8 @@ type ExecutionRequest struct {
 	Prompt       string
 	ExecutionDir string
 	Metadata     map[string]string
+	ProfileName  string
+	Mode         string
 }
 
 type Executor func(request ExecutionRequest) error
@@ -65,6 +67,8 @@ type UpsertCronInput struct {
 	CronExpression string
 	Enabled        bool
 	Task           string
+	ProfileName    string
+	InvocationMode string
 }
 
 type StoredCron struct {
@@ -299,6 +303,8 @@ func (service *workspaceService) ExecuteCron(cronID string) error {
 			"cron_id": storedCron.Config.CronID,
 			"exec_id": executionID,
 		},
+		ProfileName: storedCron.Config.ProfileName,
+		Mode:        storedCron.Config.InvocationMode,
 	})
 
 	manifest.Status = "succeeded"
@@ -376,6 +382,8 @@ func (service *workspaceService) normalizeInput(input UpsertCronInput) (*StoredC
 			CronID:         input.CronID,
 			CronExpression: input.CronExpression,
 			Enabled:        input.Enabled,
+			ProfileName:    strings.TrimSpace(input.ProfileName),
+			InvocationMode: strings.TrimSpace(input.InvocationMode),
 		},
 		Task: input.Task,
 		Path: cronDir,

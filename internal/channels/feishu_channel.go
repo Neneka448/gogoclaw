@@ -164,7 +164,7 @@ func (c *FeishuChannel) Send(message messagebus.Message) error {
 
 	receiveIDType := receiveIDTypeForChatID(message.ChatID)
 	for _, mediaPath := range mediaPaths {
-		if err := c.sendMediaMessage(receiveIDType, message.ChatID, mediaPath); err != nil {
+		if err := c.sendMediaMessage(receiveIDType, message.ChatID, mediaPath, message.Metadata); err != nil {
 			return err
 		}
 	}
@@ -888,8 +888,8 @@ func isLocalFilePath(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string, mediaPath string) error {
-	resolvedPath, ok := c.resolveMediaPath(mediaPath)
+func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string, mediaPath string, metadata map[string]string) error {
+	resolvedPath, ok := c.resolveMediaPath(mediaPath, metadata)
 	if !ok {
 		return fmt.Errorf("feishu media path not found: %s", mediaPath)
 	}
@@ -917,7 +917,7 @@ func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string,
 	return c.sendMessage(receiveIDType, receiveID, messageType, string(payload))
 }
 
-func (c *FeishuChannel) resolveMediaPath(mediaPath string) (string, bool) {
+func (c *FeishuChannel) resolveMediaPath(mediaPath string, metadata map[string]string) (string, bool) {
 	trimmed := strings.TrimSpace(mediaPath)
 	if trimmed == "" {
 		return "", false
@@ -933,6 +933,11 @@ func (c *FeishuChannel) resolveMediaPath(mediaPath string) (string, bool) {
 		return "", false
 	}
 	workspace := strings.TrimSpace(c.workspace)
+	if metadata != nil {
+		if runtimeWorkspace := strings.TrimSpace(metadata["workspace"]); runtimeWorkspace != "" {
+			workspace = runtimeWorkspace
+		}
+	}
 	if workspace == "" {
 		return "", false
 	}

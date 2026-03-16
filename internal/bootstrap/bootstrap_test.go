@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
@@ -70,27 +69,15 @@ func TestBootstrapInitializesSessionManagerFromWorkspace(t *testing.T) {
 	}
 }
 
-func TestResolveToolTimeoutUsesConfiguredValue(t *testing.T) {
-	timeout := resolveToolTimeout([]config.ToolConfig{{Name: "terminal", Timeout: 12}}, "terminal", 30*time.Second)
-	if timeout != 12*time.Second {
-		t.Fatalf("resolveToolTimeout() = %v, want 12s", timeout)
-	}
-}
-
-func TestResolveToolTimeoutFallsBackToDefault(t *testing.T) {
-	timeout := resolveToolTimeout([]config.ToolConfig{{Name: "read_file", Timeout: 5}}, "terminal", 30*time.Second)
-	if timeout != 30*time.Second {
-		t.Fatalf("resolveToolTimeout() = %v, want 30s", timeout)
-	}
-}
-
-func TestBuildEmbeddingProvidersReusesSameProviderInstance(t *testing.T) {
+func TestBootstrapRoutesInvocationToNamedProfileWorkspace(t *testing.T) {
 	tempDir := t.TempDir()
+	defaultWorkspace := filepath.Join(tempDir, "default-workspace")
+	workerWorkspace := filepath.Join(tempDir, "worker-workspace")
 	configPath := filepath.Join(tempDir, "config.json")
 
 	defaultConfig := config.CreateDefaultConfig()
 	defaultConfig.Agents.Profiles["default"] = config.ProfileConfig{
-		Workspace:         tempDir,
+		Workspace:         defaultWorkspace,
 		Provider:          "codex",
 		Model:             "gpt-5.4",
 		MaxTokens:         512,
@@ -99,15 +86,16 @@ func TestBuildEmbeddingProvidersReusesSameProviderInstance(t *testing.T) {
 		MemoryWindow:      10,
 		MaxRetryTimes:     1,
 	}
-	defaultConfig.Embedding.Profiles["default"] = config.EmbeddingProfileConfig{
-		Text: config.EmbeddingModelConfig{
-			Provider: "voyageai",
-			Model:    "voyage-4",
-		},
-		Modal: config.EmbeddingModelConfig{
-			Provider: "voyageai",
-			Model:    "voyage-multimodal-3.5",
-		},
+	defaultConfig.Agents.Profiles["worker"] = config.ProfileConfig{
+		Workspace:         workerWorkspace,
+		Provider:          "codex",
+		EmbeddingProfile:  "default",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
 	}
 
 	encoded, err := json.Marshal(defaultConfig)
@@ -118,20 +106,32 @@ func TestBuildEmbeddingProvidersReusesSameProviderInstance(t *testing.T) {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 
-	manager := config.NewConfigManager(configPath)
-	embeddingProfile, err := manager.GetEmbeddingProfileConfig("default")
+	gatewayRef, err := Bootstrap(configPath)
 	if err != nil {
-		t.Fatalf("GetEmbeddingProfileConfig() error = %v", err)
+		t.Fatalf("Bootstrap() error = %v", err)
 	}
+	defer func() {
+		if err := (*gatewayRef).Stop(); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	}()
 
-	textProvider, modalProvider, err := buildEmbeddingProviders(manager, embeddingProfile)
+	responses, err := (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
+		ChannelID: "cli",
+		ChatID:    "chat-worker",
+		SenderID:  "user-1",
+		Metadata:  map[string]string{"agent_profile": "worker"},
+	})
 	if err != nil {
-		t.Fatalf("buildEmbeddingProviders() error = %v", err)
+		t.Fatalf("DirectProcessAndReturn() error = %v", err)
 	}
-	if textProvider == nil || modalProvider == nil {
-		t.Fatalf("providers = (%v, %v), want non-nil", textProvider, modalProvider)
+	if len(responses) != 0 {
+		t.Fatalf("len(responses) = %d, want 0", len(responses))
 	}
-	if textProvider != modalProvider {
-		t.Fatal("expected textProvider and modalProvider to reuse the same provider instance")
+	if _, err := os.Stat(filepath.Join(workerWorkspace, "sessions", "cli:chat-worker.json")); err != nil {
+		t.Fatalf("worker session file not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(defaultWorkspace, "sessions", "cli:chat-worker.json")); err == nil {
+		t.Fatal("default workspace unexpectedly received worker session file")
 	}
 }
