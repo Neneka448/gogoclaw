@@ -68,7 +68,7 @@ jobs:
             goos: linux
             goarch: amd64
             asset_base: gogoclaw_linux_amd64
-          - runner: macos-13
+          - runner: macos-15-intel
             goos: darwin
             goarch: amd64
             asset_base: gogoclaw_darwin_amd64
@@ -138,6 +138,17 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           generate_release_notes: true
+          body: |
+            Native binaries are published for Linux and macOS.
+
+            Assets:
+            - `gogoclaw_linux_amd64_${{ needs.prepare.outputs.tag }}` for Linux x86_64
+            - `gogoclaw_darwin_amd64_${{ needs.prepare.outputs.tag }}` for Intel Mac
+            - `gogoclaw_darwin_arm64_${{ needs.prepare.outputs.tag }}` for Apple Silicon Mac
+
+            Apple Silicon users should download the `darwin_arm64` asset.
+
+            For full vectorstore and memory support, install the matching sqlite-vec extension for your platform after downloading the binary.
           files: |
             release/*
         env:
