@@ -1,81 +1,141 @@
 # gogoclaw
 
-gogoclaw is a Go-based coding agent runtime inspired by [OpenClaw](https://github.com/openclaw/openclaw) and [Nanobot](https://github.com/HKUDS/nanobot).
+gogoclaw is a Go-based agent runtime for building file-first, skill-driven AI workflows.
 
-The project focuses on a clean, modular runtime that separates agent orchestration, tool execution, session persistence, provider integration, channel delivery, and workspace bootstrap. The goal is to make the system easy to assemble, extend, and embed into different engineering workflows.
+It started from a coding-agent runtime shape inspired by OpenClaw and similar systems, but the project direction is now broader: keep the ReAct loop simple, use Tools + Skills + system prompt composition as the main extension surface, and let durable state live in the workspace as files.
+
+The long-term goal is not a monolithic AI app, but a runtime spine that can support:
+
+- foreground agents for user-facing conversation
+- background agents for autonomous task execution
+- cron-driven agents that poll, inspect, and continue file-based workflows
+- shared skill layers across multiple agent profiles
+
+## Positioning
+
+gogoclaw currently sits in the middle ground between a chat agent shell and an agent operating system.
+
+What it is today:
+
+- a modular ReAct agent runtime with tool-calling
+- a workspace-scoped system for prompts, skills, sessions, and runtime files
+- a channel-aware gateway that can run in CLI or long-lived service mode
+- a file-friendly foundation for future delegated and background agent workflows
+
+What it is becoming:
+
+- a profile-aware multi-agent runtime
+- a foreground/background execution model where the loop stays the same and only output routing changes
+- a skill-first system where most task workflows are expressed through files, skills, and scripts rather than hardcoded orchestration logic
+
+## Design Principles
+
+- Keep the ReAct loop stable. The core agent loop should remain small and predictable.
+- Extend through Tools + Skills + system prompt composition. New workflows should usually land there first.
+- Prefer files as durable state. Sessions, prompts, skills, cron tasks, artifacts, and future task boards should remain inspectable on disk.
+- Keep runtime layers explicit. Provider, gateway, tools, sessions, channels, memory, and prompt assembly should stay separable.
+- Let system abstractions stay minimal. Profile-aware invocation, output routing, and shared skill resolution belong in the runtime; task workflows belong in skills and scripts.
 
 ## Status
 
-This repository is in an early, pre-release stage.
+This repository is still pre-release and source-first.
 
-What is already implemented:
+Implemented today:
 
-- Cobra-based CLI entrypoints
-- onboarding flow that creates a profile, config file, and starter workspace
-- JSON configuration schema with default profile/provider/channel settings
-- agent loop with tool-calling support over OpenAI-compatible chat completions
-- local session persistence under the workspace
-- gateway orchestration for direct CLI execution and long-running channel mode
-- built-in tools for file reading, directory listing, terminal execution, active messaging, and workspace skill loading
-- workspace bootstrap files for prompt/system context composition
-- optional Feishu channel wiring in addition to the CLI channel
+- Cobra-based CLI entrypoints for onboarding, auth, agent, gateway, MCP inspection, and version output
+- onboarding flow that creates config, workspace bootstrap files, and default skills
+- OpenAI-compatible chat provider abstraction plus Codex auth flow
+- ReAct-style agent loop with tool-calling and bounded tool iterations
+- workspace-backed session persistence with archive/reset behavior
+- gateway runtime for direct CLI execution and long-running channel processing
+- built-in CLI channel and optional Feishu channel integration
+- cron service with workspace-backed cron task storage and execution
+- memory service and recall tool integration when embedding is configured
+- MCP service bootstrap and tool registration
 
-What is not positioned as stable yet:
+Still evolving:
 
-- public APIs and config shape may still evolve
-- some command entrypoints are placeholders for future expansion
-- the project should currently be treated as source-first and development-oriented
+- agent profile selection across all execution paths
+- agent-to-agent invocation and background execution
+- foreground/background output sink abstraction
+- shared skill visibility and layered skill resolution
+- task-board style autonomous workflows built on top of skills and files
 
 ## Why This Project
 
-Compared with a monolithic agent runner, gogoclaw aims to keep the core layers explicit:
+Many agent systems become hard to extend because prompting, tools, transport, memory, orchestration, and state persistence are all mixed together.
 
-- agent: drives the LLM loop and tool execution
-- provider: wraps OpenAI-compatible chat completion models
-- tools: exposes controlled capabilities to the model
+gogoclaw keeps these layers explicit:
+
+- agent: runs the ReAct loop and model/tool interaction
+- provider: wraps chat and embedding backends
+- tools: exposes model-callable capabilities
 - session: persists conversation state to workspace files
-- channels: delivers messages through CLI or external integrations
-- gateway: coordinates message flow between channels and the agent runtime
-- workspace: stores system prompt fragments, skills, and durable runtime data
+- channels: handles foreground delivery through CLI or external transports
+- cron: schedules autonomous prompts and task polling
+- memory: extracts, stores, and recalls durable memory
+- systemprompt and skills: assemble the runtime behavior from files in the workspace
+- gateway: coordinates message flow and runtime lifecycle
 
-This makes it easier to swap providers, add tools, or attach new channels without rewriting the whole runtime.
+That separation is the main reason the codebase can evolve from a direct chat runtime into a multi-agent, file-oriented system without replacing the core loop.
 
 ## Features
 
-- Interactive and non-interactive onboarding
-- Default workspace bootstrap with AGENTS.md, SOUL.md, TOOLS.md, USER.md, and HEARTBEAT.md
+Current runtime features:
+
+- interactive and non-interactive onboarding
+- default workspace bootstrap with AGENTS.md, SOUL.md, TOOLS.md, USER.md, HEARTBEAT.md, and bundled default skills
+- workspace-local skill discovery from skills/<skill-name>/SKILL.md
 - OpenAI-compatible provider abstraction
-- Built-in provider presets for openrouter and codex
+- built-in provider presets for openrouter and codex
 - Codex OAuth login flow via local callback server
-- Direct single-turn CLI execution with agent responses streamed through the message bus
-- Persistent sessions stored as JSON files inside the workspace
-- Workspace-local skill discovery from skills/<skill-name>/SKILL.md
-- Tool call visibility in the CLI output
-- Configurable tool timeout for terminal execution
+- direct CLI execution through the gateway and message bus
+- persistent sessions stored as JSON files inside the workspace
+- session archive/reset flow via /new
+- CLI progress output and tool-call visibility
+- optional Feishu channel integration with richer outbound rendering
+- cron task creation and cron-backed autonomous execution
+- optional memory recall over workspace-backed vector storage
+- MCP server management and MCP tool registration
+
+Planned architecture features:
+
+- profile-aware agent invocation
+- invoke_agent style delegation tool
+- foreground/background output sink separation
+- shared skills with visibility metadata
+- cron-first autonomous agents and board-driven task workflows built through skills and files
 
 ## Project Layout
 
 ```text
 .
 ├── cmd/                    # CLI entrypoints
-├── internal/agent/         # agent loop and tool-call orchestration
+├── docs/                   # project documentation
+├── internal/agent/         # ReAct loop and tool-call orchestration
 ├── internal/bootstrap/     # runtime wiring from config to gateway
 ├── internal/channels/      # CLI and Feishu channels
 ├── internal/cli/           # onboarding and auth flows
 ├── internal/config/        # config schema and loading
+├── internal/cron/          # cron scheduler and workspace cron storage
 ├── internal/gateway/       # message routing and runtime lifecycle
-├── internal/provider/      # OpenAI-compatible provider adapter
+├── internal/mcp/           # MCP service integration
+├── internal/memory/        # memory extraction, storage, and recall
+├── internal/message_bus/   # inbound/outbound queues
+├── internal/provider/      # chat and embedding providers
 ├── internal/session/       # workspace-backed session persistence
 ├── internal/skills/        # workspace skill discovery
 ├── internal/systemprompt/  # prompt assembly from workspace files
 ├── internal/tools/         # built-in model tools
+├── internal/vectorstore/   # sqlite-vec backed storage
 └── internal/workspace/     # embedded workspace bootstrap templates
 ```
 
 ## Requirements
 
 - Go 1.26.1 or newer
-- an OpenAI-compatible model endpoint or Codex-compatible authentication flow
+- cgo enabled for sqlite-vec support
+- an OpenAI-compatible chat model endpoint or Codex-compatible authentication flow
 
 ## Installation
 
@@ -93,7 +153,7 @@ Or use the provided Make target:
 CGO_ENABLED=1 make build
 ```
 
-If you hit Ubuntu build errors related to `sqliteConn.LoadExtension`, see [docs/troubleshooting.md](/Users/chenkaiming/project/gogoclaw/docs/troubleshooting.md).
+If you hit build errors related to sqlite or cgo, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 Install the sqlite-vec loadable extension into the default workspace location:
 
@@ -109,7 +169,7 @@ make sqlite-vec-install WORKSPACE=/path/to/workspace
 
 ## Troubleshooting
 
-- [docs/troubleshooting.md](/Users/chenkaiming/project/gogoclaw/docs/troubleshooting.md): Ubuntu build failures, including `SQLiteConn.LoadExtension undefined` when cgo is disabled
+- [docs/troubleshooting.md](docs/troubleshooting.md): build issues, including sqlite-vec and cgo-related failures
 
 ## Quick Start
 
@@ -135,7 +195,7 @@ By default this creates:
 - profile directory at ~/.gogoclaw
 - config file at ~/.gogoclaw/config.json
 - workspace at ~/.gogoclaw/workspace
-- sqlite-vec extension files under ~/.gogoclaw/workspace/sqlite-vec after `make sqlite-vec-install`
+- sqlite-vec extension files under ~/.gogoclaw/workspace/sqlite-vec after make sqlite-vec-install
 
 ### 2. Run a one-shot agent command
 
@@ -143,7 +203,7 @@ By default this creates:
 ./gogoclaw agent --message "Summarize the current repository structure"
 ```
 
-The agent will bootstrap the runtime from the configured profile, load workspace prompt files and skills, then execute the request through the configured model.
+The runtime will bootstrap the configured profile, load workspace prompts and skills, execute the ReAct loop, and emit responses through the channel/message-bus path.
 
 ### 3. Start the gateway
 
@@ -151,7 +211,7 @@ The agent will bootstrap the runtime from the configured profile, load workspace
 ./gogoclaw gateway
 ```
 
-This starts the configured channels and keeps the process alive until interrupted. The CLI channel is enabled by default, and Feishu can be enabled via config.
+This starts enabled channels and keeps the runtime alive for long-running processing. The CLI channel is enabled by default, and Feishu can be enabled in config.
 
 ### 4. Authenticate Codex if needed
 
@@ -160,6 +220,13 @@ This starts the configured channels and keeps the process alive until interrupte
 ```
 
 This opens a browser-based OAuth flow and stores the token locally for later reuse.
+
+### 5. Inspect MCP servers
+
+```bash
+./gogoclaw mcp list
+./gogoclaw mcp restart --name filesystem
+```
 
 ## CLI Commands
 
@@ -275,16 +342,6 @@ Example:
           "NODE_NO_WARNINGS": "1"
         },
         "cwd": "/Users/you/.gogoclaw/workspace"
-      },
-      "docs": {
-        "enabled": true,
-        "url": "http://127.0.0.1:8787/mcp",
-        "headers": {
-          "Authorization": "Bearer <token>"
-        },
-        "timeout": 30,
-        "keepAlive": 15,
-        "disableStandaloneSSE": true
       }
     }
   },
@@ -294,13 +351,12 @@ Example:
 
 Notes:
 
-- the default agent profile name is default
-- provider lookup is based on the profile's provider field
+- profile definitions already live under agents.profiles
+- today, most runtime paths still effectively center on the default profile
 - embedding models are configured separately under the embedding section
 - terminal tool timeout can be configured through the tools array
-- MCP servers are configured under mcp.mcpServers and currently support stdio plus Streamable HTTP
-- MCP HTTP auth is currently static-header based; OAuth and dynamic registration are not implemented
-- if no custom workspace is provided during onboarding, it defaults to <profile>/workspace
+- MCP servers are configured under mcp.mcpServers and support stdio plus Streamable HTTP
+- if no custom workspace is provided during onboarding, it defaults to <profile-dir>/workspace
 
 ## Workspace Conventions
 
@@ -315,31 +371,60 @@ Onboarding bootstraps a workspace with several prompt and instruction files:
 Additional runtime conventions:
 
 - skills are loaded from skills/<name>/SKILL.md
+- default bundled skills are deployed into the workspace if missing
 - sessions are persisted under sessions/<session-id>.json
 - archived sessions are written when the user sends /new
+- cron tasks are stored under crons/<cron-id>/
+- vector and memory data live under the workspace as runtime files
 
 ## Built-in Tools
 
-The runtime currently registers these tools for the model:
+The runtime currently registers these built-in tools:
 
-- read_file: read files from inside the workspace with optional line ranges
+- read_file: read files from inside the workspace with line ranges
 - list_dir: list directory contents inside the workspace
 - terminal: run non-interactive shell commands inside the workspace
-- message: actively send a message back to the user through the channel layer
+- message: actively send a message back through the channel layer
 - get_skill: load a workspace skill by name
+- create_cron: create or update workspace cron tasks
+- recall_memory: query stored memory when memory is enabled
 
-All file and terminal tools are workspace-scoped to prevent escaping the configured workspace root.
+Additional MCP-backed tools may also be registered from configured MCP servers.
+
+Workspace file and terminal tools are workspace-scoped to prevent escaping the configured workspace root.
 
 ## How It Works
 
 At a high level, the runtime bootstraps like this:
 
-1. Load config and resolve the default agent profile.
-2. Create the provider, message bus, tool registry, session manager, skill registry, and system prompt service.
-3. Register enabled channels.
-4. Start an agent loop for each inbound message.
-5. Persist messages to the workspace-backed session.
-6. Execute tool calls until the model returns a final response or hits the iteration limit.
+1. Load config and resolve the active profile.
+2. Build provider, tool registry, session manager, channel registry, memory, MCP, and system prompt services.
+3. Load workspace skills and prompt fragments.
+4. Register built-in and MCP tools.
+5. Route inbound messages through the gateway or direct CLI path.
+6. Run the ReAct loop until the model finishes or hits the tool iteration limit.
+7. Persist session and runtime state back into the workspace.
+
+In the current architecture, the ReAct loop is the stable execution core. Near-term system work is focused on adding profile-aware invocation and output routing around that core rather than replacing it.
+
+## Roadmap
+
+Near-term roadmap:
+
+- profile-aware agent invocation as a first-class runtime abstraction
+- invoke_agent style delegation tool for agent-to-agent launch
+- cron support for target profile and invocation mode
+- foreground/background output sink separation
+- shared skills resolution with visibility metadata
+
+Workflow roadmap on top of that foundation:
+
+- file-first background task execution via skills and scripts
+- task-board style workflows driven by cron and local files
+- richer group-chat delegation and task coordination
+- stronger multimodal and structured channel responses
+
+The intention is to keep system abstractions small and let most domain workflows be expressed through workspace files, skills, and scripts.
 
 ## Development
 
@@ -361,19 +446,13 @@ Fast local development:
 make test
 ```
 
-Fast local build:
-
-```bash
-make build
-```
-
-The repository already includes tests for core areas such as bootstrap, channels, config, gateway, provider normalization, sessions, skills, tools, and workspace bootstrap files.
+The repository already includes tests for core areas such as bootstrap, channels, config, cron, gateway, memory, provider normalization, sessions, skills, tools, vectorstore, and workspace bootstrap files.
 
 ## Contributing
 
 Before contributing, read [AGENTS.md](AGENTS.md).
 
-This repository expects changes to stay focused, tested, and aligned with the layer boundaries already present in the codebase.
+This repository expects changes to stay focused, tested, and aligned with the existing layer boundaries.
 
 Commit messages should follow the convention documented in AGENTS.md:
 
@@ -382,13 +461,3 @@ Commit messages should follow the convention documented in AGENTS.md:
 - prefer scopes that match the primary directory or layer being changed
 
 If your change affects behavior, add or update the relevant tests before submitting it.
-
-## Roadmap Direction
-
-The current codebase is centered on getting the runtime spine right. Likely next areas of growth include:
-
-- richer provider integrations
-- more channel adapters
-- expanded tool surface
-- stronger memory and session management
-- more complete operational commands around config, status, and provider management
