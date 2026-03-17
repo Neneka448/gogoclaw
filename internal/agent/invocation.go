@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +109,11 @@ func (service *invocationService) InvokeAsync(request appcontext.InvocationReque
 		return errCh, nil
 	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errCh <- fmt.Errorf("agent loop panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		errCh <- NewAgentLoop(executionContext).ProcessMessage(request.Message)
 	}()
 	return errCh, nil

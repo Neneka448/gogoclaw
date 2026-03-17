@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
@@ -24,16 +23,15 @@ func TestNormalizeContextPathsAppliesDefaultsAndExpansion(t *testing.T) {
 	}
 }
 
-func TestPrepareProfilePathRejectsExistingConfig(t *testing.T) {
+func TestPrepareProfilePathAllowsExistingConfig(t *testing.T) {
 	profilePath := t.TempDir()
 	configPath := filepath.Join(profilePath, configFileName)
 	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	err := prepareProfilePath(profilePath)
-	if err == nil || !strings.Contains(err.Error(), "config file exists") {
-		t.Fatalf("prepareProfilePath() error = %v, want config file exists", err)
+	if err := prepareProfilePath(profilePath); err != nil {
+		t.Fatalf("prepareProfilePath() error = %v, want nil", err)
 	}
 }
 
@@ -46,9 +44,8 @@ func TestPrepareWorkspacePathCreatesDirectoryAndRejectsExistingPath(t *testing.T
 		t.Fatalf("Stat() error = %v", err)
 	}
 
-	err := prepareWorkspacePath(workspacePath)
-	if err == nil || !strings.Contains(err.Error(), "workspace exists") {
-		t.Fatalf("prepareWorkspacePath(existing) error = %v, want workspace exists", err)
+	if err := prepareWorkspacePath(workspacePath); err != nil {
+		t.Fatalf("prepareWorkspacePath(existing) error = %v, want nil", err)
 	}
 }
 
@@ -56,14 +53,19 @@ func TestWriteConfigWritesDefaultProfileOverrides(t *testing.T) {
 	profilePath := t.TempDir()
 	ctx := &onboardContext{
 		ProfilePath: profilePath,
+		ProfileName: "default",
 		Workspace:   filepath.Join(t.TempDir(), "workspace"),
 		Provider:    "codex",
 		Model:       "openai-codex/gpt-5.4",
 		APIKey:      "secret-token",
 	}
 
-	if err := writeConfig(ctx); err != nil {
+	writtenConfig, err := writeConfig(ctx)
+	if err != nil {
 		t.Fatalf("writeConfig() error = %v", err)
+	}
+	if writtenConfig == nil {
+		t.Fatal("writeConfig() returned nil config")
 	}
 
 	configPath := filepath.Join(profilePath, configFileName)
@@ -101,6 +103,59 @@ func TestWriteConfigWritesDefaultProfileOverrides(t *testing.T) {
 	}
 
 	t.Fatalf("provider %q not found", ctx.Provider)
+}
+
+func TestWriteConfigUpsertsNamedProfileAndPreservesExistingProfiles(t *testing.T) {
+	profilePath := t.TempDir()
+	configPath := filepath.Join(profilePath, configFileName)
+	existingConfig := config.CreateDefaultConfig()
+	existingConfig.Agents.Profiles["default"] = config.ProfileConfig{
+		Workspace:         filepath.Join(t.TempDir(), "default-workspace"),
+		Provider:          "codex",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+	encoded, err := json.Marshal(existingConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	ctx := &onboardContext{
+		ProfilePath: profilePath,
+		ProfileName: "worker",
+		Workspace:   filepath.Join(t.TempDir(), "worker-workspace"),
+		Provider:    "openrouter",
+		Model:       "openai/gpt-4.1",
+		APIKey:      "worker-token",
+	}
+
+	writtenConfig, err := writeConfig(ctx)
+	if err != nil {
+		t.Fatalf("writeConfig() error = %v", err)
+	}
+	if writtenConfig.Agents.Profiles["default"].Workspace != existingConfig.Agents.Profiles["default"].Workspace {
+		t.Fatalf("default profile workspace = %q, want preserved %q", writtenConfig.Agents.Profiles["default"].Workspace, existingConfig.Agents.Profiles["default"].Workspace)
+	}
+	workerProfile, ok := writtenConfig.Agents.Profiles["worker"]
+	if !ok {
+		t.Fatal("worker profile missing after upsert")
+	}
+	if workerProfile.Workspace != ctx.Workspace {
+		t.Fatalf("worker workspace = %q, want %q", workerProfile.Workspace, ctx.Workspace)
+	}
+	if workerProfile.Provider != ctx.Provider {
+		t.Fatalf("worker provider = %q, want %q", workerProfile.Provider, ctx.Provider)
+	}
+	if workerProfile.Model != ctx.Model {
+		t.Fatalf("worker model = %q, want %q", workerProfile.Model, ctx.Model)
+	}
 }
 
 func TestOnboardCreatesWorkspaceBootstrapFiles(t *testing.T) {

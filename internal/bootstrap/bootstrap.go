@@ -25,6 +25,10 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	profileWorkspaces := make(map[string]string, len(sysConfig.Agents.Profiles))
+	for profileName, profile := range sysConfig.Agents.Profiles {
+		profileWorkspaces[profileName] = profile.Workspace
+	}
 	messageBus := messagebus.NewMessageBus()
 	channelRegistry := channels.NewRegistry()
 	if err := channelRegistry.Register(channels.NewCLIChannel(sysConfig.Channels.CLI, nil)); err != nil {
@@ -42,7 +46,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	cronManager := cron.NewCronManager(cronLocation)
 
 	var invoker appcontext.InvocationService
-	cronService := cron.NewCronService(defaultProfile.Workspace, cronManager, func(request cron.ExecutionRequest) error {
+	cronService := cron.NewMultiProfileService(profileWorkspaces, "default", cronManager, func(request cron.ExecutionRequest) error {
 		return executeCronRequest(invoker, request)
 	}, cronLocation)
 	invoker, err = agent.NewInvocationService(configManager, sysConfig, messageBus, channelRegistry, cronService, sysConfig.Cron.Enabled)
@@ -83,6 +87,16 @@ func executeCronRequest(invoker appcontext.InvocationService, request cron.Execu
 	}
 	tempBus := messagebus.NewMessageBus()
 	defer tempBus.Close()
+	metadata := request.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string, 2)
+	}
+	if strings.TrimSpace(request.ProfileName) != "" {
+		metadata["agent_profile"] = strings.TrimSpace(request.ProfileName)
+	}
+	if strings.TrimSpace(request.Mode) != "" {
+		metadata["invocation_mode"] = strings.TrimSpace(request.Mode)
+	}
 
 	message := messagebus.Message{
 		ChannelID:   "cron",
@@ -90,7 +104,7 @@ func executeCronRequest(invoker appcontext.InvocationService, request cron.Execu
 		SenderID:    request.CronID,
 		MessageType: "cron",
 		Message:     request.Prompt,
-		Metadata:    request.Metadata,
+		Metadata:    metadata,
 	}
 	mode := appcontext.InvocationModeCron
 	if strings.TrimSpace(request.Mode) != "" {
@@ -108,5 +122,3 @@ func executeCronRequest(invoker appcontext.InvocationService, request cron.Execu
 		},
 	})
 }
-
-

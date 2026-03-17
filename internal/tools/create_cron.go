@@ -4,13 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	cronpkg "github.com/Neneka448/gogoclaw/internal/cron"
+	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	openai "github.com/sashabaranov/go-openai"
 )
 
 type CreateCronTool struct {
 	service cronpkg.Service
+
+	mu      sync.Mutex
+	context messagebus.Message
 }
 
 type createCronArgs struct {
@@ -87,12 +92,23 @@ func (tool *CreateCronTool) Execute(args string) (string, error) {
 	if input.Task == "" {
 		return encodeCreateCronResult(createCronResult{CronID: input.CronID, CronExpression: input.CronExpression, Error: "task is required"})
 	}
+	tool.mu.Lock()
+	ctx := tool.context
+	tool.mu.Unlock()
+	profileName := ""
+	invocationMode := ""
+	if ctx.Metadata != nil {
+		profileName = strings.TrimSpace(ctx.Metadata["agent_profile"])
+		invocationMode = strings.TrimSpace(ctx.Metadata["invocation_mode"])
+	}
 
 	storedCron, err := tool.service.CreateCron(cronpkg.UpsertCronInput{
 		CronID:         input.CronID,
 		CronExpression: input.CronExpression,
 		Enabled:        input.Enabled,
 		Task:           input.Task,
+		ProfileName:    profileName,
+		InvocationMode: invocationMode,
 	})
 	if err != nil {
 		return encodeCreateCronResult(createCronResult{
@@ -119,4 +135,10 @@ func encodeCreateCronResult(result createCronResult) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func (tool *CreateCronTool) SetMessageContext(message messagebus.Message) {
+	tool.mu.Lock()
+	defer tool.mu.Unlock()
+	tool.context = message
 }

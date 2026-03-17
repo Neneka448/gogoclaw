@@ -166,3 +166,68 @@ func TestCronServiceLoadAllRegistersEnabledCrons(t *testing.T) {
 		t.Fatalf("manager.registered = %#v, want [enabled-job]", manager.registered)
 	}
 }
+
+func TestMultiProfileCronServiceCreatesCronInNamedProfileWorkspace(t *testing.T) {
+	defaultWorkspace := t.TempDir()
+	workerWorkspace := t.TempDir()
+	manager := &fakeCronManager{}
+	service := NewMultiProfileService(map[string]string{
+		"default": defaultWorkspace,
+		"worker":  workerWorkspace,
+	}, "default", manager, nil, nil)
+
+	storedCron, err := service.CreateCron(UpsertCronInput{
+		CronID:         "worker-report",
+		CronExpression: "0 * * * *",
+		Enabled:        true,
+		Task:           "generate worker report",
+		ProfileName:    "worker",
+	})
+	if err != nil {
+		t.Fatalf("CreateCron() error = %v", err)
+	}
+	if storedCron.Path != filepath.Join(workerWorkspace, "crons", "worker-report") {
+		t.Fatalf("storedCron.Path = %q, want worker workspace path", storedCron.Path)
+	}
+	if storedCron.Config.ProfileName != "worker" {
+		t.Fatalf("storedCron.Config.ProfileName = %q, want worker", storedCron.Config.ProfileName)
+	}
+	if _, err := os.Stat(filepath.Join(workerWorkspace, "crons", "worker-report", "config.json")); err != nil {
+		t.Fatalf("worker config.json not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(defaultWorkspace, "crons", "worker-report", "config.json")); !os.IsNotExist(err) {
+		t.Fatalf("default workspace unexpectedly contains worker cron: %v", err)
+	}
+}
+
+func TestMultiProfileCronServiceExecuteCronPropagatesStoredProfile(t *testing.T) {
+	defaultWorkspace := t.TempDir()
+	workerWorkspace := t.TempDir()
+	var captured ExecutionRequest
+	service := NewMultiProfileService(map[string]string{
+		"default": defaultWorkspace,
+		"worker":  workerWorkspace,
+	}, "default", nil, func(request ExecutionRequest) error {
+		captured = request
+		return nil
+	}, nil)
+
+	if _, err := service.CreateCron(UpsertCronInput{
+		CronID:         "worker-report",
+		CronExpression: "0 * * * *",
+		Enabled:        true,
+		Task:           "generate worker report",
+		ProfileName:    "worker",
+	}); err != nil {
+		t.Fatalf("CreateCron() error = %v", err)
+	}
+	if err := service.ExecuteCron("worker-report"); err != nil {
+		t.Fatalf("ExecuteCron() error = %v", err)
+	}
+	if captured.ProfileName != "worker" {
+		t.Fatalf("captured.ProfileName = %q, want worker", captured.ProfileName)
+	}
+	if !strings.HasPrefix(captured.ExecutionDir, filepath.Join(workerWorkspace, "crons", "worker-report")) {
+		t.Fatalf("captured.ExecutionDir = %q, want worker workspace execution dir", captured.ExecutionDir)
+	}
+}
