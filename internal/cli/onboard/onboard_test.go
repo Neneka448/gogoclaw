@@ -23,6 +23,23 @@ func TestNormalizeContextPathsAppliesDefaultsAndExpansion(t *testing.T) {
 	}
 }
 
+func TestValidateProfileNameRejectsEmptyValue(t *testing.T) {
+	if err := validateProfileName("   "); err == nil {
+		t.Fatal("validateProfileName() error = nil, want non-empty profile name error")
+	}
+}
+
+func TestResolveInteractiveWorkspacePathUsesProfileDefault(t *testing.T) {
+	homePath := filepath.Join(string(os.PathSeparator), "tmp", "home")
+	profilePath := filepath.Join(homePath, ".gogoclaw")
+
+	got := resolveInteractiveWorkspacePath("", profilePath, homePath)
+	want := filepath.Join(profilePath, "workspace")
+	if got != want {
+		t.Fatalf("resolveInteractiveWorkspacePath() = %q, want %q", got, want)
+	}
+}
+
 func TestPrepareProfilePathAllowsExistingConfig(t *testing.T) {
 	profilePath := t.TempDir()
 	configPath := filepath.Join(profilePath, configFileName)
@@ -103,6 +120,77 @@ func TestWriteConfigWritesDefaultProfileOverrides(t *testing.T) {
 	}
 
 	t.Fatalf("provider %q not found", ctx.Provider)
+}
+
+func TestWriteConfigRejectsWorkspaceConflictAcrossProfiles(t *testing.T) {
+	profilePath := t.TempDir()
+	configPath := filepath.Join(profilePath, configFileName)
+	sharedWorkspace := filepath.Join(t.TempDir(), "shared-workspace")
+	existingConfig := config.CreateDefaultConfig()
+	existingConfig.Agents.Profiles["default"] = config.ProfileConfig{
+		Workspace:         sharedWorkspace,
+		Provider:          "codex",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+	encoded, err := json.Marshal(existingConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	ctx := &onboardContext{
+		ProfilePath: profilePath,
+		ProfileName: "worker",
+		Workspace:   sharedWorkspace,
+		Provider:    "openrouter",
+		Model:       "openai/gpt-4.1",
+	}
+
+	if _, err := writeConfig(ctx); err == nil {
+		t.Fatal("writeConfig() error = nil, want workspace conflict")
+	}
+}
+
+func TestValidateInteractiveWorkspaceInputRejectsConflict(t *testing.T) {
+	homePath := t.TempDir()
+	profilePath := filepath.Join(homePath, ".gogoclaw")
+	if err := os.MkdirAll(profilePath, 0755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	sharedWorkspace := filepath.Join(homePath, "shared-workspace")
+	existingConfig := config.CreateDefaultConfig()
+	existingConfig.Agents.Profiles["default"] = config.ProfileConfig{
+		Workspace:         sharedWorkspace,
+		Provider:          "codex",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+	encoded, err := json.Marshal(existingConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilePath, configFileName), encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	ctx := &onboardContext{
+		ProfilePath: profilePath,
+		ProfileName: "worker",
+	}
+	if err := validateInteractiveWorkspaceInput(sharedWorkspace, ctx, homePath); err == nil {
+		t.Fatal("validateInteractiveWorkspaceInput() error = nil, want workspace conflict")
+	}
 }
 
 func TestWriteConfigUpsertsNamedProfileAndPreservesExistingProfiles(t *testing.T) {

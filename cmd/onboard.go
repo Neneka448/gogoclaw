@@ -40,5 +40,5 @@ func init() {
 	onboardCmd.Flags().StringVarP(&model, "model", "m", "", "model name to use for the selected provider, default is not set")
 	onboardCmd.Flags().StringVarP(&apikey, "apikey", "k", "", "your apikey used to connect the provider, default is not set")
 	onboardCmd.Flags().StringVarP(&workspace, "workspace", "w", "", "workspace path (default: <config-dir>/workspace)")
-	onboardCmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "interactive mode")
+	onboardCmd.Flags().BoolVarP(&interactive, "interactive", "i", true, "interactive mode")
 }

@@ -23,6 +23,7 @@ type createCronArgs struct {
 	CronExpression string `json:"cron_expression"`
 	Task           string `json:"task"`
 	Enabled        bool   `json:"enabled"`
+	ProfileName    string `json:"profile_name,omitempty"`
 }
 
 type createCronResult struct {
@@ -42,7 +43,7 @@ func NewCreateCronTool(service cronpkg.Service) ToolDescriptor {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "create_cron",
-				Description: "Create a workspace cron task that runs the agent on a schedule. Use for recurring inbox checks, periodic reports, or other repeated agent workflows.",
+				Description: "Create a workspace cron task that runs the agent on a schedule. Use for recurring inbox checks, periodic reports, or other repeated agent workflows. By default the cron inherits the current agent profile; only set profile_name when the user explicitly wants the cron to run under a different profile.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -61,6 +62,10 @@ func NewCreateCronTool(service cronpkg.Service) ToolDescriptor {
 						"enabled": map[string]any{
 							"type":        "boolean",
 							"description": "Whether the cron should be enabled immediately after creation.",
+						},
+						"profile_name": map[string]any{
+							"type":        "string",
+							"description": "Optional target agent profile. Omit this unless the user explicitly wants a different profile than the current conversation profile.",
 						},
 					},
 					"required": []string{"cron_id", "cron_expression", "task", "enabled"},
@@ -83,6 +88,7 @@ func (tool *CreateCronTool) Execute(args string) (string, error) {
 	input.CronID = strings.TrimSpace(input.CronID)
 	input.CronExpression = strings.TrimSpace(input.CronExpression)
 	input.Task = strings.TrimSpace(input.Task)
+	input.ProfileName = strings.TrimSpace(input.ProfileName)
 	if input.CronID == "" {
 		return encodeCreateCronResult(createCronResult{Error: "cron_id is required"})
 	}
@@ -100,6 +106,9 @@ func (tool *CreateCronTool) Execute(args string) (string, error) {
 	if ctx.Metadata != nil {
 		profileName = strings.TrimSpace(ctx.Metadata["agent_profile"])
 		invocationMode = strings.TrimSpace(ctx.Metadata["invocation_mode"])
+	}
+	if input.ProfileName != "" {
+		profileName = input.ProfileName
 	}
 
 	storedCron, err := tool.service.CreateCron(cronpkg.UpsertCronInput{
