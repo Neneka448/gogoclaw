@@ -1,6 +1,7 @@
 package onboard
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -267,5 +268,61 @@ func TestOnboardCreatesWorkspaceBootstrapFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workspacePath, "sqlite-vec", "store.db")); err != nil {
 		t.Fatalf("sqlite-vec store missing: %v", err)
+	}
+}
+
+func TestInitializeVectorStoreUsesTargetProfileAndEmbeddingProfile(t *testing.T) {
+	profilePath := t.TempDir()
+	workspacePath := filepath.Join(t.TempDir(), "worker-workspace")
+	existingConfig := config.CreateDefaultConfig()
+	existingConfig.Agents.Profiles["worker"] = config.ProfileConfig{
+		Workspace:         workspacePath,
+		Provider:          "codex",
+		EmbeddingProfile:  "worker",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+	existingConfig.Embedding.Profiles["worker"] = config.EmbeddingProfileConfig{
+		Text:  config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
+		Modal: config.EmbeddingModelConfig{Model: "voyage-multimodal-3.5", OutputDimension: 1024},
+	}
+	encoded, err := json.Marshal(existingConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilePath, configFileName), encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	ctx := &onboardContext{
+		ProfilePath: profilePath,
+		ProfileName: "worker",
+		Workspace:   workspacePath,
+		Provider:    "codex",
+		Model:       "gpt-5.4",
+	}
+	if _, err := writeConfig(ctx); err != nil {
+		t.Fatalf("writeConfig() error = %v", err)
+	}
+	if err := initializeVectorStore(ctx); err != nil {
+		t.Fatalf("initializeVectorStore() error = %v", err)
+	}
+
+	db, err := sql.Open("sqlite3", filepath.Join(workspacePath, "sqlite-vec", "store.db"))
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	var textDim int
+	if err := db.QueryRow(`select text_dimensions from gogoclaw_vec_profiles where name = ?`, "worker").Scan(&textDim); err != nil {
+		t.Fatalf("QueryRow(text_dimensions) error = %v", err)
+	}
+	if textDim != 1024 {
+		t.Fatalf("text_dimensions = %d, want 1024", textDim)
 	}
 }

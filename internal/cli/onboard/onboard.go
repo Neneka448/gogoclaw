@@ -219,9 +219,25 @@ func writeConfig(ctx *onboardContext) (*config.SysConfig, error) {
 }
 
 func initializeVectorStore(ctx *onboardContext) error {
-	defaultConfig := config.CreateDefaultConfig()
-	applyOnboardContext(&defaultConfig, ctx)
-	service := vectorstore.NewSQLiteVecService(ctx.Workspace, "default", defaultConfig.Embedding.Profiles["default"])
+	configPath := filepath.Join(ctx.ProfilePath, configFileName)
+	sysConfig, err := loadConfigForWrite(configPath)
+	if err != nil {
+		return err
+	}
+	applyOnboardContext(sysConfig, ctx)
+	profileName := strings.TrimSpace(ctx.ProfileName)
+	if profileName == "" {
+		profileName = "default"
+	}
+	profile, ok := sysConfig.Agents.Profiles[profileName]
+	if !ok {
+		return fmt.Errorf("profile not found after onboard write: %s", profileName)
+	}
+	_, embeddingProfile, err := resolveOnboardEmbeddingProfile(*sysConfig, profileName, &profile)
+	if err != nil {
+		return err
+	}
+	service := vectorstore.NewSQLiteVecService(profile.Workspace, profileName, *embeddingProfile)
 	if err := service.Start(); err != nil {
 		return err
 	}
@@ -408,4 +424,31 @@ func validateInteractiveWorkspaceInput(workspace string, ctx *onboardContext, ho
 		Workspace:   resolvedWorkspace,
 	}
 	return ensureWorkspaceConflict(*sysConfig, tmpCtx)
+}
+
+func resolveOnboardEmbeddingProfile(sysConfig config.SysConfig, profileName string, profile *config.ProfileConfig) (string, *config.EmbeddingProfileConfig, error) {
+	candidates := []string{}
+	if profile != nil {
+		if explicit := strings.TrimSpace(profile.EmbeddingProfile); explicit != "" {
+			candidates = append(candidates, explicit)
+		}
+	}
+	if trimmedProfileName := strings.TrimSpace(profileName); trimmedProfileName != "" {
+		candidates = append(candidates, trimmedProfileName)
+	}
+	candidates = append(candidates, "default")
+
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		embeddingProfile, ok := sysConfig.Embedding.Profiles[candidate]
+		if ok {
+			profileCopy := embeddingProfile
+			return candidate, &profileCopy, nil
+		}
+	}
+	return "", nil, fmt.Errorf("embedding profile not found for agent profile %s", profileName)
 }
