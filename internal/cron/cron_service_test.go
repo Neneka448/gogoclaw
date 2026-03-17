@@ -231,3 +231,46 @@ func TestMultiProfileCronServiceExecuteCronPropagatesStoredProfile(t *testing.T)
 		t.Fatalf("captured.ExecutionDir = %q, want worker workspace execution dir", captured.ExecutionDir)
 	}
 }
+
+func TestMultiProfileCronServiceExecuteCronUsesHydratedLegacyProfile(t *testing.T) {
+	defaultWorkspace := t.TempDir()
+	workerWorkspace := t.TempDir()
+	var captured ExecutionRequest
+	service := NewMultiProfileService(map[string]string{
+		"default": defaultWorkspace,
+		"worker":  workerWorkspace,
+	}, "default", nil, func(request ExecutionRequest) error {
+		captured = request
+		return nil
+	}, nil)
+
+	cronDir := filepath.Join(workerWorkspace, "crons", "legacy-report")
+	if err := os.MkdirAll(cronDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	legacyConfig := Config{
+		CronID:         "legacy-report",
+		CronExpression: "0 * * * *",
+		Enabled:        true,
+	}
+	encodedConfig, err := json.Marshal(legacyConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cronDir, "config.json"), encodedConfig, 0644); err != nil {
+		t.Fatalf("WriteFile(config.json) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cronDir, "task.md"), []byte("generate worker report"), 0644); err != nil {
+		t.Fatalf("WriteFile(task.md) error = %v", err)
+	}
+
+	if err := service.ExecuteCron("legacy-report"); err != nil {
+		t.Fatalf("ExecuteCron() error = %v", err)
+	}
+	if captured.ProfileName != "worker" {
+		t.Fatalf("captured.ProfileName = %q, want worker", captured.ProfileName)
+	}
+	if !strings.HasPrefix(captured.ExecutionDir, filepath.Join(workerWorkspace, "crons", "legacy-report")) {
+		t.Fatalf("captured.ExecutionDir = %q, want worker workspace execution dir", captured.ExecutionDir)
+	}
+}

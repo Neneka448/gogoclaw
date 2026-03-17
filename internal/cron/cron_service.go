@@ -261,14 +261,18 @@ func (service *workspaceService) ExecuteCron(cronID string) error {
 	if err != nil {
 		return err
 	}
+	return service.executeStoredCron(*storedCron)
+}
+
+func (service *workspaceService) executeStoredCron(storedCron StoredCron) error {
 	if !storedCron.Config.Enabled {
-		return fmt.Errorf("cron is disabled: %s", cronID)
+		return fmt.Errorf("cron is disabled: %s", storedCron.Config.CronID)
 	}
 	if service.executor == nil {
 		return fmt.Errorf("cron executor is not configured")
 	}
 
-	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", cronID, storedCron.Config.CronExpression)
+	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", storedCron.Config.CronID, storedCron.Config.CronExpression)
 
 	startedAt := service.currentTime()
 	executionID := executionPrefix + startedAt.Format(executionTimeFormat)
@@ -296,7 +300,7 @@ func (service *workspaceService) ExecuteCron(cronID string) error {
 	execErr := service.executor(ExecutionRequest{
 		CronID:       storedCron.Config.CronID,
 		SessionID:    sessionID,
-		Prompt:       buildExecutionPrompt(storedCron, executionDir),
+		Prompt:       buildExecutionPrompt(&storedCron, executionDir),
 		ExecutionDir: executionDir,
 		Metadata: map[string]string{
 			"source":  defaultCronChannelID,

@@ -173,11 +173,11 @@ func (service *multiProfileService) DeleteCron(cronID string) error {
 }
 
 func (service *multiProfileService) ExecuteCron(cronID string) error {
-	owner, _, err := service.findOwner(cronID)
+	owner, stored, err := service.findOwner(cronID)
 	if err != nil {
 		return err
 	}
-	return owner.ExecuteCron(cronID)
+	return owner.executeStoredCron(*stored)
 }
 
 func (service *multiProfileService) listEntries() ([]storedCronEntry, error) {

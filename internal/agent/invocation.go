@@ -26,32 +26,32 @@ import (
 const defaultAgentProfileName = "default"
 
 type invocationService struct {
-	configManager           config.ConfigManager
-	sysConfig               *config.SysConfig
-	defaultMessageBus       messagebus.MessageBus
-	defaultChannelRegistry  channels.Registry
-	cronService             cron.Service
-	cronEnabled             bool
-	mu                      sync.Mutex
-	runtimes                map[string]*profileRuntime
+	configManager          config.ConfigManager
+	sysConfig              *config.SysConfig
+	defaultMessageBus      messagebus.MessageBus
+	defaultChannelRegistry channels.Registry
+	cronService            cron.Service
+	cronEnabled            bool
+	mu                     sync.Mutex
+	runtimes               map[string]*profileRuntime
 }
 
 type profileRuntime struct {
-	context               appcontext.SystemContext
-	profileName           string
-	profile               config.ProfileConfig
-	embeddingProfileName  string
-	embeddingProfile      config.EmbeddingProfileConfig
-	workspace             string
-	skillRegistry         skills.Registry
-	sysConfig             *config.SysConfig
-	configManager         config.ConfigManager
-	defaultMessageBus     messagebus.MessageBus
+	context                appcontext.SystemContext
+	profileName            string
+	profile                config.ProfileConfig
+	embeddingProfileName   string
+	embeddingProfile       config.EmbeddingProfileConfig
+	workspace              string
+	skillRegistry          skills.Registry
+	sysConfig              *config.SysConfig
+	configManager          config.ConfigManager
+	defaultMessageBus      messagebus.MessageBus
 	defaultChannelRegistry channels.Registry
-	cronService           cron.Service
-	cronEnabled           bool
-	startOnce             sync.Once
-	startErr              error
+	cronService            cron.Service
+	cronEnabled            bool
+	startOnce              sync.Once
+	startErr               error
 }
 
 func NewInvocationService(configManager config.ConfigManager, sysConfig *config.SysConfig, defaultMessageBus messagebus.MessageBus, defaultChannelRegistry channels.Registry, cronService cron.Service, cronEnabled bool) (appcontext.InvocationService, error) {
@@ -178,6 +178,10 @@ func (service *invocationService) getProfileRuntime(profileName string) (*profil
 	service.mu.Lock()
 	if runtime, ok := service.runtimes[resolvedProfileName]; ok {
 		service.mu.Unlock()
+		if err := runtime.ensureReady(); err != nil {
+			_ = service.discardRuntime(resolvedProfileName, runtime)
+			return nil, err
+		}
 		return runtime, nil
 	}
 	service.mu.Unlock()
@@ -186,15 +190,36 @@ func (service *invocationService) getProfileRuntime(profileName string) (*profil
 	if err != nil {
 		return nil, err
 	}
+	if err := runtime.ensureReady(); err != nil {
+		_ = runtime.close()
+		return nil, err
+	}
 
 	service.mu.Lock()
 	defer service.mu.Unlock()
 	if existing, ok := service.runtimes[resolvedProfileName]; ok {
 		_ = runtime.close()
+		if err := existing.ensureReady(); err != nil {
+			delete(service.runtimes, resolvedProfileName)
+			_ = existing.close()
+			return nil, err
+		}
 		return existing, nil
 	}
 	service.runtimes[resolvedProfileName] = runtime
 	return runtime, nil
+}
+
+func (service *invocationService) discardRuntime(profileName string, target *profileRuntime) error {
+	service.mu.Lock()
+	current, ok := service.runtimes[profileName]
+	if !ok || current != target {
+		service.mu.Unlock()
+		return nil
+	}
+	delete(service.runtimes, profileName)
+	service.mu.Unlock()
+	return target.close()
 }
 
 func (service *invocationService) buildProfileRuntime(profileName string) (*profileRuntime, error) {
