@@ -12,6 +12,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	internalcontext "github.com/Neneka448/gogoclaw/internal/context"
+	cronpkg "github.com/Neneka448/gogoclaw/internal/cron"
 	"github.com/Neneka448/gogoclaw/internal/memory"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -309,7 +310,8 @@ func TestExtractOutboundToolPayloadExtractsMediaPaths(t *testing.T) {
 
 func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 	configPath := writeTestConfig(t)
-	sessionManager := newAgentTestSessionManager(t, t.TempDir())
+	workerWorkspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workerWorkspace)
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -333,9 +335,32 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,
+		Runtime: internalcontext.RuntimeContext{
+			ProfileName: "worker",
+			Profile: config.ProfileConfig{
+				Workspace:         workerWorkspace,
+				Model:             "gpt-5.4",
+				MaxTokens:         512,
+				Temperature:       0.1,
+				MaxToolIterations: 4,
+				MemoryWindow:      10,
+				MaxRetryTimes:     1,
+			},
+			EmbeddingProfileName: "worker-embedding",
+			Workspace:            workerWorkspace,
+			InvocationMode:       internalcontext.InvocationModeBackground,
+		},
 	})
 
-	inboundMessage := messagebus.Message{ChannelID: "feishu", Message: "hello", MessageID: "msg-1", MessageType: "group", ChatID: "chat-1", SenderID: "user-1"}
+	inboundMessage := messagebus.Message{
+		ChannelID:   "feishu",
+		Message:     "hello",
+		MessageID:   "msg-1",
+		MessageType: "group",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+		Metadata:    map[string]string{"thread_id": "omt_thread"},
+	}
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
 		t.Fatalf("ProcessMessage() error = %v", err)
 	}
@@ -356,11 +381,95 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 	if second.Metadata["message_kind"] != "active_message" {
 		t.Fatalf("second.Metadata[message_kind] = %q, want active_message", second.Metadata["message_kind"])
 	}
+	if second.Metadata["workspace"] != workerWorkspace {
+		t.Fatalf("second.Metadata[workspace] = %q, want %q", second.Metadata["workspace"], workerWorkspace)
+	}
+	if second.Metadata["agent_profile"] != "worker" {
+		t.Fatalf("second.Metadata[agent_profile] = %q, want worker", second.Metadata["agent_profile"])
+	}
+	if second.Metadata["invocation_mode"] != string(internalcontext.InvocationModeBackground) {
+		t.Fatalf("second.Metadata[invocation_mode] = %q, want %q", second.Metadata["invocation_mode"], internalcontext.InvocationModeBackground)
+	}
+	if second.Metadata["thread_id"] != "omt_thread" {
+		t.Fatalf("second.Metadata[thread_id] = %q, want omt_thread", second.Metadata["thread_id"])
+	}
+	if _, exists := inboundMessage.Metadata["workspace"]; exists {
+		t.Fatal("inbound message metadata unexpectedly mutated with workspace")
+	}
 
 	select {
 	case extra := <-outboundQueue:
 		t.Fatalf("unexpected extra outbound message: %#v", extra)
 	default:
+	}
+}
+
+func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
+	defaultWorkspace := t.TempDir()
+	workerWorkspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workerWorkspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
+				ID:        "call_1",
+				Name:      "create_cron",
+				Arguments: `{"cron_id":"worker-report","cron_expression":"0 * * * *","task":"render report","enabled":true}`,
+				Type:      string(openai.ToolTypeFunction),
+			}}},
+			provider.NormalizedResponse{Content: "done"},
+		},
+	}
+	cronService := cronpkg.NewMultiProfileService(map[string]string{
+		"default": defaultWorkspace,
+		"worker":  workerWorkspace,
+	}, "default", nil, nil, nil)
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"create_cron": tools.NewCreateCronTool(cronService),
+	}}
+
+	loop := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+		Runtime: internalcontext.RuntimeContext{
+			ProfileName: "worker",
+			Profile: config.ProfileConfig{
+				Workspace:         workerWorkspace,
+				Model:             "gpt-5.4",
+				MaxTokens:         512,
+				Temperature:       0.1,
+				MaxToolIterations: 4,
+				MemoryWindow:      10,
+				MaxRetryTimes:     1,
+			},
+			Workspace:      workerWorkspace,
+			InvocationMode: internalcontext.InvocationModeBackground,
+		},
+	})
+
+	if err := loop.ProcessMessage(messagebus.Message{
+		ChannelID: "feishu",
+		ChatID:    "chat-1",
+		SenderID:  "user-1",
+		Message:   "schedule a report",
+	}); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	storedCron, err := cronService.GetCron("worker-report")
+	if err != nil {
+		t.Fatalf("GetCron() error = %v", err)
+	}
+	if storedCron.Path != filepath.Join(workerWorkspace, "crons", "worker-report") {
+		t.Fatalf("storedCron.Path = %q, want worker workspace cron dir", storedCron.Path)
+	}
+	if storedCron.Config.ProfileName != "worker" {
+		t.Fatalf("storedCron.Config.ProfileName = %q, want worker", storedCron.Config.ProfileName)
+	}
+	if storedCron.Config.InvocationMode != string(internalcontext.InvocationModeBackground) {
+		t.Fatalf("storedCron.Config.InvocationMode = %q, want %q", storedCron.Config.InvocationMode, internalcontext.InvocationModeBackground)
 	}
 }
 

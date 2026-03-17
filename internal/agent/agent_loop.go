@@ -40,6 +40,9 @@ func NewAgentLoop(context context.SystemContext) AgentLoop {
 }
 
 func (al *agentLoop) ProcessMessage(message messagebus.Message) error {
+	if _, err := al.resolveRuntimeContext(); err != nil {
+		return err
+	}
 	al.prepareToolsForTurn(message)
 	return al.loop(message)
 }
@@ -53,10 +56,7 @@ func (al *agentLoop) buildTools() []Openai.Tool {
 }
 
 func (al *agentLoop) loop(msg messagebus.Message) error {
-	runtimeConfig, err := al.resolveRuntimeContext()
-	if err != nil {
-		return err
-	}
+	runtimeConfig := al.context.Runtime
 	currentSession, err := al.getOrCreateSession(msg, runtimeConfig.Workspace)
 	if err != nil {
 		return err
@@ -154,6 +154,7 @@ func (al *agentLoop) resolveRuntimeContext() (context.RuntimeContext, error) {
 		if strings.TrimSpace(string(runtime.InvocationMode)) == "" {
 			runtime.InvocationMode = context.InvocationModeForeground
 		}
+		al.context.Runtime = runtime
 		return runtime, nil
 	}
 	if al.context.ConfigManager == nil {
@@ -397,9 +398,16 @@ func (al *agentLoop) prepareToolsForTurn(message messagebus.Message) {
 			turnTool.StartTurn()
 		}
 		if contextTool, ok := descriptor.Tool.(toolspkg.MessageContextTool); ok {
-			contextTool.SetMessageContext(message)
+			contextTool.SetMessageContext(al.toolContextMessage(message))
 		}
 	}
+}
+
+func (al *agentLoop) toolContextMessage(source messagebus.Message) messagebus.Message {
+	contextMessage := source
+	contextMessage.MediaPaths = cloneMediaPaths(source.MediaPaths)
+	contextMessage.Metadata = al.outboundMetadata(source.Metadata)
+	return contextMessage
 }
 
 func (al *agentLoop) sentMessageInTurn() bool {
