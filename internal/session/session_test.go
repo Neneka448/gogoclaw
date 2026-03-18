@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,26 @@ func newSessionManagerForTest(t *testing.T, workspace string) SessionManager {
 		}
 	})
 	return manager
+}
+
+func mustFlushSessionForTest(t *testing.T, currentSession Session) {
+	t.Helper()
+	if err := currentSession.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func sessionFilePathForTest(workspace string, sessionID string) string {
+	return filepath.Join(workspace, "sessions", sessionID+".json")
+}
+
+func archivedSessionFilePathForTest(workspace string, sessionID string, unixSeconds int64) string {
+	return filepath.Join(
+		workspace,
+		"sessions",
+		"achrive",
+		sessionID+".json_achrive_"+strconv.FormatInt(unixSeconds, 10),
+	)
 }
 
 func TestSessionRespectsMemoryWindow(t *testing.T) {
@@ -126,11 +147,9 @@ func TestSessionInitializesJSONFile(t *testing.T) {
 	if err := session.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "hello"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
-	if err := session.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushSessionForTest(t, session)
 
-	content, err := os.ReadFile(filepath.Join(workspace, "sessions", "telegram:chat-1.json"))
+	content, err := os.ReadFile(sessionFilePathForTest(workspace, "telegram:chat-1"))
 	if err != nil {
 		t.Fatalf("os.ReadFile() error = %v", err)
 	}
@@ -236,9 +255,7 @@ func TestSessionManagerListSessionIDs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetOrCreateSession(%s) error = %v", sessionID, err)
 		}
-		if err := currentSession.WriteSessionFile(); err != nil {
-			t.Fatalf("WriteSessionFile(%s) error = %v", sessionID, err)
-		}
+		mustFlushSessionForTest(t, currentSession)
 	}
 	if err := os.MkdirAll(filepath.Join(workspace, "sessions", "achrive"), 0755); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
@@ -279,12 +296,10 @@ func TestSessionArchiveAndReset(t *testing.T) {
 	if err := currentSession.AppendMessages([]openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hello"}, {Role: openai.ChatMessageRoleAssistant, Content: "world"}}); err != nil {
 		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushSessionForTest(t, currentSession)
 
-	archivePath, err := currentSession.ArchiveAndReset()
-	if err != nil {
+	archivePath := archivedSessionFilePathForTest(workspace, "feishu:chat-1", 1700000000)
+	if err := currentSession.ArchiveAndReset(); err != nil {
 		t.Fatalf("ArchiveAndReset() error = %v", err)
 	}
 	if !strings.Contains(archivePath, filepath.Join("sessions", "achrive")) {
@@ -309,7 +324,7 @@ func TestSessionArchiveAndReset(t *testing.T) {
 	if got := currentSession.GetMessages(10); len(got) != 0 {
 		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
 	}
-	currentContent, err := os.ReadFile(currentSession.GetSessionFilePath())
+	currentContent, err := os.ReadFile(sessionFilePathForTest(workspace, "feishu:chat-1"))
 	if err != nil {
 		t.Fatalf("os.ReadFile(current session) error = %v", err)
 	}

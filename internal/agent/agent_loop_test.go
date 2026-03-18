@@ -82,6 +82,17 @@ type fakeToolRegistry struct {
 	tools map[string]tools.ToolDescriptor
 }
 
+func mustFlushAgentSessionForTest(t *testing.T, currentSession session.Session) {
+	t.Helper()
+	if err := currentSession.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func sessionFilePathForTest(workspace string, sessionID string) string {
+	return filepath.Join(workspace, "sessions", sessionID+".json")
+}
+
 func newAgentTestSessionManager(t *testing.T, workspace string) session.SessionManager {
 	t.Helper()
 	manager := session.NewSessionManager(workspace)
@@ -119,7 +130,8 @@ func (registry *fakeToolRegistry) GetAllTools() []tools.ToolDescriptor {
 
 func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 	configPath := writeTestConfig(t)
-	sessionManager := newAgentTestSessionManager(t, t.TempDir())
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
 	imagePath := filepath.Join(t.TempDir(), "chart.png")
 	if err := os.WriteFile(imagePath, []byte("png"), 0644); err != nil {
@@ -192,7 +204,8 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 		t.Fatalf("messages[3] = %#v, want final assistant message", messages[3])
 	}
 
-	content, err := os.ReadFile(sessionStore.GetSessionFilePath())
+	mustFlushAgentSessionForTest(t, sessionStore)
+	content, err := os.ReadFile(sessionFilePathForTest(workspace, session.MakeSessionID(inboundMessage.ChannelID, inboundMessage.ChatID)))
 	if err != nil {
 		t.Fatalf("os.ReadFile() error = %v", err)
 	}
@@ -684,9 +697,7 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 	if err := currentSession.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "history"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushAgentSessionForTest(t, currentSession)
 
 	inboundMessage := messagebus.Message{ChannelID: "feishu", Message: "/new", MessageID: "msg-1", MessageType: "text", ChatID: "chat-1", SenderID: "user-1"}
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
@@ -753,9 +764,7 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 			t.Fatalf("AppendMessage() error = %v", err)
 		}
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushAgentSessionForTest(t, currentSession)
 
 	doneCh := make(chan error, 1)
 	go func() {

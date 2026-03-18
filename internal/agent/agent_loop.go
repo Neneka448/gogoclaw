@@ -69,7 +69,7 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 			}
 		}
 		al.ingestSessionMemory(currentSession, pending)
-		if _, err := currentSession.ArchiveAndReset(); err != nil {
+		if err := currentSession.ArchiveAndReset(); err != nil {
 			return err
 		}
 		return al.publishDirectReply(msg, newSessionReply, "new_session")

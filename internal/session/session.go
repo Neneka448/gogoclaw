@@ -36,10 +36,7 @@ type Session interface {
 	AppendMessage(message openai.ChatCompletionMessage) error
 	AppendMessages(messages []openai.ChatCompletionMessage) error
 	MarkMemoryIngested(digest string) error
-	ReadSessionFile() error
-	WriteSessionFile() error
-	GetSessionFilePath() string
-	ArchiveAndReset() (string, error)
+	ArchiveAndReset() error
 }
 
 type SessionManager interface {
@@ -135,13 +132,13 @@ func (manager *sessionManager) GetOrCreateSession(sessionID string, senderID str
 		},
 	}
 
-	if err := session.ReadSessionFile(); err != nil {
+	if err := session.load(); err != nil {
 		return nil, err
 	}
 
 	if session.data.Meta.SenderID == "" && senderID != "" {
 		session.data.Meta.SenderID = senderID
-		if err := session.WriteSessionFile(); err != nil {
+		if err := session.flush(); err != nil {
 			return nil, err
 		}
 	}
@@ -194,15 +191,11 @@ func (manager *sessionManager) ListSessionIDs() ([]string, error) {
 }
 
 func (session *fileSession) Close() error {
-	return session.WriteSessionFile()
+	return session.flush()
 }
 
 func (session *fileSession) GetSessionID() string {
 	return session.id
-}
-
-func (session *fileSession) GetSessionFilePath() string {
-	return session.filePath
 }
 
 func (session *fileSession) GetMemoryIngestedDigest() string {
@@ -244,21 +237,18 @@ func (session *fileSession) UpdateMetadata(channel string, sessionType string) e
 	return session.writeSessionFileLocked()
 }
 
-func (session *fileSession) ArchiveAndReset() (string, error) {
+func (session *fileSession) ArchiveAndReset() error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
 	if err := session.ensureLoadedLocked(); err != nil {
-		return "", err
+		return err
 	}
 
 	snapshot := session.snapshotLocked()
-	archivePath := ""
 	if len(snapshot.Messages) > 0 {
-		var err error
-		archivePath, err = session.archiveSnapshotLocked(snapshot)
-		if err != nil {
-			return "", err
+		if err := session.archiveSnapshotLocked(snapshot); err != nil {
+			return err
 		}
 	}
 
@@ -267,10 +257,10 @@ func (session *fileSession) ArchiveAndReset() (string, error) {
 	session.flushRequested = false
 	session.lastWriteErr = nil
 	if err := session.writeSessionFileLocked(); err != nil {
-		return "", err
+		return err
 	}
 
-	return archivePath, nil
+	return nil
 }
 
 func (session *fileSession) GetMessages(memoryWindow int) []openai.ChatCompletionMessage {
@@ -351,14 +341,14 @@ func (session *fileSession) MarkMemoryIngested(digest string) error {
 	return session.writeSessionFileLocked()
 }
 
-func (session *fileSession) ReadSessionFile() error {
+func (session *fileSession) load() error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
 	return session.readSessionFileLocked()
 }
 
-func (session *fileSession) WriteSessionFile() error {
+func (session *fileSession) flush() error {
 	session.mu.Lock()
 	if err := session.ensureLoadedLocked(); err != nil {
 		session.mu.Unlock()
@@ -437,19 +427,19 @@ func (session *fileSession) writeSessionFileLocked() error {
 	return session.writeSnapshot(session.snapshotLocked())
 }
 
-func (session *fileSession) archiveSnapshotLocked(snapshot SessionFile) (string, error) {
+func (session *fileSession) archiveSnapshotLocked(snapshot SessionFile) error {
 	archiveDir := filepath.Join(filepath.Dir(session.filePath), "achrive")
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
-		return "", fmt.Errorf("create achrive directory: %w", err)
+		return fmt.Errorf("create achrive directory: %w", err)
 	}
 	archivePath := filepath.Join(
 		archiveDir,
 		filepath.Base(session.filePath)+"_achrive_"+strconv.FormatInt(sessionNow().Unix(), 10),
 	)
 	if err := session.writeSnapshotToPath(snapshot, archivePath); err != nil {
-		return "", err
+		return err
 	}
-	return archivePath, nil
+	return nil
 }
 
 func (session *fileSession) snapshotLocked() SessionFile {
