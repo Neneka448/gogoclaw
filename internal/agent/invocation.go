@@ -87,7 +87,11 @@ func (service *invocationService) Invoke(request appcontext.InvocationRequest) e
 	if strings.TrimSpace(request.Message.Message) == "" {
 		return nil
 	}
-	return NewAgentLoop(executionContext).ProcessMessage(request.Message)
+	loop, err := NewAgentLoop(executionContext)
+	if err != nil {
+		return err
+	}
+	return loop.ProcessMessage(request.Message)
 }
 
 func (service *invocationService) InvokeAsync(request appcontext.InvocationRequest) (<-chan error, error) {
@@ -110,7 +114,12 @@ func (service *invocationService) InvokeAsync(request appcontext.InvocationReque
 				errCh <- fmt.Errorf("agent loop panic: %v\n%s", r, debug.Stack())
 			}
 		}()
-		errCh <- NewAgentLoop(executionContext).ProcessMessage(request.Message)
+		loop, err := NewAgentLoop(executionContext)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- loop.ProcessMessage(request.Message)
 	}()
 	return errCh, nil
 }

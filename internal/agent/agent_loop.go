@@ -33,18 +33,39 @@ const newSessionCommand = "/new"
 const newSessionReply = "🎸A new session has started"
 const memoryProgressMessage = "[memory]: short-term memory generating"
 
-func NewAgentLoop(context context.SystemContext) AgentLoop {
+func NewAgentLoop(context context.SystemContext) (AgentLoop, error) {
+	if context.SessionManager == nil {
+		return nil, fmt.Errorf("agent loop requires session manager")
+	}
+	runtime, err := normalizeRuntimeContext(context.Runtime)
+	if err != nil {
+		return nil, err
+	}
+	context.Runtime = runtime
 	return &agentLoop{
 		context: context,
-	}
+	}, nil
 }
 
 func (al *agentLoop) ProcessMessage(message messagebus.Message) error {
-	if _, err := al.resolveRuntimeContext(); err != nil {
-		return err
-	}
 	al.prepareToolsForTurn(message)
 	return al.loop(message)
+}
+
+func normalizeRuntimeContext(runtime context.RuntimeContext) (context.RuntimeContext, error) {
+	if strings.TrimSpace(runtime.ProfileName) == "" {
+		return context.RuntimeContext{}, fmt.Errorf("agent loop requires resolved runtime context")
+	}
+	if strings.TrimSpace(runtime.Workspace) == "" {
+		runtime.Workspace = strings.TrimSpace(runtime.Profile.Workspace)
+	}
+	if strings.TrimSpace(runtime.Workspace) == "" {
+		return context.RuntimeContext{}, fmt.Errorf("agent loop runtime requires workspace")
+	}
+	if strings.TrimSpace(string(runtime.InvocationMode)) == "" {
+		runtime.InvocationMode = context.InvocationModeForeground
+	}
+	return runtime, nil
 }
 
 func (al *agentLoop) buildTools() []Openai.Tool {
@@ -57,7 +78,7 @@ func (al *agentLoop) buildTools() []Openai.Tool {
 
 func (al *agentLoop) loop(msg messagebus.Message) error {
 	runtimeConfig := al.context.Runtime
-	currentSession, err := al.getOrCreateSession(msg, runtimeConfig.Workspace)
+	currentSession, err := al.getOrCreateSession(msg)
 	if err != nil {
 		return err
 	}
@@ -143,41 +164,6 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 	}
 
 	return nil
-}
-
-func (al *agentLoop) resolveRuntimeContext() (context.RuntimeContext, error) {
-	runtime := al.context.Runtime
-	if strings.TrimSpace(runtime.ProfileName) != "" {
-		if strings.TrimSpace(runtime.Workspace) == "" {
-			runtime.Workspace = runtime.Profile.Workspace
-		}
-		if strings.TrimSpace(string(runtime.InvocationMode)) == "" {
-			runtime.InvocationMode = context.InvocationModeForeground
-		}
-		al.context.Runtime = runtime
-		return runtime, nil
-	}
-	if al.context.ConfigManager == nil {
-		return context.RuntimeContext{}, fmt.Errorf("runtime context is not resolved")
-	}
-	profile, err := al.context.ConfigManager.GetAgentProfileConfig(defaultAgentProfileName)
-	if err != nil {
-		return context.RuntimeContext{}, err
-	}
-	embeddingProfileName, embeddingProfile, err := resolveEmbeddingProfile(al.context.ConfigManager, defaultAgentProfileName)
-	if err != nil {
-		return context.RuntimeContext{}, err
-	}
-	runtime = context.RuntimeContext{
-		ProfileName:          defaultAgentProfileName,
-		Profile:              *profile,
-		EmbeddingProfileName: embeddingProfileName,
-		EmbeddingProfile:     *embeddingProfile,
-		Workspace:            profile.Workspace,
-		InvocationMode:       context.InvocationModeForeground,
-	}
-	al.context.Runtime = runtime
-	return runtime, nil
 }
 
 func isNewSessionCommand(message string) bool {
@@ -506,11 +492,7 @@ func (al *agentLoop) buildMaxIterationsExceededMessage(maxIterations int) Openai
 	}
 }
 
-func (al *agentLoop) getOrCreateSession(msg messagebus.Message, workspace string) (session.Session, error) {
-	if al.context.SessionManager == nil {
-		al.context.SessionManager = session.NewSessionManager(workspace)
-	}
-
+func (al *agentLoop) getOrCreateSession(msg messagebus.Message) (session.Session, error) {
 	currentSession, err := al.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
 	if err != nil {
 		return nil, err
