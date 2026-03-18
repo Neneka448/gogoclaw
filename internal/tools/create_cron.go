@@ -8,6 +8,7 @@ import (
 
 	cronpkg "github.com/Neneka448/gogoclaw/internal/cron"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -139,11 +140,7 @@ func (tool *CreateCronTool) Execute(args string) (string, error) {
 }
 
 func encodeCreateCronResult(result createCronResult) (string, error) {
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
+	return utils.EncodeJSON(result)
 }
 
 func (tool *CreateCronTool) SetMessageContext(message messagebus.Message) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -50,36 +51,27 @@ type listDirResult struct {
 	Error string     `json:"error,omitempty"`
 }
 
-func (tool *ListDirTool) encodeResult(result listDirResult) (string, error) {
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-
-	return string(encoded), nil
-}
-
 func (tool *ListDirTool) Execute(args string) (string, error) {
 	var input listDirArgs
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
-		return tool.encodeResult(listDirResult{
+		return utils.EncodeJSON(listDirResult{
 			Files: []fileDesc{}, Error: err.Error(),
 		})
 	}
 	path, err := pathutil.ResolveRelativeOnly(input.Path, tool.workspace)
 	if err != nil {
-		return tool.encodeResult(listDirResult{
+		return utils.EncodeJSON(listDirResult{
 			Files: []fileDesc{}, Error: err.Error(),
 		})
 	}
 
 	files, err := listDir(path)
 	if err != nil {
-		return tool.encodeResult(listDirResult{
+		return utils.EncodeJSON(listDirResult{
 			Files: []fileDesc{}, Error: err.Error(),
 		})
 	}
-	return tool.encodeResult(listDirResult{
+	return utils.EncodeJSON(listDirResult{
 		Files: files,
 	})
 }

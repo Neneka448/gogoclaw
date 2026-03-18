@@ -35,19 +35,19 @@ type Gateway interface {
 }
 
 type gateway struct {
-	context             context.SystemContext
-	inboundStopCh       chan struct{}
-	mu                  sync.Mutex
-	started             bool
-	inboundWG           sync.WaitGroup
-	outboundWG          sync.WaitGroup
-	workerWG            sync.WaitGroup
-	workerCount         int
-	schedulerMu         sync.Mutex
-	schedulerCond       *sync.Cond
-	schedulerStopping   bool
-	sessionMailboxes    map[string]*sessionMailbox
-	readySessions       []string
+	context           context.SystemContext
+	inboundStopCh     chan struct{}
+	mu                sync.Mutex
+	started           bool
+	inboundWG         sync.WaitGroup
+	outboundWG        sync.WaitGroup
+	workerWG          sync.WaitGroup
+	workerCount       int
+	schedulerMu       sync.Mutex
+	schedulerCond     *sync.Cond
+	schedulerStopping bool
+	sessionMailboxes  map[string]*sessionMailbox
+	readySessions     []string
 }
 
 func NewGateway(context context.SystemContext) Gateway {
@@ -372,22 +372,7 @@ func (g *gateway) ensureRuntimeReady() error {
 	if g.context.Invoker != nil {
 		return g.context.Invoker.EnsureProfile("default")
 	}
-	if g.context.VectorStore != nil {
-		if err := g.context.VectorStore.Start(); err != nil {
-			return err
-		}
-	}
-
-	if g.context.MemoryService != nil && g.context.MemoryEnabled {
-		if err := g.context.MemoryService.Initialize(); err != nil {
-			if g.context.VectorStore != nil {
-				_ = g.context.VectorStore.Stop()
-			}
-			return err
-		}
-	}
-
-	return nil
+	return context.NewRuntimeInitializer(g.context).EnsureReady()
 }
 
 func (g *gateway) enqueueInboundMessage(message messagebus.Message) error {
@@ -542,7 +527,6 @@ func (g *gateway) resetSchedulerStateLocked() {
 	g.readySessions = nil
 	clear(g.sessionMailboxes)
 }
-
 
 func (g *gateway) logBackgroundError(direction string, message messagebus.Message, err error) {
 	if err == nil {

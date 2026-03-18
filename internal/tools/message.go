@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -135,12 +136,7 @@ func (tool *MessageTool) Execute(args string) (string, error) {
 }
 
 func encodeMessageToolResult(result messageToolResult) (string, error) {
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-
-	return string(encoded), nil
+	return utils.EncodeJSON(result)
 }
 
 func normalizeMessageMediaPaths(paths []string, single string) []string {

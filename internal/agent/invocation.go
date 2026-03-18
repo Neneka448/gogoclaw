@@ -317,20 +317,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 
 func (runtime *profileRuntime) ensureReady() error {
 	runtime.startOnce.Do(func() {
-		if runtime.context.VectorStore != nil {
-			if err := runtime.context.VectorStore.Start(); err != nil {
-				runtime.startErr = err
-				return
-			}
-		}
-		if runtime.context.MemoryService != nil && runtime.context.MemoryEnabled {
-			if err := runtime.context.MemoryService.Initialize(); err != nil {
-				if runtime.context.VectorStore != nil {
-					_ = runtime.context.VectorStore.Stop()
-				}
-				runtime.startErr = err
-			}
-		}
+		runtime.startErr = appcontext.NewRuntimeInitializer(runtime.context).EnsureReady()
 	})
 	return runtime.startErr
 }
