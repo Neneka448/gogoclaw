@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/context"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
 	toolspkg "github.com/Neneka448/gogoclaw/internal/tools"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	Openai "github.com/sashabaranov/go-openai"
 )
 
@@ -114,7 +116,10 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 			Temperature:         runtimeConfig.Profile.Temperature,
 			Tools:               tools,
 		})
+		t0 := time.Now()
+		utils.Perf("llm: request start (iteration %d)", i+1)
 		response, err := al.context.Provider.ChatCompletion(params)
+		utils.Perf("llm: response received (iteration %d), took %s", i+1, time.Since(t0))
 		if err != nil {
 			return err
 		}
@@ -530,10 +535,13 @@ func (al *agentLoop) ingestSessionMemory(currentSession session.Session, pending
 	if pending == nil {
 		return
 	}
+	t0 := time.Now()
+	utils.Perf("memory: ingest session start")
 	if err := al.context.MemoryService.IngestSession(pending.sessionID, pending.messages); err != nil {
 		slog.Error("ingest session memory failed", "session", pending.sessionID, "err", err)
 		return
 	}
+	utils.Perf("memory: ingest session took %s", time.Since(t0))
 	if pending.digest != "" {
 		if err := currentSession.MarkMemoryIngested(pending.digest); err != nil {
 			slog.Error("mark session memory ingested failed", "session", pending.sessionID, "err", err)

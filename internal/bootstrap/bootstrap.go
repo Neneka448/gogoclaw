@@ -14,9 +14,14 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/gateway"
 	mcppkg "github.com/Neneka448/gogoclaw/internal/mcp"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 )
 
 func Bootstrap(configPath string) (*gateway.Gateway, error) {
+	bootstrapStart := time.Now()
+	utils.Perf("bootstrap: start")
+
+	t0 := time.Now()
 	configManager := config.NewConfigManager(configPath)
 	channelsConfig, err := configManager.GetChannelsConfig()
 	if err != nil {
@@ -34,6 +39,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("bootstrap: config loading took %s", time.Since(t0))
+
+	t0 = time.Now()
 	messageBus := messagebus.NewMessageBus()
 	channelRegistry := channels.NewRegistry()
 	if err := channelRegistry.Register(channels.NewCLIChannel(channelsConfig.CLI, nil)); err != nil {
@@ -44,6 +52,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 			return nil, err
 		}
 	}
+	utils.Perf("bootstrap: channel registry took %s", time.Since(t0))
+
+	t0 = time.Now()
 	cronLocation, err := time.LoadLocation(strings.TrimSpace(cronConfig.Timezone))
 	if err != nil {
 		return nil, err
@@ -54,11 +65,16 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	cronService := cron.NewCronService(resolver, cronManager, func(request cron.ExecutionRequest) error {
 		return executeCronRequest(invoker, request)
 	}, cronLocation)
+	utils.Perf("bootstrap: cron setup took %s", time.Since(t0))
+
+	t0 = time.Now()
 	invoker, err = agent.NewInvocationService(configManager, messageBus, channelRegistry, cronService, cronConfig.Enabled, codexTokenProvider{})
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("bootstrap: invocation service took %s", time.Since(t0))
 
+	t0 = time.Now()
 	sysContext := appcontext.SystemContext{
 		MessageBus:      messageBus,
 		ConfigManager:   configManager,
@@ -72,7 +88,9 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("bootstrap: gateway creation took %s", time.Since(t0))
 
+	utils.Perf("bootstrap: total took %s", time.Since(bootstrapStart))
 	return &gateway, nil
 }
 

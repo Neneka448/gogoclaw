@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	mathrand "math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -39,16 +40,17 @@ type Service interface {
 	GetNode(nodeID string) (*MemoryNode, error)
 }
 
+const vectorUpsertMaxRetries = 3
+
 type service struct {
-	mu              sync.Mutex
-	initMu          sync.Mutex
-	store           *Store
-	vectorStore     vectorstore.Service
-	embedding       provider.EmbeddingProvider
-	textEmbedding   config.EmbeddingModelConfig
-	summarizer      *Summarizer
-	config          config.MemoryConfig
-	vectorsRepaired bool
+	mu            sync.Mutex
+	initMu        sync.Mutex
+	store         *Store
+	vectorStore   vectorstore.Service
+	embedding     provider.EmbeddingProvider
+	textEmbedding config.EmbeddingModelConfig
+	summarizer    *Summarizer
+	config        config.MemoryConfig
 }
 
 func NewService(
@@ -77,17 +79,7 @@ func (s *service) Initialize() error {
 	if s.store == nil {
 		return fmt.Errorf("memory service initialization failed: metadata store is not configured")
 	}
-	if err := s.store.Initialize(); err != nil {
-		return err
-	}
-	if s.vectorsRepaired {
-		return nil
-	}
-	if err := s.repairActiveVectors(); err != nil {
-		return err
-	}
-	s.vectorsRepaired = true
-	return nil
+	return s.store.Initialize()
 }
 
 func (s *service) Close() error {
@@ -214,39 +206,9 @@ func (s *service) GetNode(nodeID string) (*MemoryNode, error) {
 	return s.store.GetNode(nodeID)
 }
 
-func (s *service) repairActiveVectors() error {
-	activeNodes, err := s.store.ListActiveNodes()
-	if err != nil {
-		return fmt.Errorf("list active nodes for vector repair: %w", err)
-	}
-	for _, node := range activeNodes {
-		embeddingText := node.EmbeddingText()
-		if strings.TrimSpace(embeddingText) == "" {
-			continue
-		}
-		embedding, err := s.embed(embeddingText)
-		if err != nil {
-			return fmt.Errorf("embed active node %s during repair: %w", node.ID, err)
-		}
-		metaJSON, err := json.Marshal(node)
-		if err != nil {
-			return fmt.Errorf("marshal active node %s metadata during repair: %w", node.ID, err)
-		}
-		if err := s.vectorStore.Upsert(vectorstore.UpsertRequest{
-			StoreKind:    vectorstore.StoreKindText,
-			ExternalID:   node.ID,
-			Embedding:    embedding,
-			MetadataJSON: string(metaJSON),
-		}); err != nil {
-			return fmt.Errorf("repair active node vector %s: %w", node.ID, err)
-		}
-	}
-	return nil
-}
-
-// insertNodeWithEdgesAndCommunityCheck embeds the node, stores it in SQLite first,
-// then upserts its vector, finds similar same-kind/same-level active nodes to create edges,
-// then checks if any community has exceeded the threshold.
+// insertNodeWithEdgesAndCommunityCheck embeds the node, stores it in SQLite,
+// then upserts its vector (with up to 3 retries), finds similar same-kind/same-level
+// active nodes to create edges, then checks if any community has exceeded the threshold.
 // Caller must hold s.mu.
 func (s *service) insertNodeWithEdgesAndCommunityCheck(node MemoryNode, kind NodeKind, level int) error {
 	embeddingText := node.EmbeddingText()
@@ -259,7 +221,6 @@ func (s *service) insertNodeWithEdgesAndCommunityCheck(node MemoryNode, kind Nod
 		return fmt.Errorf("embed node %s: %w", node.ID, err)
 	}
 
-	// Insert SQLite record first so a failed vector upsert leaves a recoverable row.
 	if err := s.store.InsertNode(node); err != nil {
 		return fmt.Errorf("insert node record: %w", err)
 	}
@@ -268,13 +229,23 @@ func (s *service) insertNodeWithEdgesAndCommunityCheck(node MemoryNode, kind Nod
 	if err != nil {
 		return fmt.Errorf("marshal node metadata: %w", err)
 	}
-	if err := s.vectorStore.Upsert(vectorstore.UpsertRequest{
-		StoreKind:    vectorstore.StoreKindText,
-		ExternalID:   node.ID,
-		Embedding:    embedding,
-		MetadataJSON: string(metaJSON),
-	}); err != nil {
-		return fmt.Errorf("upsert node vector: %w", err)
+
+	var upsertErr error
+	for attempt := 1; attempt <= vectorUpsertMaxRetries; attempt++ {
+		upsertErr = s.vectorStore.Upsert(vectorstore.UpsertRequest{
+			StoreKind:    vectorstore.StoreKindText,
+			ExternalID:   node.ID,
+			Embedding:    embedding,
+			MetadataJSON: string(metaJSON),
+		})
+		if upsertErr == nil {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "[warning] vector upsert for node %s failed (attempt %d/%d): %v\n", node.ID, attempt, vectorUpsertMaxRetries, upsertErr)
+	}
+	if upsertErr != nil {
+		fmt.Fprintf(os.Stderr, "[warning] vector upsert for node %s failed after %d attempts, node record saved but vector missing\n", node.ID, vectorUpsertMaxRetries)
+		return nil
 	}
 
 	if err := s.connectEdges(node, embedding, kind, level); err != nil {

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
@@ -123,15 +124,15 @@ func TestServiceConsolidateCommunityDeletesSourceVectors(t *testing.T) {
 	}
 }
 
-func TestServiceInitializeRepairsActiveVectors(t *testing.T) {
+func TestServiceInitializeWithoutRepair(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.InsertNode(MemoryNode{
-		ID:      "st-repair",
+		ID:      "st-existing",
 		Kind:    NodeKindShortTerm,
 		Status:  NodeStatusActive,
 		Level:   0,
-		What:    "repair missing vector",
-		Summary: "repair missing vector",
+		What:    "existing node",
+		Summary: "existing node",
 	}); err != nil {
 		t.Fatalf("InsertNode() error = %v", err)
 	}
@@ -142,18 +143,88 @@ func TestServiceInitializeRepairsActiveVectors(t *testing.T) {
 		vectorStore:   vectorStore,
 		embedding:     &fakeMemoryEmbeddingProvider{},
 		textEmbedding: config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
-		summarizer:    NewSummarizer(&fakeMemoryLLM{content: `{"who":"user","what":"repair","when":"now","where":"repo","why":"test","how":"repair active vectors","result":"success"}`}, "test"),
+		summarizer:    NewSummarizer(&fakeMemoryLLM{content: `{"who":"user","what":"test","when":"now","where":"repo","why":"test","how":"init","result":"success"}`}, "test"),
 		config:        config.CreateDefaultConfig().Memory,
 	}
 
 	if err := svc.Initialize(); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	if err := svc.Initialize(); err != nil {
-		t.Fatalf("second Initialize() error = %v", err)
+	if len(vectorStore.upserted) != 0 {
+		t.Fatalf("vectorStore.upserted = %#v, want empty (no repair on startup)", vectorStore.upserted)
 	}
-	if len(vectorStore.upserted) != 1 || vectorStore.upserted[0] != "st-repair" {
-		t.Fatalf("vectorStore.upserted = %#v, want [\"st-repair\"]", vectorStore.upserted)
+}
+
+func TestServiceVectorUpsertRetriesOnFailure(t *testing.T) {
+	store := newTestStore(t)
+	vectorStore := &failNTimesVectorStore{failCount: 2}
+	svc := &service{
+		store:         store,
+		vectorStore:   vectorStore,
+		embedding:     &fakeMemoryEmbeddingProvider{},
+		textEmbedding: config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
+		summarizer:    NewSummarizer(&fakeMemoryLLM{content: `{"who":"user","what":"test","when":"now","where":"repo","why":"test","how":"retry","result":"success"}`}, "test"),
+		config:        config.CreateDefaultConfig().Memory,
+	}
+
+	node := MemoryNode{
+		ID:      "st-retry",
+		Kind:    NodeKindShortTerm,
+		Status:  NodeStatusActive,
+		Level:   0,
+		What:    "test retry upsert",
+		Summary: "test retry upsert",
+	}
+
+	if err := svc.insertNodeWithEdgesAndCommunityCheck(node, NodeKindShortTerm, 0); err != nil {
+		t.Fatalf("insertNodeWithEdgesAndCommunityCheck() error = %v", err)
+	}
+	if vectorStore.attempts != 3 {
+		t.Fatalf("vectorStore.attempts = %d, want 3", vectorStore.attempts)
+	}
+	if len(vectorStore.upserted) != 1 || vectorStore.upserted[0] != "st-retry" {
+		t.Fatalf("vectorStore.upserted = %#v, want [\"st-retry\"]", vectorStore.upserted)
+	}
+}
+
+func TestServiceVectorUpsertGivesUpAfterMaxRetries(t *testing.T) {
+	store := newTestStore(t)
+	vectorStore := &failNTimesVectorStore{failCount: 5}
+	svc := &service{
+		store:         store,
+		vectorStore:   vectorStore,
+		embedding:     &fakeMemoryEmbeddingProvider{},
+		textEmbedding: config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
+		summarizer:    NewSummarizer(&fakeMemoryLLM{content: `{"who":"user","what":"test","when":"now","where":"repo","why":"test","how":"fail","result":"fail"}`}, "test"),
+		config:        config.CreateDefaultConfig().Memory,
+	}
+
+	node := MemoryNode{
+		ID:      "st-fail",
+		Kind:    NodeKindShortTerm,
+		Status:  NodeStatusActive,
+		Level:   0,
+		What:    "test exhausted retries",
+		Summary: "test exhausted retries",
+	}
+
+	err := svc.insertNodeWithEdgesAndCommunityCheck(node, NodeKindShortTerm, 0)
+	if err != nil {
+		t.Fatalf("insertNodeWithEdgesAndCommunityCheck() should not return error, got %v", err)
+	}
+	if vectorStore.attempts != 3 {
+		t.Fatalf("vectorStore.attempts = %d, want 3", vectorStore.attempts)
+	}
+	if len(vectorStore.upserted) != 0 {
+		t.Fatalf("vectorStore.upserted = %#v, want empty", vectorStore.upserted)
+	}
+	// Verify the node record was still saved
+	saved, err := store.GetNode("st-fail")
+	if err != nil {
+		t.Fatalf("GetNode() error = %v", err)
+	}
+	if saved == nil {
+		t.Fatal("node record should exist even after vector upsert failure")
 	}
 }
 
@@ -200,4 +271,20 @@ func TestServiceEmbedWithTypeRejectsMissingTextEmbeddingModel(t *testing.T) {
 	if err.Error() != "text embedding model is not configured" {
 		t.Fatalf("embedWithType() error = %q, want text embedding model is not configured", err.Error())
 	}
+}
+
+// failNTimesVectorStore fails the first N Upsert calls, then succeeds.
+type failNTimesVectorStore struct {
+	fakeMemoryVectorStore
+	failCount int
+	attempts  int
+}
+
+func (store *failNTimesVectorStore) Upsert(request vectorstore.UpsertRequest) error {
+	store.attempts++
+	if store.attempts <= store.failCount {
+		return fmt.Errorf("simulated upsert failure (attempt %d)", store.attempts)
+	}
+	store.upserted = append(store.upserted, request.ExternalID)
+	return nil
 }

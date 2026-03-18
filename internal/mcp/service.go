@@ -17,6 +17,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	toolspkg "github.com/Neneka448/gogoclaw/internal/tools"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	versionpkg "github.com/Neneka448/gogoclaw/internal/version"
 	gosdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	openai "github.com/sashabaranov/go-openai"
@@ -81,6 +82,7 @@ type remoteToolProxy struct {
 }
 
 func NewService(workspace string, mcpConfig config.MCPConfig, options Options) (Service, error) {
+	mcpStart := time.Now()
 	instance := &service{
 		workspace: strings.TrimSpace(workspace),
 		options:   options,
@@ -105,12 +107,15 @@ func NewService(workspace string, mcpConfig config.MCPConfig, options Options) (
 			},
 		}
 		instance.servers[name] = runtime
+		t0 := time.Now()
 		if err := runtime.connect(); err != nil && options.FailFast && runtime.cfg.Enabled {
 			_ = instance.Close()
 			return nil, err
 		}
+		utils.Perf("mcp: connect server %q took %s", name, time.Since(t0))
 	}
 
+	utils.Perf("mcp: NewService total took %s", time.Since(mcpStart))
 	return instance, nil
 }
 

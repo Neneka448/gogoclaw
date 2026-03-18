@@ -19,6 +19,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/skills"
 	"github.com/Neneka448/gogoclaw/internal/systemprompt"
 	"github.com/Neneka448/gogoclaw/internal/tools"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	"github.com/Neneka448/gogoclaw/internal/vectorstore"
 	workspacepkg "github.com/Neneka448/gogoclaw/internal/workspace"
 )
@@ -136,6 +137,9 @@ func (service *invocationService) Close() error {
 }
 
 func (service *invocationService) buildExecutionContext(request appcontext.InvocationRequest) (appcontext.SystemContext, error) {
+	execStart := time.Now()
+	utils.Perf("buildExecutionContext: start")
+
 	runtime, err := service.getProfileRuntime(request.ProfileName)
 	if err != nil {
 		return appcontext.SystemContext{}, err
@@ -151,6 +155,8 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 	if request.Overrides.ReplaceChannelRegistry {
 		channelRegistry = request.Overrides.ChannelRegistry
 	}
+
+	t0 := time.Now()
 	toolConfigs, err := service.configManager.GetToolsConfig()
 	if err != nil {
 		return appcontext.SystemContext{}, err
@@ -159,6 +165,7 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 	if err != nil {
 		return appcontext.SystemContext{}, err
 	}
+	utils.Perf("buildExecutionContext: tool registry took %s", time.Since(t0))
 
 	executionContext := runtime.context
 	executionContext.MessageBus = messageBus
@@ -172,11 +179,16 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 		Workspace:            runtime.workspace,
 		InvocationMode:       normalizeInvocationMode(request.Mode),
 	}
+
+	t0 = time.Now()
 	currentSession, err := resolveInvocationSession(executionContext, request.Message)
 	if err != nil {
 		return appcontext.SystemContext{}, err
 	}
 	executionContext.CurrentSession = currentSession
+	utils.Perf("buildExecutionContext: session resolution took %s", time.Since(t0))
+
+	utils.Perf("buildExecutionContext: total took %s", time.Since(execStart))
 	return executionContext, nil
 }
 
@@ -230,25 +242,41 @@ func (service *invocationService) discardRuntime(profileName string, target *pro
 }
 
 func (service *invocationService) buildProfileRuntime(profileName string) (*profileRuntime, error) {
+	buildStart := time.Now()
+	utils.Perf("buildProfileRuntime(%s): start", profileName)
+
+	t0 := time.Now()
 	profile, err := service.configManager.GetAgentProfileConfig(profileName)
 	if err != nil {
 		return nil, err
 	}
 	workspace := strings.TrimSpace(profile.Workspace)
+	utils.Perf("buildProfileRuntime: config loading took %s", time.Since(t0))
+
+	t0 = time.Now()
 	if err := workspacepkg.EnsureMemorySkill(workspace); err != nil {
 		return nil, err
 	}
 	if err := workspacepkg.EnsureDefaultSkills(workspace); err != nil {
 		return nil, err
 	}
+	utils.Perf("buildProfileRuntime: ensure workspace skills took %s", time.Since(t0))
+
+	t0 = time.Now()
 	skillRegistry, err := skills.LoadWorkspaceSkills(workspace)
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("buildProfileRuntime: load workspace skills took %s", time.Since(t0))
+
+	t0 = time.Now()
 	embeddingProfileName, embeddingProfile, err := resolveEmbeddingProfile(service.configManager, profileName)
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("buildProfileRuntime: resolve embedding profile took %s", time.Since(t0))
+
+	t0 = time.Now()
 	providerConfig, err := service.configManager.GetProviderConfig(profile.Provider)
 	if err != nil {
 		return nil, err
@@ -257,10 +285,16 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("buildProfileRuntime: llm provider took %s", time.Since(t0))
+
+	t0 = time.Now()
 	textEmbeddingProvider, modalEmbeddingProvider, err := buildInvocationEmbeddingProviders(service.configManager, embeddingProfile)
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("buildProfileRuntime: embedding providers took %s", time.Since(t0))
+
+	t0 = time.Now()
 	mcpConfig, err := service.configManager.GetMCPConfig()
 	if err != nil {
 		return nil, err
@@ -269,6 +303,9 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 	if err != nil {
 		return nil, err
 	}
+	utils.Perf("buildProfileRuntime: mcp service took %s", time.Since(t0))
+
+	t0 = time.Now()
 	vectorStore := vectorstore.NewSQLiteVecService(workspace, profileName, *embeddingProfile)
 	memoryConfig, err := service.configManager.GetMemoryConfig()
 	if err != nil {
@@ -292,6 +329,9 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 			memoryConfig,
 		)
 	}
+	utils.Perf("buildProfileRuntime: vectorstore + memory setup took %s", time.Since(t0))
+
+	utils.Perf("buildProfileRuntime(%s): total took %s", profileName, time.Since(buildStart))
 
 	return &profileRuntime{
 		context: appcontext.SystemContext{
@@ -325,7 +365,10 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 
 func (runtime *profileRuntime) ensureReady() error {
 	runtime.startOnce.Do(func() {
+		t0 := time.Now()
+		utils.Perf("ensureReady: start")
 		runtime.startErr = appcontext.NewRuntimeInitializer(runtime.context).EnsureReady()
+		utils.Perf("ensureReady: took %s", time.Since(t0))
 	})
 	return runtime.startErr
 }
