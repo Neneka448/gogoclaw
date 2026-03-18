@@ -38,8 +38,8 @@ func archivedSessionFilePathForTest(workspace string, sessionID string, unixSeco
 	return filepath.Join(
 		workspace,
 		"sessions",
-		"achrive",
-		sessionID+".json_achrive_"+strconv.FormatInt(unixSeconds, 10),
+		ArchiveDirName,
+		sessionID+".json"+ArchiveFileSuffixToken+strconv.FormatInt(unixSeconds, 10),
 	)
 }
 
@@ -257,10 +257,10 @@ func TestSessionManagerListSessionIDs(t *testing.T) {
 		}
 		mustFlushSessionForTest(t, currentSession)
 	}
-	if err := os.MkdirAll(filepath.Join(workspace, "sessions", "achrive"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(workspace, "sessions", ArchiveDirName), 0755); err != nil {
 		t.Fatalf("os.MkdirAll() error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "sessions", "achrive", "ignored.json"), []byte("{}"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(workspace, "sessions", ArchiveDirName, "ignored.json"), []byte("{}"), 0644); err != nil {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
 
@@ -302,11 +302,11 @@ func TestSessionArchiveAndReset(t *testing.T) {
 	if err := currentSession.ArchiveAndReset(); err != nil {
 		t.Fatalf("ArchiveAndReset() error = %v", err)
 	}
-	if !strings.Contains(archivePath, filepath.Join("sessions", "achrive")) {
-		t.Fatalf("archivePath = %q, want achrive directory", archivePath)
+	if !strings.Contains(archivePath, filepath.Join("sessions", ArchiveDirName)) {
+		t.Fatalf("archivePath = %q, want %s directory", archivePath, ArchiveDirName)
 	}
-	if !strings.HasSuffix(archivePath, ".json_achrive_1700000000") {
-		t.Fatalf("archivePath = %q, want suffix .json_achrive_1700000000", archivePath)
+	if !strings.HasSuffix(archivePath, ".json"+ArchiveFileSuffixToken+"1700000000") {
+		t.Fatalf("archivePath = %q, want suffix .json%s1700000000", archivePath, ArchiveFileSuffixToken)
 	}
 
 	archivedContent, err := os.ReadFile(archivePath)

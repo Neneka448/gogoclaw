@@ -19,6 +19,13 @@ import (
 
 var sessionNow = time.Now
 
+const (
+	// ArchiveDirName preserves the current on-disk archive directory spelling for compatibility.
+	ArchiveDirName = "achrive"
+	// ArchiveFileSuffixToken preserves the current on-disk archive filename token for compatibility.
+	ArchiveFileSuffixToken = "_achrive_"
+)
+
 func SessionNowForTest(now func() time.Time) func() {
 	previous := sessionNow
 	sessionNow = now
@@ -428,13 +435,13 @@ func (session *fileSession) writeSessionFileLocked() error {
 }
 
 func (session *fileSession) archiveSnapshotLocked(snapshot SessionFile) error {
-	archiveDir := filepath.Join(filepath.Dir(session.filePath), "achrive")
+	archiveDir := filepath.Join(filepath.Dir(session.filePath), ArchiveDirName)
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
-		return fmt.Errorf("create achrive directory: %w", err)
+		return fmt.Errorf("create %s directory: %w", ArchiveDirName, err)
 	}
 	archivePath := filepath.Join(
 		archiveDir,
-		filepath.Base(session.filePath)+"_achrive_"+strconv.FormatInt(sessionNow().Unix(), 10),
+		filepath.Base(session.filePath)+ArchiveFileSuffixToken+strconv.FormatInt(sessionNow().Unix(), 10),
 	)
 	if err := session.writeSnapshotToPath(snapshot, archivePath); err != nil {
 		return err

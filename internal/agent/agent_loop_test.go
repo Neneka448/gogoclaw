@@ -766,7 +766,7 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
 	}
 
-	archiveFiles, err := filepath.Glob(filepath.Join(workspace, "sessions", "achrive", "*.json_achrive_1700000001"))
+	archiveFiles, err := filepath.Glob(filepath.Join(workspace, "sessions", session.ArchiveDirName, "*.json"+session.ArchiveFileSuffixToken+"1700000001"))
 	if err != nil {
 		t.Fatalf("filepath.Glob() error = %v", err)
 	}
@@ -785,8 +785,8 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 	if message.FinishReason != "new_session" {
 		t.Fatalf("message.FinishReason = %q, want new_session", message.FinishReason)
 	}
-	if !strings.Contains(archiveFiles[0], filepath.Join("sessions", "achrive")) {
-		t.Fatalf("archive file path = %q, want achrive folder", archiveFiles[0])
+	if !strings.Contains(archiveFiles[0], filepath.Join("sessions", session.ArchiveDirName)) {
+		t.Fatalf("archive file path = %q, want %s folder", archiveFiles[0], session.ArchiveDirName)
 	}
 }
 
