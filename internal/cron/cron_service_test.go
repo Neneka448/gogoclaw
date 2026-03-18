@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Neneka448/gogoclaw/internal/config"
 )
 
 type fakeCronManager struct {
@@ -43,7 +45,10 @@ func (manager *fakeCronManager) Stop() error {
 func TestCronServiceCreateAndGetCron(t *testing.T) {
 	workspace := t.TempDir()
 	manager := &fakeCronManager{}
-	service := NewCronService(workspace, manager, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := NewCronService(resolver, manager, nil, nil)
 
 	storedCron, err := service.CreateCron(UpsertCronInput{
 		CronID:         "nightly-report",
@@ -85,7 +90,10 @@ func TestCronServiceExecuteCronCreatesExecutionArtifacts(t *testing.T) {
 	defer restore()
 
 	var captured ExecutionRequest
-	service := NewCronService(workspace, nil, func(request ExecutionRequest) error {
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := NewCronService(resolver, nil, func(request ExecutionRequest) error {
 		captured = request
 		artifactPath := filepath.Join(request.ExecutionDir, "output.txt")
 		return os.WriteFile(artifactPath, []byte("done"), 0644)
@@ -140,7 +148,10 @@ func TestCronServiceExecuteCronCreatesExecutionArtifacts(t *testing.T) {
 func TestCronServiceLoadAllRegistersEnabledCrons(t *testing.T) {
 	workspace := t.TempDir()
 	manager := &fakeCronManager{}
-	service := NewCronService(workspace, manager, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := NewCronService(resolver, manager, nil, nil)
 	if _, err := service.CreateCron(UpsertCronInput{
 		CronID:         "enabled-job",
 		CronExpression: "0 * * * *",
@@ -171,10 +182,11 @@ func TestMultiProfileCronServiceCreatesCronInNamedProfileWorkspace(t *testing.T)
 	defaultWorkspace := t.TempDir()
 	workerWorkspace := t.TempDir()
 	manager := &fakeCronManager{}
-	service := NewMultiProfileService(map[string]string{
-		"default": defaultWorkspace,
-		"worker":  workerWorkspace,
-	}, "default", manager, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: defaultWorkspace},
+		"worker":  {Workspace: workerWorkspace},
+	}, "default")
+	service := NewCronService(resolver, manager, nil, nil)
 
 	storedCron, err := service.CreateCron(UpsertCronInput{
 		CronID:         "worker-report",
@@ -204,10 +216,11 @@ func TestMultiProfileCronServiceExecuteCronPropagatesStoredProfile(t *testing.T)
 	defaultWorkspace := t.TempDir()
 	workerWorkspace := t.TempDir()
 	var captured ExecutionRequest
-	service := NewMultiProfileService(map[string]string{
-		"default": defaultWorkspace,
-		"worker":  workerWorkspace,
-	}, "default", nil, func(request ExecutionRequest) error {
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: defaultWorkspace},
+		"worker":  {Workspace: workerWorkspace},
+	}, "default")
+	service := NewCronService(resolver, nil, func(request ExecutionRequest) error {
 		captured = request
 		return nil
 	}, nil)
@@ -236,10 +249,11 @@ func TestMultiProfileCronServiceExecuteCronUsesHydratedLegacyProfile(t *testing.
 	defaultWorkspace := t.TempDir()
 	workerWorkspace := t.TempDir()
 	var captured ExecutionRequest
-	service := NewMultiProfileService(map[string]string{
-		"default": defaultWorkspace,
-		"worker":  workerWorkspace,
-	}, "default", nil, func(request ExecutionRequest) error {
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: defaultWorkspace},
+		"worker":  {Workspace: workerWorkspace},
+	}, "default")
+	service := NewCronService(resolver, nil, func(request ExecutionRequest) error {
 		captured = request
 		return nil
 	}, nil)

@@ -2,21 +2,19 @@ package cron
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Neneka448/gogoclaw/internal/config"
 )
 
 type multiProfileService struct {
-	defaultProfile      string
-	manager             CronManager
-	executor            Executor
-	location            *time.Location
-	profileToWorkspace  map[string]string
-	workspaceToProfiles map[string][]string
-	workspaceServices   map[string]*workspaceService
-	workspaceOrder      []string
+	resolver          *config.ProfileResolver
+	manager           CronManager
+	executor          Executor
+	location          *time.Location
+	workspaceServices map[string]*workspaceService
 }
 
 type storedCronEntry struct {
@@ -24,55 +22,29 @@ type storedCronEntry struct {
 	stored  StoredCron
 }
 
-func NewMultiProfileService(profileWorkspaces map[string]string, defaultProfile string, manager CronManager, executor Executor, location *time.Location) Service {
+func NewMultiProfileService(resolver *config.ProfileResolver, manager CronManager, executor Executor, location *time.Location) Service {
 	if location == nil {
 		location = time.Local
 	}
-	resolvedDefault := strings.TrimSpace(defaultProfile)
-	if resolvedDefault == "" {
-		resolvedDefault = "default"
-	}
 
 	service := &multiProfileService{
-		defaultProfile:      resolvedDefault,
-		manager:             manager,
-		executor:            executor,
-		location:            location,
-		profileToWorkspace:  make(map[string]string),
-		workspaceToProfiles: make(map[string][]string),
-		workspaceServices:   make(map[string]*workspaceService),
+		resolver:          resolver,
+		manager:           manager,
+		executor:          executor,
+		location:          location,
+		workspaceServices: make(map[string]*workspaceService),
 	}
 
-	profiles := make([]string, 0, len(profileWorkspaces))
-	for profileName := range profileWorkspaces {
-		trimmed := strings.TrimSpace(profileName)
-		if trimmed == "" {
-			continue
-		}
-		profiles = append(profiles, trimmed)
-	}
-	sort.Strings(profiles)
-
-	for _, profileName := range profiles {
-		workspace := canonicalWorkspace(profileWorkspaces[profileName])
-		service.profileToWorkspace[profileName] = workspace
-		service.workspaceToProfiles[workspace] = append(service.workspaceToProfiles[workspace], profileName)
-		if _, ok := service.workspaceServices[workspace]; !ok {
-			child, _ := NewCronService(workspace, manager, executor, location).(*workspaceService)
-			service.workspaceServices[workspace] = child
-			service.workspaceOrder = append(service.workspaceOrder, workspace)
-		}
-	}
-	sort.Strings(service.workspaceOrder)
-	for workspace := range service.workspaceToProfiles {
-		sort.Strings(service.workspaceToProfiles[workspace])
+	for _, workspace := range resolver.Workspaces() {
+		child, _ := NewCronService(workspace, manager, executor, location).(*workspaceService)
+		service.workspaceServices[workspace] = child
 	}
 
 	return service
 }
 
 func (service *multiProfileService) EnsureRoot() error {
-	for _, workspace := range service.workspaceOrder {
+	for _, workspace := range service.resolver.Workspaces() {
 		child := service.workspaceServices[workspace]
 		if child == nil {
 			continue
@@ -135,23 +107,31 @@ func (service *multiProfileService) GetCron(cronID string) (*StoredCron, error) 
 }
 
 func (service *multiProfileService) CreateCron(input UpsertCronInput) (*StoredCron, error) {
-	targetProfile, child, err := service.serviceForProfile(input.ProfileName)
+	resolvedProfile, workspace, err := service.resolver.ResolveWorkspace(input.ProfileName)
 	if err != nil {
 		return nil, err
 	}
-	if owner, existing, err := service.findOwner(strings.TrimSpace(input.CronID)); err == nil {
-		return nil, fmt.Errorf("cron already exists in workspace %s for profile %s: %s", owner.workspace, existing.Config.ProfileName, existing.Config.CronID)
-	} else if !isCronNotFound(err) {
-		return nil, err
+	child := service.workspaceServices[workspace]
+	if child == nil {
+		return nil, fmt.Errorf("workspace service not found for profile %s", resolvedProfile)
 	}
-	input.ProfileName = targetProfile
+	if owner, existing, findErr := service.findOwner(strings.TrimSpace(input.CronID)); findErr == nil {
+		return nil, fmt.Errorf("cron already exists in workspace %s for profile %s: %s", owner.workspace, existing.Config.ProfileName, existing.Config.CronID)
+	} else if !isCronNotFound(findErr) {
+		return nil, findErr
+	}
+	input.ProfileName = resolvedProfile
 	return child.CreateCron(input)
 }
 
 func (service *multiProfileService) UpdateCron(input UpsertCronInput) (*StoredCron, error) {
-	targetProfile, child, err := service.serviceForProfile(input.ProfileName)
+	resolvedProfile, workspace, err := service.resolver.ResolveWorkspace(input.ProfileName)
 	if err != nil {
 		return nil, err
+	}
+	child := service.workspaceServices[workspace]
+	if child == nil {
+		return nil, fmt.Errorf("workspace service not found for profile %s", resolvedProfile)
 	}
 	owner, _, ownerErr := service.findOwner(strings.TrimSpace(input.CronID))
 	if ownerErr != nil && !isCronNotFound(ownerErr) {
@@ -160,7 +140,7 @@ func (service *multiProfileService) UpdateCron(input UpsertCronInput) (*StoredCr
 	if owner != nil && owner.workspace != child.workspace {
 		return nil, fmt.Errorf("cron %s belongs to workspace %s and cannot be moved to %s", strings.TrimSpace(input.CronID), owner.workspace, child.workspace)
 	}
-	input.ProfileName = targetProfile
+	input.ProfileName = resolvedProfile
 	return child.UpdateCron(input)
 }
 
@@ -183,7 +163,7 @@ func (service *multiProfileService) ExecuteCron(cronID string) error {
 func (service *multiProfileService) listEntries() ([]storedCronEntry, error) {
 	entries := make([]storedCronEntry, 0)
 	seen := make(map[string]string)
-	for _, workspace := range service.workspaceOrder {
+	for _, workspace := range service.resolver.Workspaces() {
 		child := service.workspaceServices[workspace]
 		if child == nil {
 			continue
@@ -193,7 +173,7 @@ func (service *multiProfileService) listEntries() ([]storedCronEntry, error) {
 			return nil, err
 		}
 		for _, storedCron := range storedCrons {
-			service.fillMissingProfileName(&storedCron, workspace)
+			service.hydrateProfileName(&storedCron, workspace)
 			if ownerWorkspace, ok := seen[storedCron.Config.CronID]; ok && ownerWorkspace != workspace {
 				return nil, fmt.Errorf("cron %s exists in multiple workspaces: %s and %s", storedCron.Config.CronID, ownerWorkspace, workspace)
 			}
@@ -217,7 +197,7 @@ func (service *multiProfileService) findOwner(cronID string) (*workspaceService,
 	}
 	var owner *workspaceService
 	var stored *StoredCron
-	for _, workspace := range service.workspaceOrder {
+	for _, workspace := range service.resolver.Workspaces() {
 		child := service.workspaceServices[workspace]
 		if child == nil {
 			continue
@@ -229,7 +209,7 @@ func (service *multiProfileService) findOwner(cronID string) (*workspaceService,
 		if err != nil {
 			return nil, nil, err
 		}
-		service.fillMissingProfileName(candidate, workspace)
+		service.hydrateProfileName(candidate, workspace)
 		if owner != nil && owner.workspace != child.workspace {
 			return nil, nil, fmt.Errorf("cron %s exists in multiple workspaces: %s and %s", cronID, owner.workspace, child.workspace)
 		}
@@ -242,48 +222,12 @@ func (service *multiProfileService) findOwner(cronID string) (*workspaceService,
 	return owner, stored, nil
 }
 
-func (service *multiProfileService) serviceForProfile(profileName string) (string, *workspaceService, error) {
-	resolvedProfile := service.normalizeProfileName(profileName)
-	workspace, ok := service.profileToWorkspace[resolvedProfile]
-	if !ok {
-		return "", nil, fmt.Errorf("profile not found: %s", resolvedProfile)
-	}
-	child := service.workspaceServices[workspace]
-	if child == nil {
-		return "", nil, fmt.Errorf("workspace service not found for profile %s", resolvedProfile)
-	}
-	return resolvedProfile, child, nil
-}
-
-func (service *multiProfileService) normalizeProfileName(profileName string) string {
-	trimmed := strings.TrimSpace(profileName)
-	if trimmed == "" {
-		return service.defaultProfile
-	}
-	return trimmed
-}
-
-func (service *multiProfileService) fillMissingProfileName(storedCron *StoredCron, workspace string) {
+// hydrateProfileName fills in a missing profile name on a stored cron
+// by delegating to the profile resolver. This is only used for display
+// and sorting; it does not change persisted state.
+func (service *multiProfileService) hydrateProfileName(storedCron *StoredCron, workspace string) {
 	if storedCron == nil || strings.TrimSpace(storedCron.Config.ProfileName) != "" {
 		return
 	}
-	profiles := service.workspaceToProfiles[workspace]
-	if len(profiles) == 1 {
-		storedCron.Config.ProfileName = profiles[0]
-		return
-	}
-	for _, profileName := range profiles {
-		if profileName == service.defaultProfile {
-			storedCron.Config.ProfileName = service.defaultProfile
-			return
-		}
-	}
-}
-
-func canonicalWorkspace(workspace string) string {
-	trimmed := strings.TrimSpace(workspace)
-	if trimmed == "" {
-		return ""
-	}
-	return filepath.Clean(trimmed)
+	storedCron.Config.ProfileName = service.resolver.DefaultProfileForWorkspace(workspace)
 }

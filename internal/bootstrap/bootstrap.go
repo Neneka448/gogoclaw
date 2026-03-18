@@ -25,10 +25,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	profileWorkspaces := make(map[string]string, len(sysConfig.Agents.Profiles))
-	for profileName, profile := range sysConfig.Agents.Profiles {
-		profileWorkspaces[profileName] = profile.Workspace
-	}
+	resolver := config.NewProfileResolver(sysConfig.Agents.Profiles, "default")
 	messageBus := messagebus.NewMessageBus()
 	channelRegistry := channels.NewRegistry()
 	if err := channelRegistry.Register(channels.NewCLIChannel(sysConfig.Channels.CLI, nil)); err != nil {
@@ -46,7 +43,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	cronManager := cron.NewCronManager(cronLocation)
 
 	var invoker appcontext.InvocationService
-	cronService := cron.NewMultiProfileService(profileWorkspaces, "default", cronManager, func(request cron.ExecutionRequest) error {
+	cronService := cron.NewCronService(resolver, cronManager, func(request cron.ExecutionRequest) error {
 		return executeCronRequest(invoker, request)
 	}, cronLocation)
 	invoker, err = agent.NewInvocationService(configManager, sysConfig, messageBus, channelRegistry, cronService, sysConfig.Cron.Enabled)

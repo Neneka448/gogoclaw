@@ -5,13 +5,17 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Neneka448/gogoclaw/internal/config"
 	cronpkg "github.com/Neneka448/gogoclaw/internal/cron"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 )
 
 func TestCreateCronToolCreatesWorkspaceCron(t *testing.T) {
 	workspace := t.TempDir()
-	service := cronpkg.NewCronService(workspace, nil, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
 	descriptor := NewCreateCronTool(service)
 
 	result, err := descriptor.Tool.Execute(`{"cron_id":"qq-inbox","cron_expression":"*/5 * * * *","task":"First call get_skill for qqinbox.","enabled":true}`)
@@ -39,7 +43,10 @@ func TestCreateCronToolCreatesWorkspaceCron(t *testing.T) {
 
 func TestCreateCronToolReturnsValidationErrorInResult(t *testing.T) {
 	workspace := t.TempDir()
-	service := cronpkg.NewCronService(workspace, nil, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
 	descriptor := NewCreateCronTool(service)
 
 	result, err := descriptor.Tool.Execute(`{"cron_id":"","cron_expression":"*/5 * * * *","task":"x","enabled":true}`)
@@ -58,7 +65,10 @@ func TestCreateCronToolReturnsValidationErrorInResult(t *testing.T) {
 
 func TestCreateCronToolReturnsServiceErrorsInResult(t *testing.T) {
 	workspace := t.TempDir()
-	service := cronpkg.NewCronService(workspace, nil, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
 	descriptor := NewCreateCronTool(service)
 
 	first, err := descriptor.Tool.Execute(`{"cron_id":"qq-inbox","cron_expression":"*/5 * * * *","task":"First call get_skill for qqinbox.","enabled":true}`)
@@ -86,10 +96,11 @@ func TestCreateCronToolReturnsServiceErrorsInResult(t *testing.T) {
 func TestCreateCronToolPersistsProfileFromMessageContext(t *testing.T) {
 	defaultWorkspace := t.TempDir()
 	workerWorkspace := t.TempDir()
-	service := cronpkg.NewMultiProfileService(map[string]string{
-		"default": defaultWorkspace,
-		"worker":  workerWorkspace,
-	}, "default", nil, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: defaultWorkspace},
+		"worker":  {Workspace: workerWorkspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
 	descriptor := NewCreateCronTool(service)
 	contextTool, ok := descriptor.Tool.(*CreateCronTool)
 	if !ok {
@@ -126,10 +137,11 @@ func TestCreateCronToolPersistsProfileFromMessageContext(t *testing.T) {
 func TestCreateCronToolAllowsExplicitProfileOverride(t *testing.T) {
 	defaultWorkspace := t.TempDir()
 	workerWorkspace := t.TempDir()
-	service := cronpkg.NewMultiProfileService(map[string]string{
-		"default": defaultWorkspace,
-		"worker":  workerWorkspace,
-	}, "default", nil, nil, nil)
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: defaultWorkspace},
+		"worker":  {Workspace: workerWorkspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
 	descriptor := NewCreateCronTool(service)
 	contextTool, ok := descriptor.Tool.(*CreateCronTool)
 	if !ok {

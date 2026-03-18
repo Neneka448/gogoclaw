@@ -420,10 +420,11 @@ func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
 			provider.NormalizedResponse{Content: "done"},
 		},
 	}
-	cronService := cronpkg.NewMultiProfileService(map[string]string{
-		"default": defaultWorkspace,
-		"worker":  workerWorkspace,
-	}, "default", nil, nil, nil)
+	cronResolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: defaultWorkspace},
+		"worker":  {Workspace: workerWorkspace},
+	}, "default")
+	cronService := cronpkg.NewCronService(cronResolver, nil, nil, nil)
 	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
 		"create_cron": tools.NewCreateCronTool(cronService),
 	}}
