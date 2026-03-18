@@ -2,6 +2,7 @@ package channels
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -458,5 +459,99 @@ func TestToolCallBatchKey(t *testing.T) {
 	}
 	if withoutReply != "oc_1" {
 		t.Fatalf("toolCallBatchKey(withoutReply) = %q", withoutReply)
+	}
+}
+
+func TestFeishuChannelStartSkipsWhenDisabled(t *testing.T) {
+	ch := NewFeishuChannel(config.FeishuChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: false},
+	}, nil, "/tmp")
+
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if ch.started {
+		t.Fatal("disabled channel should not be started")
+	}
+}
+
+func TestFeishuChannelStartRejectsEmptyCredentials(t *testing.T) {
+	ch := NewFeishuChannel(config.FeishuChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+	}, nil, "/tmp")
+
+	if err := ch.Start(); err == nil {
+		t.Fatal("Start() should fail with empty credentials")
+	}
+}
+
+func TestFeishuChannelStopResetsLifecycleState(t *testing.T) {
+	ch := NewFeishuChannel(config.FeishuChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+		AppID:         "id",
+		AppSecret:     "secret",
+	}, nil, "/tmp")
+
+	// Simulate started state without actual WebSocket connection.
+	ch.mu.Lock()
+	ch.started = true
+	ch.accepting = true
+	ctx, cancel := context.WithCancel(context.Background())
+	ch.cancelFunc = cancel
+	done := make(chan struct{})
+	ch.wsDone = done
+	ch.mu.Unlock()
+
+	// Simulate goroutine that respects context cancellation.
+	go func() {
+		<-ctx.Done()
+		close(done)
+	}()
+
+	if err := ch.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if ch.started {
+		t.Fatal("started should be false after Stop")
+	}
+	if ch.accepting {
+		t.Fatal("accepting should be false after Stop")
+	}
+	if ch.cancelFunc != nil {
+		t.Fatal("cancelFunc should be nil after Stop")
+	}
+	if ch.wsDone != nil {
+		t.Fatal("wsDone should be nil after Stop")
+	}
+}
+
+func TestFeishuChannelStopIsIdempotent(t *testing.T) {
+	ch := NewFeishuChannel(config.FeishuChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+	}, nil, "/tmp")
+
+	// Stop on a never-started channel should not panic.
+	for i := 0; i < 3; i++ {
+		if err := ch.Stop(); err != nil {
+			t.Fatalf("Stop() #%d error = %v", i, err)
+		}
+	}
+}
+
+func TestFeishuChannelStartGuardsAgainstDoubleStart(t *testing.T) {
+	ch := NewFeishuChannel(config.FeishuChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+		AppID:         "id",
+		AppSecret:     "secret",
+	}, nil, "/tmp")
+
+	// Pretend already started.
+	ch.mu.Lock()
+	ch.started = true
+	ch.mu.Unlock()
+
+	// Second Start should be a no-op.
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start() on already-started channel error = %v", err)
 	}
 }

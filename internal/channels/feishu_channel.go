@@ -28,7 +28,8 @@ type FeishuChannel struct {
 	workspace  string
 	client     *lark.Client
 	wsClient   *larkws.Client
-	startOnce  sync.Once
+	cancelFunc context.CancelFunc
+	wsDone     chan struct{}
 	started    bool
 	accepting  bool
 	mu         sync.Mutex
@@ -110,38 +111,63 @@ func (c *FeishuChannel) Start() error {
 		return fmt.Errorf("feishu channel requires appId and appSecret")
 	}
 
-	var startErr error
-	c.startOnce.Do(func() {
-		c.client = lark.NewClient(c.config.AppID, c.config.AppSecret)
-		eventHandler := dispatcher.NewEventDispatcher(c.config.VerificationToken, c.config.EncryptKey).
-			OnP2MessageReceiveV1(c.handleMessageReceive)
-
-		c.wsClient = larkws.NewClient(
-			c.config.AppID,
-			c.config.AppSecret,
-			larkws.WithEventHandler(eventHandler),
-			larkws.WithLogLevel(larkcore.LogLevelError),
-		)
-		c.mu.Lock()
-		c.started = true
-		c.accepting = true
+	c.mu.Lock()
+	if c.started {
 		c.mu.Unlock()
-		go func() {
-			_ = c.wsClient.Start(context.Background())
-		}()
-	})
+		return nil
+	}
 
-	return startErr
+	c.client = lark.NewClient(c.config.AppID, c.config.AppSecret)
+	eventHandler := dispatcher.NewEventDispatcher(c.config.VerificationToken, c.config.EncryptKey).
+		OnP2MessageReceiveV1(c.handleMessageReceive)
+
+	c.wsClient = larkws.NewClient(
+		c.config.AppID,
+		c.config.AppSecret,
+		larkws.WithEventHandler(eventHandler),
+		larkws.WithLogLevel(larkcore.LogLevelError),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancelFunc = cancel
+	done := make(chan struct{})
+	c.wsDone = done
+	c.started = true
+	c.accepting = true
+	c.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		_ = c.wsClient.Start(ctx)
+	}()
+
+	return nil
 }
 
 func (c *FeishuChannel) Stop() error {
 	c.mu.Lock()
 	c.accepting = false
+	cancel := c.cancelFunc
+	c.cancelFunc = nil
+	done := c.wsDone
+	c.wsDone = nil
+	c.started = false
 	c.mu.Unlock()
-	if err := c.flushAllToolCallBatches(); err != nil {
-		return err
+
+	if cancel != nil {
+		cancel()
 	}
-	return nil
+	// Best-effort wait for the WebSocket goroutine to exit.
+	// The larkws SDK's Start() blocks on select{} without checking ctx.Done(),
+	// so the goroutine may not exit until the process terminates.
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	}
+
+	return c.flushAllToolCallBatches()
 }
 
 func (c *FeishuChannel) Send(message messagebus.Message) error {
