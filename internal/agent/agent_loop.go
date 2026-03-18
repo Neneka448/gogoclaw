@@ -88,11 +88,15 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 				return err
 			}
 		}
-		al.ingestSessionMemory(currentSession, pending)
+		ingestErr := al.ingestSessionMemory(currentSession, pending)
 		if err := currentSession.ArchiveAndReset(); err != nil {
 			return err
 		}
-		return al.publishDirectReply(msg, newSessionReply, "new_session")
+		reply := newSessionReply
+		if ingestErr != nil {
+			reply += "\n⚠️ Memory save failed: " + ingestErr.Error()
+		}
+		return al.publishDirectReply(msg, reply, "new_session")
 	}
 	if strings.TrimSpace(msg.Message) != "" {
 		if err := currentSession.AppendMessage(Openai.ChatCompletionMessage{
@@ -528,18 +532,18 @@ func (al *agentLoop) prepareSessionMemoryIngestion(currentSession session.Sessio
 
 // ingestSessionMemory feeds the current session messages into the memory system
 // for 5W1H+R summarization and graph storage before the session is reset.
-func (al *agentLoop) ingestSessionMemory(currentSession session.Session, pending *pendingSessionMemoryIngestion) {
+func (al *agentLoop) ingestSessionMemory(currentSession session.Session, pending *pendingSessionMemoryIngestion) error {
 	if pending == nil {
 		pending = al.prepareSessionMemoryIngestion(currentSession)
 	}
 	if pending == nil {
-		return
+		return nil
 	}
 	t0 := time.Now()
 	utils.Perf("memory: ingest session start")
 	if err := al.context.MemoryService.IngestSession(pending.sessionID, pending.messages); err != nil {
 		slog.Error("ingest session memory failed", "session", pending.sessionID, "err", err)
-		return
+		return err
 	}
 	utils.Perf("memory: ingest session took %s", time.Since(t0))
 	if pending.digest != "" {
@@ -547,4 +551,5 @@ func (al *agentLoop) ingestSessionMemory(currentSession session.Session, pending
 			slog.Error("mark session memory ingested failed", "session", pending.sessionID, "err", err)
 		}
 	}
+	return nil
 }

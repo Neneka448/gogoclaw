@@ -38,6 +38,7 @@ func (provider *fakeProvider) ChatCompletion(request openai.ChatCompletionReques
 type fakeMemoryService struct {
 	initializeCalls int
 	ingestCalls     int
+	ingestErr       error
 	sessionIDs      []string
 	messages        [][]openai.ChatCompletionMessage
 	blockCh         <-chan struct{}
@@ -59,7 +60,7 @@ func (service *fakeMemoryService) IngestSession(sessionID string, messages []ope
 	if service.blockCh != nil {
 		<-service.blockCh
 	}
-	return nil
+	return service.ingestErr
 }
 
 func (service *fakeMemoryService) Recall(queryText string, topK int, minSimilarity float64) ([]memory.MemoryNode, error) {
@@ -885,6 +886,73 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 	}
 	if got := currentSession.GetMessages(10); len(got) != 0 {
 		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
+	}
+}
+
+func TestAgentLoopSlashNewReportsMemoryIngestionFailure(t *testing.T) {
+	configPath := writeTestConfig(t)
+	workspace := tempWorkspaceFromConfig(t, configPath)
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	memoryService := &fakeMemoryService{ingestErr: errors.New("embedding service unavailable")}
+	inboundMessage := messagebus.Message{
+		ChannelID:   "feishu",
+		Message:     "/new",
+		MessageID:   "msg-1",
+		MessageType: "text",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+	}
+	currentSession := newAgentTestCurrentSession(t, sessionManager, inboundMessage)
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       &fakeProvider{},
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+		CurrentSession: currentSession,
+		MemoryService:  memoryService,
+		MemoryEnabled:  true,
+		Runtime:        newTestRuntimeContext(workspace, 4),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		if err := currentSession.AppendMessage(openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: "history-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatalf("AppendMessage() error = %v", err)
+		}
+	}
+	mustFlushAgentSessionForTest(t, currentSession)
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	// Session should still be reset despite ingestion failure.
+	if got := currentSession.GetMessages(10); len(got) != 0 {
+		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
+	}
+
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+	// Drain the progress message first.
+	<-outboundQueue
+	// The final reply should contain both the new-session text and the warning.
+	message := <-outboundQueue
+	if !strings.Contains(message.Message, "new session") {
+		t.Fatalf("reply missing new session text: %q", message.Message)
+	}
+	if !strings.Contains(message.Message, "embedding service unavailable") {
+		t.Fatalf("reply missing ingestion error: %q", message.Message)
+	}
+	if message.FinishReason != "new_session" {
+		t.Fatalf("message.FinishReason = %q, want new_session", message.FinishReason)
 	}
 }
 
