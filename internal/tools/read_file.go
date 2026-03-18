@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -70,7 +70,7 @@ func (tool *ReadFileTool) Execute(args string) (string, error) {
 		return tool.encodeResult(readFileResult{Error: "read_file path is required"})
 	}
 
-	resolvedPath, err := tool.resolvePath(input.Path)
+	resolvedPath, err := pathutil.ResolveWithinWorkspace(input.Path, tool.workspace)
 	if err != nil {
 		return tool.encodeResult(readFileResult{Path: input.Path, Error: err.Error()})
 	}
@@ -141,30 +141,4 @@ func (tool *ReadFileTool) encodeResult(result readFileResult) (string, error) {
 	}
 
 	return string(encoded), nil
-}
-
-func (tool *ReadFileTool) resolvePath(path string) (string, error) {
-	workspaceRoot, err := filepath.Abs(tool.workspace)
-	if err != nil {
-		return "", err
-	}
-	var candidate string
-	if filepath.IsAbs(path) {
-		candidate = filepath.Clean(path)
-	} else {
-		candidate = filepath.Join(workspaceRoot, path)
-	}
-	resolved, err := filepath.Abs(candidate)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(workspaceRoot, resolved)
-	if err != nil {
-		return "", err
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("read_file path %q is outside the workspace", path)
-	}
-
-	return resolved, nil
 }

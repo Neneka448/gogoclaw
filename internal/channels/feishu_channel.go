@@ -15,6 +15,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
@@ -922,16 +923,6 @@ func (c *FeishuChannel) resolveMediaPath(mediaPath string, metadata map[string]s
 	if trimmed == "" {
 		return "", false
 	}
-	if isLocalFilePath(trimmed) {
-		resolved, err := filepath.Abs(trimmed)
-		if err != nil {
-			return trimmed, true
-		}
-		return resolved, true
-	}
-	if filepath.IsAbs(trimmed) {
-		return "", false
-	}
 	workspace := strings.TrimSpace(c.workspace)
 	if metadata != nil {
 		if runtimeWorkspace := strings.TrimSpace(metadata["workspace"]); runtimeWorkspace != "" {
@@ -941,15 +932,12 @@ func (c *FeishuChannel) resolveMediaPath(mediaPath string, metadata map[string]s
 	if workspace == "" {
 		return "", false
 	}
-	candidate := filepath.Join(workspace, filepath.Clean(trimmed))
-	if !isLocalFilePath(candidate) {
+
+	resolvedPath, err := pathutil.ResolveWithinWorkspace(trimmed, workspace)
+	if err != nil || !isLocalFilePath(resolvedPath) {
 		return "", false
 	}
-	resolved, err := filepath.Abs(candidate)
-	if err != nil {
-		return candidate, true
-	}
-	return resolved, true
+	return resolvedPath, true
 }
 
 func (c *FeishuChannel) uploadImage(mediaPath string) (string, error) {

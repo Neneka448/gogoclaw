@@ -67,6 +67,35 @@ func TestReadFileToolRejectsOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestReadFileToolAllowsAbsolutePathInsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	filePath := filepath.Join(workspace, "notes.txt")
+	if err := os.WriteFile(filePath, []byte("a\nb\n"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	descriptor := NewReadFileTool(workspace)
+	result, err := descriptor.Tool.Execute(`{"path":"` + filePath + `"}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var parsed struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Error != "" {
+		t.Fatalf("parsed.Error = %q, want empty", parsed.Error)
+	}
+	if parsed.Content != "a\nb" {
+		t.Fatalf("parsed.Content = %q, want a\\nb", parsed.Content)
+	}
+}
+
 func TestReadFileToolReturnsArgumentErrorsInResult(t *testing.T) {
 	workspace := t.TempDir()
 	filePath := filepath.Join(workspace, "notes.txt")

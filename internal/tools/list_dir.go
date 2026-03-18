@@ -3,10 +3,9 @@ package tools
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
+	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -61,42 +60,16 @@ func (tool *ListDirTool) encodeResult(result listDirResult) (string, error) {
 }
 
 func (tool *ListDirTool) Execute(args string) (string, error) {
-	workspacePath, err := filepath.Abs(tool.workspace)
-	if err != nil {
-		return tool.encodeResult(listDirResult{
-			Files: []fileDesc{}, Error: err.Error(),
-		})
-	}
 	var input listDirArgs
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		return tool.encodeResult(listDirResult{
 			Files: []fileDesc{}, Error: err.Error(),
 		})
 	}
-	input.Path = filepath.Clean(strings.TrimSpace(input.Path))
-
-	if filepath.IsAbs(input.Path) {
-		return tool.encodeResult(listDirResult{
-			Files: []fileDesc{}, Error: "must not use absolute path",
-		})
-	}
-
-	path, err := filepath.Abs(filepath.Join(workspacePath, input.Path))
+	path, err := pathutil.ResolveRelativeOnly(input.Path, tool.workspace)
 	if err != nil {
 		return tool.encodeResult(listDirResult{
 			Files: []fileDesc{}, Error: err.Error(),
-		})
-	}
-
-	rel, err := filepath.Rel(workspacePath, path)
-	if err != nil {
-		return tool.encodeResult(listDirResult{
-			Files: []fileDesc{}, Error: err.Error(),
-		})
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return tool.encodeResult(listDirResult{
-			Files: []fileDesc{}, Error: "path is outside the workspace",
 		})
 	}
 

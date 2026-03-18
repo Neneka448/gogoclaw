@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -140,32 +140,16 @@ func encodeTerminalResult(result terminalResult) (string, error) {
 }
 
 func (tool *TerminalTool) resolveWorkingDirectory(cwd string) (string, error) {
-	workspaceRoot, err := filepath.Abs(tool.workspace)
+	resolvedCwd, err := pathutil.ResolveRelativeOnly(cwd, tool.workspace)
 	if err != nil {
+		if err.Error() == "must not use absolute path" {
+			return "", fmt.Errorf("terminal cwd must not use absolute path")
+		}
+		if err.Error() == "path is outside the workspace" {
+			return "", fmt.Errorf("terminal cwd %q is outside the workspace", cwd)
+		}
 		return "", err
 	}
 
-	trimmed := strings.TrimSpace(cwd)
-	if trimmed == "" || trimmed == "." {
-		return workspaceRoot, nil
-	}
-	if filepath.IsAbs(trimmed) {
-		return "", fmt.Errorf("terminal cwd must not use absolute path")
-	}
-
-	candidate := filepath.Join(workspaceRoot, filepath.Clean(trimmed))
-	resolved, err := filepath.Abs(candidate)
-	if err != nil {
-		return "", err
-	}
-
-	rel, err := filepath.Rel(workspaceRoot, resolved)
-	if err != nil {
-		return "", err
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("terminal cwd %q is outside the workspace", cwd)
-	}
-
-	return resolved, nil
+	return resolvedCwd, nil
 }

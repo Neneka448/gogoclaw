@@ -227,14 +227,18 @@ func TestFeishuChannelResolveMediaPathUsesWorkspaceForRelativePaths(t *testing.T
 	if err := os.WriteFile(absPath, []byte("x"), 0644); err != nil {
 		t.Fatalf("os.WriteFile() error = %v", err)
 	}
+	expected, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks() error = %v", err)
+	}
 
 	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, workspace)
 	resolved, ok := channel.resolveMediaPath(relativePath, nil)
 	if !ok {
 		t.Fatal("resolveMediaPath() ok = false, want true")
 	}
-	if resolved != absPath {
-		t.Fatalf("resolveMediaPath() = %q, want %q", resolved, absPath)
+	if resolved != expected {
+		t.Fatalf("resolveMediaPath() = %q, want %q", resolved, expected)
 	}
 }
 
@@ -242,6 +246,44 @@ func TestFeishuChannelResolveMediaPathRejectsMissingRelativeFile(t *testing.T) {
 	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, t.TempDir())
 	if resolved, ok := channel.resolveMediaPath(filepath.Join("tmp", "missing.png"), nil); ok {
 		t.Fatalf("resolveMediaPath() = %q, want not found", resolved)
+	}
+}
+
+func TestFeishuChannelResolveMediaPathAllowsAbsolutePathInsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	absPath := filepath.Join(workspace, "tmp", "fullscreen.png")
+	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(absPath, []byte("x"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+	expected, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks() error = %v", err)
+	}
+
+	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, workspace)
+	resolved, ok := channel.resolveMediaPath(absPath, nil)
+	if !ok {
+		t.Fatal("resolveMediaPath() ok = false, want true")
+	}
+	if resolved != expected {
+		t.Fatalf("resolveMediaPath() = %q, want %q", resolved, expected)
+	}
+}
+
+func TestFeishuChannelResolveMediaPathRejectsAbsolutePathOutsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	absPath := filepath.Join(outside, "outside.png")
+	if err := os.WriteFile(absPath, []byte("x"), 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	channel := NewFeishuChannel(config.FeishuChannelConfig{}, nil, workspace)
+	if resolved, ok := channel.resolveMediaPath(absPath, nil); ok {
+		t.Fatalf("resolveMediaPath() = %q, want rejected", resolved)
 	}
 }
 
