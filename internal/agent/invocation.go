@@ -283,6 +283,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 			return nil, fmt.Errorf("invalid memory config: %w", err)
 		}
 		memoryService = memory.NewService(
+			memory.NewSQLiteStore(vectorStore.Path()),
 			vectorStore,
 			llmProvider,
 			profile.Model,
@@ -331,6 +332,12 @@ func (runtime *profileRuntime) ensureReady() error {
 
 func (runtime *profileRuntime) close() error {
 	var firstErr error
+	if runtime.context.MemoryService != nil {
+		if err := runtime.context.MemoryService.Close(); err != nil {
+			recordFirstError(&firstErr, err)
+		}
+		runtime.context.MemoryService = nil
+	}
 	if runtime.context.MCPService != nil {
 		if err := runtime.context.MCPService.Close(); err != nil {
 			recordFirstError(&firstErr, err)

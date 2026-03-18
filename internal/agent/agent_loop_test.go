@@ -48,6 +48,10 @@ func (service *fakeMemoryService) Initialize() error {
 	return nil
 }
 
+func (service *fakeMemoryService) Close() error {
+	return nil
+}
+
 func (service *fakeMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
 	service.ingestCalls++
 	service.sessionIDs = append(service.sessionIDs, sessionID)
@@ -614,6 +618,7 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 	if message.Message != want {
 		t.Fatalf("message.Message = %q, want %q", message.Message, want)
 	}
+	mustFlushAgentSessionForTest(t, sessionStore)
 }
 
 func TestAgentLoopContinuesAfterToolExecutionError(t *testing.T) {

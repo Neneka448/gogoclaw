@@ -23,6 +23,9 @@ type Service interface {
 	// Initialize sets up the memory tables in the shared DB.
 	Initialize() error
 
+	// Close releases resources held by the memory service.
+	Close() error
+
 	// IngestSession takes raw session messages and creates a short-term memory node.
 	// It summarizes the session (5W1H+R), embeds it, stores it, connects edges,
 	// and triggers community check for short-term nodes.
@@ -49,6 +52,7 @@ type service struct {
 }
 
 func NewService(
+	store *Store,
 	vectorStore vectorstore.Service,
 	llm provider.LLMProviderOpenaiCompatible,
 	model string,
@@ -57,7 +61,7 @@ func NewService(
 	memoryConfig config.MemoryConfig,
 ) Service {
 	return &service{
-		store:         nil,
+		store:         store,
 		vectorStore:   vectorStore,
 		embedding:     embeddingProvider,
 		textEmbedding: textEmbedding,
@@ -71,11 +75,7 @@ func (s *service) Initialize() error {
 	defer s.initMu.Unlock()
 
 	if s.store == nil {
-		db := s.vectorStore.DB()
-		if db == nil {
-			return fmt.Errorf("memory service initialization failed: vector store DB is not initialized")
-		}
-		s.store = NewStore(db)
+		return fmt.Errorf("memory service initialization failed: metadata store is not configured")
 	}
 	if err := s.store.Initialize(); err != nil {
 		return err
@@ -88,6 +88,13 @@ func (s *service) Initialize() error {
 	}
 	s.vectorsRepaired = true
 	return nil
+}
+
+func (s *service) Close() error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.Close()
 }
 
 func (s *service) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
@@ -202,11 +209,7 @@ func (s *service) Recall(queryText string, topK int, minSimilarity float64) ([]M
 
 func (s *service) GetNode(nodeID string) (*MemoryNode, error) {
 	if s.store == nil {
-		db := s.vectorStore.DB()
-		if db == nil {
-			return nil, fmt.Errorf("memory service not initialized: vector store DB is nil")
-		}
-		s.store = NewStore(db)
+		return nil, fmt.Errorf("memory service not initialized: metadata store is nil")
 	}
 	return s.store.GetNode(nodeID)
 }

@@ -1,7 +1,6 @@
 package context
 
 import (
-	"database/sql"
 	"errors"
 	"testing"
 
@@ -110,10 +109,6 @@ func (store *fakeRuntimeInitializerVectorStore) Path() string {
 	return ""
 }
 
-func (store *fakeRuntimeInitializerVectorStore) DB() *sql.DB {
-	return nil
-}
-
 func (store *fakeRuntimeInitializerVectorStore) Upsert(request vectorstore.UpsertRequest) error {
 	return nil
 }
@@ -140,6 +135,11 @@ func (service *fakeRuntimeInitializerMemoryService) Initialize() error {
 	service.initializeCalls++
 	service.events = append(service.events, "initialize")
 	return service.initializeErr
+}
+
+func (service *fakeRuntimeInitializerMemoryService) Close() error {
+	service.events = append(service.events, "close")
+	return nil
 }
 
 func (service *fakeRuntimeInitializerMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {

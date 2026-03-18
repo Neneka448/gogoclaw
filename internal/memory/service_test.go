@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"database/sql"
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
@@ -25,10 +24,6 @@ func (store *fakeMemoryVectorStore) Stop() error {
 
 func (store *fakeMemoryVectorStore) Path() string {
 	return ""
-}
-
-func (store *fakeMemoryVectorStore) DB() *sql.DB {
-	return nil
 }
 
 func (store *fakeMemoryVectorStore) Upsert(request vectorstore.UpsertRequest) error {
@@ -165,6 +160,7 @@ func TestServiceInitializeRepairsActiveVectors(t *testing.T) {
 func TestServiceEmbedWithTypePassesConfiguredTextEmbedding(t *testing.T) {
 	embeddingProvider := &fakeMemoryEmbeddingProvider{}
 	svc := &service{
+		store:         newTestStore(t),
 		embedding:     embeddingProvider,
 		textEmbedding: config.EmbeddingModelConfig{Model: "voyage-4-large", OutputDimension: 1024},
 	}
@@ -192,6 +188,7 @@ func TestServiceEmbedWithTypePassesConfiguredTextEmbedding(t *testing.T) {
 
 func TestServiceEmbedWithTypeRejectsMissingTextEmbeddingModel(t *testing.T) {
 	svc := &service{
+		store:         newTestStore(t),
 		embedding:     &fakeMemoryEmbeddingProvider{},
 		textEmbedding: config.EmbeddingModelConfig{},
 	}
