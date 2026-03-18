@@ -419,13 +419,14 @@ func resolveInvocationEmbeddingProvider(configManager config.ConfigManager, cach
 
 func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) (tools.ToolRegistry, error) {
 	registry := tools.NewToolRegistry()
+	toolConfigIndex := buildInvocationToolConfigIndex(toolConfigs)
 	if err := registry.RegisterTool("read_file", tools.NewReadFileTool(workspace)); err != nil {
 		return nil, err
 	}
 	if err := registry.RegisterTool("list_dir", tools.NewListDirTool(workspace)); err != nil {
 		return nil, err
 	}
-	if err := registry.RegisterTool("terminal", tools.NewTerminalTool(workspace, resolveInvocationToolTimeout(toolConfigs, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
+	if err := registry.RegisterTool("terminal", tools.NewTerminalTool(workspace, resolveInvocationToolTimeout(toolConfigIndex, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
 		return nil, err
 	}
 	if err := registry.RegisterTool("message", tools.NewMessageTool(bus)); err != nil {
@@ -452,15 +453,32 @@ func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConf
 	return registry, nil
 }
 
-func resolveInvocationToolTimeout(configs []config.ToolConfig, name string, defaultTimeout time.Duration) time.Duration {
+func buildInvocationToolConfigIndex(configs []config.ToolConfig) map[string]config.ToolConfig {
+	index := make(map[string]config.ToolConfig, len(configs))
 	for _, toolConfig := range configs {
-		if !strings.EqualFold(strings.TrimSpace(toolConfig.Name), name) {
+		name := normalizeInvocationToolName(toolConfig.Name)
+		if name == "" {
 			continue
 		}
-		if toolConfig.Timeout <= 0 {
-			return defaultTimeout
+		if _, exists := index[name]; exists {
+			continue
 		}
-		return time.Duration(toolConfig.Timeout) * time.Second
+		index[name] = toolConfig
 	}
-	return defaultTimeout
+	return index
+}
+
+func resolveInvocationToolTimeout(configs map[string]config.ToolConfig, name string, defaultTimeout time.Duration) time.Duration {
+	toolConfig, ok := configs[normalizeInvocationToolName(name)]
+	if !ok {
+		return defaultTimeout
+	}
+	if toolConfig.Timeout <= 0 {
+		return defaultTimeout
+	}
+	return time.Duration(toolConfig.Timeout) * time.Second
+}
+
+func normalizeInvocationToolName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }

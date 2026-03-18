@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -61,5 +62,43 @@ func TestInvocationServiceEvictsRuntimeAfterInitializationFailure(t *testing.T) 
 	}
 	if len(service.runtimes) != 1 {
 		t.Fatalf("len(service.runtimes) = %d, want 1 after successful retry", len(service.runtimes))
+	}
+}
+
+func TestBuildInvocationToolConfigIndexNormalizesNamesAndKeepsFirstMatch(t *testing.T) {
+	index := buildInvocationToolConfigIndex([]config.ToolConfig{
+		{Name: " terminal ", Timeout: 15},
+		{Name: "TERMINAL", Timeout: 99},
+		{Name: "", Timeout: 30},
+	})
+
+	if len(index) != 1 {
+		t.Fatalf("len(index) = %d, want 1", len(index))
+	}
+
+	toolConfig, ok := index["terminal"]
+	if !ok {
+		t.Fatal("index[terminal] missing")
+	}
+	if toolConfig.Timeout != 15 {
+		t.Fatalf("toolConfig.Timeout = %d, want 15", toolConfig.Timeout)
+	}
+}
+
+func TestResolveInvocationToolTimeoutUsesIndexedConfig(t *testing.T) {
+	defaultTimeout := 30 * time.Second
+	index := buildInvocationToolConfigIndex([]config.ToolConfig{
+		{Name: "terminal", Timeout: 12},
+		{Name: "message", Timeout: 0},
+	})
+
+	if got := resolveInvocationToolTimeout(index, " terminal ", defaultTimeout); got != 12*time.Second {
+		t.Fatalf("resolveInvocationToolTimeout(terminal) = %s, want %s", got, 12*time.Second)
+	}
+	if got := resolveInvocationToolTimeout(index, "message", defaultTimeout); got != defaultTimeout {
+		t.Fatalf("resolveInvocationToolTimeout(message) = %s, want %s", got, defaultTimeout)
+	}
+	if got := resolveInvocationToolTimeout(index, "missing", defaultTimeout); got != defaultTimeout {
+		t.Fatalf("resolveInvocationToolTimeout(missing) = %s, want %s", got, defaultTimeout)
 	}
 }
