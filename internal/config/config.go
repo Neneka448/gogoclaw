@@ -506,7 +506,32 @@ func cloneProviderConfigs(src []ProviderConfig) []ProviderConfig {
 		return nil
 	}
 	dst := make([]ProviderConfig, len(src))
-	copy(dst, src)
+	for i, p := range src {
+		dst[i] = p
+		if p.Headers != nil {
+			dst[i].Headers = make(map[string]string, len(p.Headers))
+			for k, v := range p.Headers {
+				dst[i].Headers[k] = v
+			}
+		}
+		if p.ExtraBody != nil {
+			dst[i].ExtraBody = cloneExtraBody(p.ExtraBody)
+		}
+	}
+	return dst
+}
+
+func cloneExtraBody(src map[string]any) map[string]any {
+	encoded, err := json.Marshal(src)
+	if err != nil {
+		dst := make(map[string]any, len(src))
+		for k, v := range src {
+			dst[k] = v
+		}
+		return dst
+	}
+	var dst map[string]any
+	_ = json.Unmarshal(encoded, &dst)
 	return dst
 }
 
