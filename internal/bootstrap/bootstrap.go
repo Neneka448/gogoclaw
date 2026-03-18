@@ -7,6 +7,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/agent"
 	"github.com/Neneka448/gogoclaw/internal/channels"
+	cliauth "github.com/Neneka448/gogoclaw/internal/cli/auth"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	appcontext "github.com/Neneka448/gogoclaw/internal/context"
 	"github.com/Neneka448/gogoclaw/internal/cron"
@@ -53,7 +54,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	cronService := cron.NewCronService(resolver, cronManager, func(request cron.ExecutionRequest) error {
 		return executeCronRequest(invoker, request)
 	}, cronLocation)
-	invoker, err = agent.NewInvocationService(configManager, messageBus, channelRegistry, cronService, cronConfig.Enabled)
+	invoker, err = agent.NewInvocationService(configManager, messageBus, channelRegistry, cronService, cronConfig.Enabled, codexTokenProvider{})
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +71,16 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	gateway := gateway.NewGateway(sysContext)
 
 	return &gateway, nil
+}
+
+type codexTokenProvider struct{}
+
+func (codexTokenProvider) GetToken() (string, string, error) {
+	token, err := cliauth.GetCodexToken()
+	if err != nil {
+		return "", "", err
+	}
+	return token.Access, token.AccountID, nil
 }
 
 func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, error) {

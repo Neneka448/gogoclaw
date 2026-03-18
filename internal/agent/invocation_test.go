@@ -6,7 +6,14 @@ import (
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
+	"github.com/Neneka448/gogoclaw/internal/provider"
 )
+
+type stubCodexTokenProvider struct{}
+
+func (stubCodexTokenProvider) GetToken() (string, string, error) {
+	return "access-token", "account-123", nil
+}
 
 func TestInvocationServiceEvictsRuntimeAfterInitializationFailure(t *testing.T) {
 	configPath := writeTestConfig(t)
@@ -25,7 +32,7 @@ func TestInvocationServiceEvictsRuntimeAfterInitializationFailure(t *testing.T) 
 		_ = os.Unsetenv("GOGOCLAW_SQLITE_VEC_PATH")
 	}()
 
-	rawService, err := NewInvocationService(configManager, nil, nil, nil, false)
+	rawService, err := NewInvocationService(configManager, nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
 	if err != nil {
 		t.Fatalf("NewInvocationService() error = %v", err)
 	}

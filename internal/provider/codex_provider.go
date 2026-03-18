@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	cliauth "github.com/Neneka448/gogoclaw/internal/cli/auth"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -30,12 +29,19 @@ type openAICompatibleProvider struct {
 	timeout time.Duration
 }
 
-func NewOpenAICompatibleProvider(providerConfig *config.ProviderConfig) (LLMProviderOpenaiCompatible, error) {
+func NewOpenAICompatibleProvider(providerConfig *config.ProviderConfig, tokenProvider TokenProvider) (LLMProviderOpenaiCompatible, error) {
 	if providerConfig == nil {
 		return nil, fmt.Errorf("provider config is nil")
 	}
 	if providerConfig.Name == "codex" {
-		return &codexProvider{timeout: providerTimeout(providerConfig.Timeout)}, nil
+		if tokenProvider == nil {
+			return nil, fmt.Errorf("codex token provider is required")
+		}
+		return &codexProvider{
+			timeout:       providerTimeout(providerConfig.Timeout),
+			tokenProvider: tokenProvider,
+			endpoint:      defaultCodexURL,
+		}, nil
 	}
 
 	clientConfig := openai.DefaultConfig(providerConfig.Auth.Token)
@@ -59,7 +65,9 @@ func NewOpenAICompatibleProvider(providerConfig *config.ProviderConfig) (LLMProv
 }
 
 type codexProvider struct {
-	timeout time.Duration
+	timeout       time.Duration
+	tokenProvider TokenProvider
+	endpoint      string
 }
 
 func (provider *openAICompatibleProvider) ChatCompletion(params openai.ChatCompletionRequest) (LLMCommonResponse, error) {
@@ -75,7 +83,11 @@ func (provider *openAICompatibleProvider) ChatCompletion(params openai.ChatCompl
 }
 
 func (provider *codexProvider) ChatCompletion(params openai.ChatCompletionRequest) (LLMCommonResponse, error) {
-	token, err := cliauth.GetCodexToken()
+	if provider.tokenProvider == nil {
+		return nil, fmt.Errorf("codex token provider is required")
+	}
+
+	accessToken, accountID, err := provider.tokenProvider.GetToken()
 	if err != nil {
 		return nil, err
 	}
@@ -104,11 +116,15 @@ func (provider *codexProvider) ChatCompletion(params openai.ChatCompletionReques
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, defaultCodexURL, strings.NewReader(string(encodedBody)))
+	endpoint := provider.endpoint
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = defaultCodexURL
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, strings.NewReader(string(encodedBody)))
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range buildCodexHeaders(token.AccountID, token.Access) {
+	for key, value := range buildCodexHeaders(accountID, accessToken) {
 		req.Header.Set(key, value)
 	}
 

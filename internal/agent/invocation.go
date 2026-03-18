@@ -31,6 +31,7 @@ type invocationService struct {
 	defaultChannelRegistry channels.Registry
 	cronService            cron.Service
 	cronEnabled            bool
+	codexTokenProvider     provider.TokenProvider
 	mu                     sync.Mutex
 	runtimes               map[string]*profileRuntime
 }
@@ -52,7 +53,7 @@ type profileRuntime struct {
 	startErr               error
 }
 
-func NewInvocationService(configManager config.ConfigManager, defaultMessageBus messagebus.MessageBus, defaultChannelRegistry channels.Registry, cronService cron.Service, cronEnabled bool) (appcontext.InvocationService, error) {
+func NewInvocationService(configManager config.ConfigManager, defaultMessageBus messagebus.MessageBus, defaultChannelRegistry channels.Registry, cronService cron.Service, cronEnabled bool, codexTokenProvider provider.TokenProvider) (appcontext.InvocationService, error) {
 	if configManager == nil {
 		return nil, fmt.Errorf("config manager is required")
 	}
@@ -62,6 +63,7 @@ func NewInvocationService(configManager config.ConfigManager, defaultMessageBus 
 		defaultChannelRegistry: defaultChannelRegistry,
 		cronService:            cronService,
 		cronEnabled:            cronEnabled,
+		codexTokenProvider:     codexTokenProvider,
 		runtimes:               make(map[string]*profileRuntime),
 	}, nil
 }
@@ -244,7 +246,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 	if err != nil {
 		return nil, err
 	}
-	llmProvider, err := provider.NewOpenAICompatibleProvider(providerConfig)
+	llmProvider, err := provider.NewOpenAICompatibleProvider(providerConfig, service.codexTokenProvider)
 	if err != nil {
 		return nil, err
 	}
