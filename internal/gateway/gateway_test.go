@@ -242,9 +242,7 @@ func TestGatewayDirectProcessAndReturnEmitsMemoryProgressOnNew(t *testing.T) {
 	if err := currentSession.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "history"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushGatewaySessionForTest(t, currentSession)
 
 	bus := messagebus.NewMessageBus()
 	memoryService := &fakeGatewayMemoryService{}
@@ -319,6 +317,13 @@ type fakeGatewayMemoryService struct {
 	sessionIDs      []string
 }
 
+func mustFlushGatewaySessionForTest(t *testing.T, currentSession session.Session) {
+	t.Helper()
+	if err := currentSession.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 type fakeGatewayCronService struct {
 	manager   *fakeGatewayCronManager
 	loadCalls int
@@ -337,7 +342,6 @@ func (manager *fakeGatewayCronManager) RegisterCron(cronTask cron.Cron) error {
 func (manager *fakeGatewayCronManager) GetCron(cronID string) (cron.Cron, error) {
 	return nil, cron.ErrCronNotFound
 }
-
 
 func (manager *fakeGatewayCronManager) DeleteCron(cronID string) error {
 	return nil
@@ -907,9 +911,7 @@ func TestGatewayEnsureRuntimeReadyDoesNotIngestDirtySessions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushGatewaySessionForTest(t, currentSession)
 
 	memoryService := &fakeGatewayMemoryService{}
 	gw := &gateway{
@@ -952,9 +954,7 @@ func TestGatewayStopDoesNotIngestDirtySessions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendMessages() error = %v", err)
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushGatewaySessionForTest(t, currentSession)
 
 	memoryService := &fakeGatewayMemoryService{}
 	gw := NewGateway(appcontext.SystemContext{
