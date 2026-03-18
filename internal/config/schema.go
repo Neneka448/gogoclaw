@@ -89,11 +89,13 @@ type ProfileConfig struct {
 }
 
 type ProviderConfig struct {
-	Name    string     `json:"name"`
-	Timeout int        `json:"timeout"`
-	BaseURL string     `json:"baseURL"`
-	Path    string     `json:"path"`
-	Auth    AuthConfig `json:"auth"`
+	Name      string            `json:"name"`
+	Timeout   int               `json:"timeout"`
+	BaseURL   string            `json:"baseURL"`
+	Path      string            `json:"path"`
+	Auth      AuthConfig        `json:"auth"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	ExtraBody map[string]any    `json:"extraBody,omitempty"`
 }
 
 type AuthConfig struct {

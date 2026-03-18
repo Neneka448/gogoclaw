@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -24,62 +22,21 @@ const (
 	defaultCodexOriginator = "gogoclaw"
 )
 
-type openAICompatibleProvider struct {
-	client  *openai.Client
-	timeout time.Duration
-}
-
-func NewOpenAICompatibleProvider(providerConfig *config.ProviderConfig, tokenProvider TokenProvider) (LLMProviderOpenaiCompatible, error) {
-	if providerConfig == nil {
-		return nil, fmt.Errorf("provider config is nil")
-	}
-	if providerConfig.Name == "codex" {
-		if tokenProvider == nil {
-			return nil, fmt.Errorf("codex token provider is required")
-		}
-		return &codexProvider{
-			timeout:       providerTimeout(providerConfig.Timeout),
-			tokenProvider: tokenProvider,
-			endpoint:      defaultCodexURL,
-		}, nil
-	}
-
-	clientConfig := openai.DefaultConfig(providerConfig.Auth.Token)
-	baseURL, err := resolveProviderBaseURL(providerConfig)
-	if err != nil {
-		return nil, err
-	}
-	if baseURL != "" {
-		clientConfig.BaseURL = baseURL
-	}
-
-	timeout := time.Duration(providerConfig.Timeout) * time.Second
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-
-	return &openAICompatibleProvider{
-		client:  openai.NewClientWithConfig(clientConfig),
-		timeout: timeout,
-	}, nil
-}
-
 type codexProvider struct {
 	timeout       time.Duration
 	tokenProvider TokenProvider
 	endpoint      string
 }
 
-func (provider *openAICompatibleProvider) ChatCompletion(params openai.ChatCompletionRequest) (LLMCommonResponse, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), provider.timeout)
-	defer cancel()
-
-	response, err := provider.client.CreateChatCompletion(ctx, params)
-	if err != nil {
-		return nil, err
+func newCodexProvider(providerConfig *config.ProviderConfig, tokenProvider TokenProvider) (LLMProviderOpenaiCompatible, error) {
+	if tokenProvider == nil {
+		return nil, fmt.Errorf("codex token provider is required")
 	}
-
-	return NormalizeOpenaiResponse(response), nil
+	return &codexProvider{
+		timeout:       providerTimeout(providerConfig.Timeout),
+		tokenProvider: tokenProvider,
+		endpoint:      defaultCodexURL,
+	}, nil
 }
 
 func (provider *codexProvider) ChatCompletion(params openai.ChatCompletionRequest) (LLMCommonResponse, error) {
@@ -139,42 +96,6 @@ func (provider *codexProvider) ChatCompletion(params openai.ChatCompletionReques
 	}
 
 	return consumeCodexSSE(resp.Body)
-}
-
-func resolveProviderBaseURL(providerConfig *config.ProviderConfig) (string, error) {
-	baseURL := strings.TrimSpace(providerConfig.BaseURL)
-	if baseURL == "" {
-		switch providerConfig.Name {
-		case "openrouter":
-			baseURL = "https://openrouter.ai/api/v1"
-		case "codex":
-			baseURL = "https://api.openai.com/v1"
-		case "voyageai":
-			baseURL = "https://api.voyageai.com/v1"
-		}
-	}
-
-	if strings.TrimSpace(providerConfig.Path) == "" {
-		return baseURL, nil
-	}
-	if baseURL == "" {
-		return "", fmt.Errorf("provider %s path configured without base url", providerConfig.Name)
-	}
-
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("parse provider base url: %w", err)
-	}
-	parsed.Path = path.Join(parsed.Path, providerConfig.Path)
-	return parsed.String(), nil
-}
-
-func providerTimeout(timeoutSeconds int) time.Duration {
-	timeout := time.Duration(timeoutSeconds) * time.Second
-	if timeout <= 0 {
-		return 60 * time.Second
-	}
-	return timeout
 }
 
 func stripModelPrefix(model string) string {
