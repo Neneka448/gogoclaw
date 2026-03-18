@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,61 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+type fakeSessionStore struct {
+	snapshot      SessionFile
+	loadErr       error
+	saveErr       error
+	appendErr     error
+	saveMetaErr   error
+	archiveErr    error
+	archiveWrites []SessionFile
+}
+
+func (store *fakeSessionStore) Load(sessionID string, senderID string) (SessionFile, error) {
+	if store.loadErr != nil {
+		return SessionFile{}, store.loadErr
+	}
+	return store.snapshot, nil
+}
+
+func (store *fakeSessionStore) Save(sessionID string, snapshot SessionFile) error {
+	if store.saveErr != nil {
+		return store.saveErr
+	}
+	store.snapshot = snapshot
+	return nil
+}
+
+func (store *fakeSessionStore) AppendMessages(sessionID string, revision uint64, messages []openai.ChatCompletionMessage) error {
+	if store.appendErr != nil {
+		return store.appendErr
+	}
+	store.snapshot.Messages = append(store.snapshot.Messages, messages...)
+	store.snapshot.Revision = revision
+	return nil
+}
+
+func (store *fakeSessionStore) SaveMetadata(sessionID string, revision uint64, meta SessionMeta) error {
+	if store.saveMetaErr != nil {
+		return store.saveMetaErr
+	}
+	store.snapshot.Meta = meta
+	store.snapshot.Revision = revision
+	return nil
+}
+
+func (store *fakeSessionStore) Archive(sessionID string, snapshot SessionFile) error {
+	if store.archiveErr != nil {
+		return store.archiveErr
+	}
+	store.archiveWrites = append(store.archiveWrites, snapshot)
+	return nil
+}
+
+func (store *fakeSessionStore) ListSessionIDs() ([]string, error) {
+	return nil, nil
+}
 
 func newSessionManagerForTest(t *testing.T, workspace string) SessionManager {
 	t.Helper()
@@ -172,6 +228,28 @@ func TestSessionInitializesJSONFile(t *testing.T) {
 	}
 }
 
+func TestSessionAppendMessagePersistsImmediately(t *testing.T) {
+	workspace := t.TempDir()
+	manager := newSessionManagerForTest(t, workspace)
+	currentSession, err := manager.GetOrCreateSession("telegram:chat-1", "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "persist now"}); err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	reloadedManager := newSessionManagerForTest(t, workspace)
+	reloadedSession, err := reloadedManager.GetOrCreateSession("telegram:chat-1", "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() after append error = %v", err)
+	}
+	messages := reloadedSession.GetMessages(10)
+	if len(messages) != 1 || messages[0].Content != "persist now" {
+		t.Fatalf("Messages = %#v, want one persisted message", messages)
+	}
+}
+
 func TestSessionUpdateMetadataPersistsType(t *testing.T) {
 	workspace := t.TempDir()
 	manager := newSessionManagerForTest(t, workspace)
@@ -183,11 +261,17 @@ func TestSessionUpdateMetadataPersistsType(t *testing.T) {
 		t.Fatalf("UpdateMetadata() error = %v", err)
 	}
 
+	reloadedManager := newSessionManagerForTest(t, workspace)
+	reloadedSession, err := reloadedManager.GetOrCreateSession("cli:default", "user-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() after metadata update error = %v", err)
+	}
+	mustFlushSessionForTest(t, reloadedSession)
+
 	content, err := os.ReadFile(filepath.Join(workspace, "sessions", "cli:default.json"))
 	if err != nil {
 		t.Fatalf("os.ReadFile() error = %v", err)
 	}
-
 	var data SessionFile
 	if err := json.Unmarshal(content, &data); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
@@ -334,5 +418,87 @@ func TestSessionArchiveAndReset(t *testing.T) {
 	}
 	if len(cleared.Messages) != 0 {
 		t.Fatalf("len(cleared.Messages) = %d, want 0", len(cleared.Messages))
+	}
+}
+
+func TestManagedSessionAppendDoesNotAdvanceOnPersistFailure(t *testing.T) {
+	store := &fakeSessionStore{appendErr: errors.New("append failed")}
+	current := newManagedSession(store, newSessionStateFromSnapshot("session-1", "user-1", SessionFile{
+		Meta: SessionMeta{
+			SessionKey: "session-1",
+			SenderID:   "user-1",
+		},
+		Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "keep"}},
+	}))
+
+	if err := current.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "drop"}); err == nil {
+		t.Fatal("AppendMessage() error = nil, want persist failure")
+	}
+
+	messages := current.GetMessages(10)
+	if len(messages) != 1 || messages[0].Content != "keep" {
+		t.Fatalf("Messages = %#v, want original state after failure", messages)
+	}
+}
+
+func TestManagedSessionMarkMemoryIngestedDoesNotAdvanceOnPersistFailure(t *testing.T) {
+	store := &fakeSessionStore{saveMetaErr: errors.New("save metadata failed")}
+	current := newManagedSession(store, newSessionStateFromSnapshot("session-1", "user-1", SessionFile{
+		Meta: SessionMeta{
+			SessionKey:     "session-1",
+			SenderID:       "user-1",
+			IngestedDigest: "old-digest",
+		},
+	}))
+
+	if err := current.MarkMemoryIngested("new-digest"); err == nil {
+		t.Fatal("MarkMemoryIngested() error = nil, want persist failure")
+	}
+	if got := current.GetMemoryIngestedDigest(); got != "old-digest" {
+		t.Fatalf("GetMemoryIngestedDigest() = %q, want old-digest", got)
+	}
+}
+
+func TestManagedSessionArchiveAndResetDoesNotAdvanceOnArchiveFailure(t *testing.T) {
+	store := &fakeSessionStore{archiveErr: errors.New("archive failed")}
+	current := newManagedSession(store, newSessionStateFromSnapshot("session-1", "user-1", SessionFile{
+		Meta: SessionMeta{
+			SessionKey:     "session-1",
+			SenderID:       "user-1",
+			IngestedDigest: "digest",
+		},
+		Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "keep"}},
+	}))
+
+	if err := current.ArchiveAndReset(); err == nil {
+		t.Fatal("ArchiveAndReset() error = nil, want archive failure")
+	}
+	if got := current.GetMessages(10); len(got) != 1 || got[0].Content != "keep" {
+		t.Fatalf("Messages = %#v, want original state after archive failure", got)
+	}
+	if got := current.GetMemoryIngestedDigest(); got != "digest" {
+		t.Fatalf("GetMemoryIngestedDigest() = %q, want digest", got)
+	}
+}
+
+func TestManagedSessionArchiveAndResetDoesNotAdvanceOnResetPersistFailure(t *testing.T) {
+	store := &fakeSessionStore{saveErr: errors.New("save failed")}
+	current := newManagedSession(store, newSessionStateFromSnapshot("session-1", "user-1", SessionFile{
+		Meta: SessionMeta{
+			SessionKey:     "session-1",
+			SenderID:       "user-1",
+			IngestedDigest: "digest",
+		},
+		Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "keep"}},
+	}))
+
+	if err := current.ArchiveAndReset(); err == nil {
+		t.Fatal("ArchiveAndReset() error = nil, want save failure")
+	}
+	if got := current.GetMessages(10); len(got) != 1 || got[0].Content != "keep" {
+		t.Fatalf("Messages = %#v, want original state after save failure", got)
+	}
+	if got := current.GetMemoryIngestedDigest(); got != "digest" {
+		t.Fatalf("GetMemoryIngestedDigest() = %q, want digest", got)
 	}
 }
