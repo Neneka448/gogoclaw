@@ -5,12 +5,10 @@ import (
 	"io"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Neneka448/gogoclaw/internal/agent"
 	"github.com/Neneka448/gogoclaw/internal/context"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/session"
@@ -19,6 +17,7 @@ import (
 var stderrWriter io.Writer = os.Stderr
 
 const minimumGatewayWorkerCount = 2
+const defaultGatewayShutdownTimeout = 30 * time.Second
 
 type sessionMailbox struct {
 	pending []messagebus.Message
@@ -35,47 +34,38 @@ type Gateway interface {
 }
 
 type gateway struct {
-	context             context.SystemContext
-	inboundStopCh       chan struct{}
-	mu                  sync.Mutex
-	started             bool
-	inboundWG           sync.WaitGroup
-	outboundWG          sync.WaitGroup
-	workerWG            sync.WaitGroup
-	workerCount         int
-	schedulerMu         sync.Mutex
-	schedulerCond       *sync.Cond
-	schedulerStopping   bool
-	sessionMailboxes    map[string]*sessionMailbox
-	readySessions       []string
+	context           context.SystemContext
+	inboundStopCh     chan struct{}
+	mu                sync.Mutex
+	started           bool
+	inboundWG         sync.WaitGroup
+	outboundWG        sync.WaitGroup
+	workerWG          sync.WaitGroup
+	workerCount       int
+	shutdownTimeout   time.Duration
+	schedulerMu       sync.Mutex
+	schedulerCond     *sync.Cond
+	schedulerStopping bool
+	sessionMailboxes  map[string]*sessionMailbox
+	readySessions     []string
 }
 
-func NewGateway(context context.SystemContext) Gateway {
+func NewGateway(context context.SystemContext) (Gateway, error) {
+	if context.Invoker == nil {
+		return nil, fmt.Errorf("gateway invoker is required")
+	}
 	gateway := &gateway{
 		context:          context,
 		inboundStopCh:    make(chan struct{}),
 		workerCount:      defaultGatewayWorkerCount(),
+		shutdownTimeout:  defaultGatewayShutdownTimeout,
 		sessionMailboxes: make(map[string]*sessionMailbox),
 	}
 	gateway.schedulerCond = sync.NewCond(&gateway.schedulerMu)
-	return gateway
+	return gateway, nil
 }
 
 func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.Message, error) {
-	if g.context.SessionManager == nil {
-		return nil, nil
-	}
-
-	_, err := g.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(msg.Message) == "" {
-		return nil, nil
-	}
-	if err := g.ensureRuntimeReady(); err != nil {
-		return nil, err
-	}
 	outboundQueue, err := g.context.MessageBus.Get(messagebus.OutboundQueue)
 	if err != nil {
 		return nil, err
@@ -87,17 +77,12 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 }
 
 func (g *gateway) startAgentLoop(msg messagebus.Message) <-chan error {
-	agentLoop := agent.NewAgentLoop(g.context)
-	errCh := make(chan error, 1)
-	go func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				errCh <- fmt.Errorf("agent loop panic: %v\n%s", recovered, debug.Stack())
-			}
-		}()
-		errCh <- agentLoop.ProcessMessage(msg)
-	}()
-
+	errCh, err := g.context.Invoker.InvokeAsync(buildInvocationRequest(msg, context.InvocationModeForeground))
+	if err != nil {
+		failed := make(chan error, 1)
+		failed <- err
+		return failed
+	}
 	return errCh
 }
 
@@ -172,22 +157,13 @@ func (g *gateway) Start() error {
 	g.started = true
 	g.mu.Unlock()
 
-	if err := g.ensureRuntimeReady(); err != nil {
-		g.mu.Lock()
-		g.started = false
-		g.mu.Unlock()
-		return err
+	if err := g.ensureDefaultProfileReady(); err != nil {
+		return g.failStart(err)
 	}
 
 	if g.context.CronService != nil && g.context.CronEnabled {
 		if err := g.context.CronService.LoadAll(); err != nil {
-			if g.context.VectorStore != nil {
-				_ = g.context.VectorStore.Stop()
-			}
-			g.mu.Lock()
-			g.started = false
-			g.mu.Unlock()
-			return err
+			return g.failStart(err)
 		}
 		if crons, err := g.context.CronService.ListCrons(); err == nil {
 			if len(crons) == 0 {
@@ -204,13 +180,7 @@ func (g *gateway) Start() error {
 			}
 		}
 		if err := g.context.CronService.Start(); err != nil {
-			if g.context.VectorStore != nil {
-				_ = g.context.VectorStore.Stop()
-			}
-			g.mu.Lock()
-			g.started = false
-			g.mu.Unlock()
-			return err
+			return g.failStart(err)
 		}
 		_, _ = fmt.Fprintf(stderrWriter, "[cron] scheduler started\n")
 	}
@@ -220,13 +190,7 @@ func (g *gateway) Start() error {
 			if g.context.CronService != nil {
 				_ = g.context.CronService.Stop()
 			}
-			if g.context.VectorStore != nil {
-				_ = g.context.VectorStore.Stop()
-			}
-			g.mu.Lock()
-			g.started = false
-			g.mu.Unlock()
-			return err
+			return g.failStart(err)
 		}
 	}
 
@@ -235,26 +199,14 @@ func (g *gateway) Start() error {
 		if g.context.CronService != nil {
 			_ = g.context.CronService.Stop()
 		}
-		if g.context.VectorStore != nil {
-			_ = g.context.VectorStore.Stop()
-		}
-		g.mu.Lock()
-		g.started = false
-		g.mu.Unlock()
-		return err
+		return g.failStart(err)
 	}
 	outboundQueue, err := g.context.MessageBus.Get(messagebus.OutboundQueue)
 	if err != nil {
 		if g.context.CronService != nil {
 			_ = g.context.CronService.Stop()
 		}
-		if g.context.VectorStore != nil {
-			_ = g.context.VectorStore.Stop()
-		}
-		g.mu.Lock()
-		g.started = false
-		g.mu.Unlock()
-		return err
+		return g.failStart(err)
 	}
 
 	stopCh := g.inboundStopCh
@@ -267,6 +219,14 @@ func (g *gateway) Start() error {
 	g.outboundWG.Add(1)
 	go g.consumeOutboundMessages(outboundQueue)
 	return nil
+}
+
+func (g *gateway) failStart(startErr error) error {
+	_ = g.context.Invoker.Close()
+	g.mu.Lock()
+	g.started = false
+	g.mu.Unlock()
+	return startErr
 }
 
 func (g *gateway) consumeInboundMessages(stopCh <-chan struct{}, inboundQueue <-chan messagebus.Message) {
@@ -323,13 +283,17 @@ func (g *gateway) Stop() error {
 	if started && stopCh != nil {
 		close(stopCh)
 	}
-	g.inboundWG.Wait()
+	if err := waitForShutdown(&g.inboundWG, g.shutdownTimeout, "inbound consumer"); err != nil {
+		return err
+	}
 
 	g.schedulerMu.Lock()
 	g.schedulerStopping = true
 	g.schedulerCond.Broadcast()
 	g.schedulerMu.Unlock()
-	g.workerWG.Wait()
+	if err := waitForShutdown(&g.workerWG, g.shutdownTimeout, "session workers"); err != nil {
+		return err
+	}
 
 	if g.context.SessionManager != nil {
 		if err := g.context.SessionManager.Close(); err != nil {
@@ -341,13 +305,21 @@ func (g *gateway) Stop() error {
 			return err
 		}
 	}
-	g.outboundWG.Wait()
+	if err := waitForShutdown(&g.outboundWG, g.shutdownTimeout, "outbound consumer"); err != nil {
+		return err
+	}
 
 	if g.context.ChannelRegistry != nil {
 		g.context.ChannelRegistry = nil
 	}
 	if g.context.CronService != nil {
 		g.context.CronService = nil
+	}
+	if g.context.Invoker != nil {
+		if err := g.context.Invoker.Close(); err != nil {
+			return err
+		}
+		g.context.Invoker = nil
 	}
 	if g.context.VectorStore != nil {
 		if err := g.context.VectorStore.Stop(); err != nil {
@@ -369,23 +341,8 @@ func (g *gateway) Stop() error {
 	return nil
 }
 
-func (g *gateway) ensureRuntimeReady() error {
-	if g.context.VectorStore != nil {
-		if err := g.context.VectorStore.Start(); err != nil {
-			return err
-		}
-	}
-
-	if g.context.MemoryService != nil && g.context.MemoryEnabled {
-		if err := g.context.MemoryService.Initialize(); err != nil {
-			if g.context.VectorStore != nil {
-				_ = g.context.VectorStore.Stop()
-			}
-			return err
-		}
-	}
-
-	return nil
+func (g *gateway) ensureDefaultProfileReady() error {
+	return g.context.Invoker.EnsureProfile("default")
 }
 
 func (g *gateway) enqueueInboundMessage(message messagebus.Message) error {
@@ -417,11 +374,30 @@ func (g *gateway) runInboundWorker() {
 		if !ok {
 			return
 		}
-		if err := agent.NewAgentLoop(g.context).ProcessMessage(message); err != nil {
+		if err := g.context.Invoker.Invoke(buildInvocationRequest(message, context.InvocationModeBackground)); err != nil {
 			g.logBackgroundError("inbound", message, err)
 		}
 		g.completeInboundMessage(sessionID)
 	}
+}
+
+func buildInvocationRequest(msg messagebus.Message, mode context.InvocationMode) context.InvocationRequest {
+	return context.InvocationRequest{
+		ProfileName: profileNameForMessage(msg),
+		Message:     msg,
+		Mode:        mode,
+	}
+}
+
+func profileNameForMessage(msg messagebus.Message) string {
+	if msg.Metadata == nil {
+		return "default"
+	}
+	name := strings.TrimSpace(msg.Metadata["agent_profile"])
+	if name == "" {
+		return "default"
+	}
+	return name
 }
 
 func (g *gateway) nextInboundMessage() (string, messagebus.Message, bool) {
@@ -519,7 +495,6 @@ func (g *gateway) resetSchedulerStateLocked() {
 	clear(g.sessionMailboxes)
 }
 
-
 func (g *gateway) logBackgroundError(direction string, message messagebus.Message, err error) {
 	if err == nil {
 		return
@@ -541,4 +516,26 @@ func defaultGatewayWorkerCount() int {
 		return minimumGatewayWorkerCount
 	}
 	return count
+}
+
+func waitForShutdown(wg *sync.WaitGroup, timeout time.Duration, phase string) error {
+	if timeout <= 0 {
+		timeout = defaultGatewayShutdownTimeout
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("gateway shutdown timed out after %s waiting for %s", timeout, phase)
+	}
 }

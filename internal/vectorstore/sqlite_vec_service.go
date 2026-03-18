@@ -87,7 +87,6 @@ type Service interface {
 	Start() error
 	Stop() error
 	Path() string
-	DB() *sql.DB
 	Upsert(request UpsertRequest) error
 	Delete(request DeleteRequest) error
 	SearchTopK(request SearchRequest) ([]SearchResult, error)
@@ -197,13 +196,6 @@ func (service *sqliteVecService) Path() string {
 	defer service.mu.Unlock()
 
 	return service.dbPath
-}
-
-func (service *sqliteVecService) DB() *sql.DB {
-	service.mu.Lock()
-	defer service.mu.Unlock()
-
-	return service.db
 }
 
 func (service *sqliteVecService) Upsert(request UpsertRequest) error {

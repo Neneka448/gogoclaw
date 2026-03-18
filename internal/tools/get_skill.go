@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Neneka448/gogoclaw/internal/skills"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -76,9 +77,5 @@ func (tool *GetSkillTool) Execute(args string) (string, error) {
 }
 
 func encodeGetSkillResult(result getSkillResult) (string, error) {
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
+	return utils.EncodeJSON(result)
 }

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
+	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
@@ -28,7 +28,8 @@ type FeishuChannel struct {
 	workspace  string
 	client     *lark.Client
 	wsClient   *larkws.Client
-	startOnce  sync.Once
+	cancelFunc context.CancelFunc
+	wsDone     chan struct{}
 	started    bool
 	accepting  bool
 	mu         sync.Mutex
@@ -110,38 +111,63 @@ func (c *FeishuChannel) Start() error {
 		return fmt.Errorf("feishu channel requires appId and appSecret")
 	}
 
-	var startErr error
-	c.startOnce.Do(func() {
-		c.client = lark.NewClient(c.config.AppID, c.config.AppSecret)
-		eventHandler := dispatcher.NewEventDispatcher(c.config.VerificationToken, c.config.EncryptKey).
-			OnP2MessageReceiveV1(c.handleMessageReceive)
-
-		c.wsClient = larkws.NewClient(
-			c.config.AppID,
-			c.config.AppSecret,
-			larkws.WithEventHandler(eventHandler),
-			larkws.WithLogLevel(larkcore.LogLevelError),
-		)
-		c.mu.Lock()
-		c.started = true
-		c.accepting = true
+	c.mu.Lock()
+	if c.started {
 		c.mu.Unlock()
-		go func() {
-			_ = c.wsClient.Start(context.Background())
-		}()
-	})
+		return nil
+	}
 
-	return startErr
+	c.client = lark.NewClient(c.config.AppID, c.config.AppSecret)
+	eventHandler := dispatcher.NewEventDispatcher(c.config.VerificationToken, c.config.EncryptKey).
+		OnP2MessageReceiveV1(c.handleMessageReceive)
+
+	c.wsClient = larkws.NewClient(
+		c.config.AppID,
+		c.config.AppSecret,
+		larkws.WithEventHandler(eventHandler),
+		larkws.WithLogLevel(larkcore.LogLevelError),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancelFunc = cancel
+	done := make(chan struct{})
+	c.wsDone = done
+	c.started = true
+	c.accepting = true
+	c.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		_ = c.wsClient.Start(ctx)
+	}()
+
+	return nil
 }
 
 func (c *FeishuChannel) Stop() error {
 	c.mu.Lock()
 	c.accepting = false
+	cancel := c.cancelFunc
+	c.cancelFunc = nil
+	done := c.wsDone
+	c.wsDone = nil
+	c.started = false
 	c.mu.Unlock()
-	if err := c.flushAllToolCallBatches(); err != nil {
-		return err
+
+	if cancel != nil {
+		cancel()
 	}
-	return nil
+	// Best-effort wait for the WebSocket goroutine to exit.
+	// The larkws SDK's Start() blocks on select{} without checking ctx.Done(),
+	// so the goroutine may not exit until the process terminates.
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	}
+
+	return c.flushAllToolCallBatches()
 }
 
 func (c *FeishuChannel) Send(message messagebus.Message) error {
@@ -164,7 +190,7 @@ func (c *FeishuChannel) Send(message messagebus.Message) error {
 
 	receiveIDType := receiveIDTypeForChatID(message.ChatID)
 	for _, mediaPath := range mediaPaths {
-		if err := c.sendMediaMessage(receiveIDType, message.ChatID, mediaPath); err != nil {
+		if err := c.sendMediaMessage(receiveIDType, message.ChatID, mediaPath, message.Metadata); err != nil {
 			return err
 		}
 	}
@@ -552,78 +578,6 @@ func flattenFeishuPostBlock(content map[string]any) string {
 	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
-func firstString(payload map[string]any, paths ...string) string {
-	for _, path := range paths {
-		current := any(payload)
-		matched := true
-		for _, part := range strings.Split(path, ".") {
-			next, ok := current.(map[string]any)
-			if !ok {
-				matched = false
-				break
-			}
-			current, ok = next[part]
-			if !ok {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			switch value := current.(type) {
-			case string:
-				return value
-			}
-		}
-	}
-	return ""
-}
-
-func getAnySliceByPath(payload map[string]any, path string) []any {
-	current := any(payload)
-	for _, part := range strings.Split(path, ".") {
-		next, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		current, ok = next[part]
-		if !ok {
-			return nil
-		}
-	}
-	values, ok := current.([]any)
-	if !ok {
-		return nil
-	}
-	return values
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func uniqueNonEmpty(values []string) []string {
-	result := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		result = append(result, trimmed)
-	}
-	sort.Strings(result)
-	return result
-}
-
 func buildFeishuOutboundContent(content string) (string, string, error) {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
@@ -871,15 +825,6 @@ func outboundMediaPaths(message messagebus.Message) []string {
 	return nil
 }
 
-func cloneStringSlice(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := make([]string, len(values))
-	copy(cloned, values)
-	return cloned
-}
-
 func isLocalFilePath(path string) bool {
 	if strings.TrimSpace(path) == "" {
 		return false
@@ -888,8 +833,8 @@ func isLocalFilePath(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string, mediaPath string) error {
-	resolvedPath, ok := c.resolveMediaPath(mediaPath)
+func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string, mediaPath string, metadata map[string]string) error {
+	resolvedPath, ok := c.resolveMediaPath(mediaPath, metadata)
 	if !ok {
 		return fmt.Errorf("feishu media path not found: %s", mediaPath)
 	}
@@ -917,34 +862,26 @@ func (c *FeishuChannel) sendMediaMessage(receiveIDType string, receiveID string,
 	return c.sendMessage(receiveIDType, receiveID, messageType, string(payload))
 }
 
-func (c *FeishuChannel) resolveMediaPath(mediaPath string) (string, bool) {
+func (c *FeishuChannel) resolveMediaPath(mediaPath string, metadata map[string]string) (string, bool) {
 	trimmed := strings.TrimSpace(mediaPath)
 	if trimmed == "" {
 		return "", false
 	}
-	if isLocalFilePath(trimmed) {
-		resolved, err := filepath.Abs(trimmed)
-		if err != nil {
-			return trimmed, true
-		}
-		return resolved, true
-	}
-	if filepath.IsAbs(trimmed) {
-		return "", false
-	}
 	workspace := strings.TrimSpace(c.workspace)
+	if metadata != nil {
+		if runtimeWorkspace := strings.TrimSpace(metadata["workspace"]); runtimeWorkspace != "" {
+			workspace = runtimeWorkspace
+		}
+	}
 	if workspace == "" {
 		return "", false
 	}
-	candidate := filepath.Join(workspace, filepath.Clean(trimmed))
-	if !isLocalFilePath(candidate) {
+
+	resolvedPath, err := pathutil.ResolveWithinWorkspace(trimmed, workspace)
+	if err != nil || !isLocalFilePath(resolvedPath) {
 		return "", false
 	}
-	resolved, err := filepath.Abs(candidate)
-	if err != nil {
-		return candidate, true
-	}
-	return resolved, true
+	return resolvedPath, true
 }
 
 func (c *FeishuChannel) uploadImage(mediaPath string) (string, error) {

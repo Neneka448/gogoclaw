@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 type QueueType string
@@ -19,14 +20,28 @@ type MessageBus interface {
 	Close() error
 }
 
+type Options struct {
+	QueueSize  int
+	PutTimeout time.Duration
+}
+
 type messageBus struct {
 	mu            sync.RWMutex
 	closed        bool
 	inboundQueue  chan Message
 	outboundQueue chan Message
+	putTimeout    time.Duration
 }
 
-var errMessageBusClosed = errors.New("message bus is closed")
+const (
+	defaultQueueSize       = 1024
+	defaultMessageBusPutTO = time.Second
+)
+
+var (
+	ErrMessageBusClosed     = errors.New("message bus is closed")
+	ErrMessageBusPutTimeout = errors.New("message bus put timed out")
+)
 
 type Message struct {
 	ChannelID    string
@@ -42,9 +57,22 @@ type Message struct {
 }
 
 func NewMessageBus() MessageBus {
+	return NewMessageBusWithOptions(Options{})
+}
+
+func NewMessageBusWithOptions(options Options) MessageBus {
+	queueSize := options.QueueSize
+	if queueSize <= 0 {
+		queueSize = defaultQueueSize
+	}
+	putTimeout := options.PutTimeout
+	if putTimeout <= 0 {
+		putTimeout = defaultMessageBusPutTO
+	}
 	return &messageBus{
-		inboundQueue:  make(chan Message, 1024),
-		outboundQueue: make(chan Message, 1024),
+		inboundQueue:  make(chan Message, queueSize),
+		outboundQueue: make(chan Message, queueSize),
+		putTimeout:    putTimeout,
 	}
 }
 
@@ -55,24 +83,36 @@ func (mb *messageBus) Put(message Message, queueType QueueType) (err error) {
 	outboundQueue := mb.outboundQueue
 	mb.mu.RUnlock()
 	if closed {
-		return errMessageBusClosed
+		return ErrMessageBusClosed
 	}
 
 	defer func() {
 		if recover() != nil {
-			err = errMessageBusClosed
+			err = ErrMessageBusClosed
 		}
 	}()
 
+	timer := time.NewTimer(mb.putTimeout)
+	defer timer.Stop()
+
 	switch queueType {
 	case InboundQueue:
-		inboundQueue <- message
+		select {
+		case inboundQueue <- message:
+			return nil
+		case <-timer.C:
+			return fmt.Errorf("put inbound message after %s: %w", mb.putTimeout, ErrMessageBusPutTimeout)
+		}
 	case OutboundQueue:
-		outboundQueue <- message
+		select {
+		case outboundQueue <- message:
+			return nil
+		case <-timer.C:
+			return fmt.Errorf("put outbound message after %s: %w", mb.putTimeout, ErrMessageBusPutTimeout)
+		}
 	default:
 		return fmt.Errorf("unknown queue type: %s", queueType)
 	}
-	return nil
 }
 
 func (mb *messageBus) Get(queueType QueueType) (<-chan Message, error) {

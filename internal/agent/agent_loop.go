@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/context"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 	"github.com/Neneka448/gogoclaw/internal/session"
 	toolspkg "github.com/Neneka448/gogoclaw/internal/tools"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	Openai "github.com/sashabaranov/go-openai"
 )
 
@@ -33,15 +36,39 @@ const newSessionCommand = "/new"
 const newSessionReply = "🎸A new session has started"
 const memoryProgressMessage = "[memory]: short-term memory generating"
 
-func NewAgentLoop(context context.SystemContext) AgentLoop {
+func NewAgentLoop(context context.SystemContext) (AgentLoop, error) {
+	if context.CurrentSession == nil {
+		return nil, fmt.Errorf("agent loop requires current session")
+	}
+	runtime, err := normalizeRuntimeContext(context.Runtime)
+	if err != nil {
+		return nil, err
+	}
+	context.Runtime = runtime
 	return &agentLoop{
 		context: context,
-	}
+	}, nil
 }
 
 func (al *agentLoop) ProcessMessage(message messagebus.Message) error {
 	al.prepareToolsForTurn(message)
 	return al.loop(message)
+}
+
+func normalizeRuntimeContext(runtime context.RuntimeContext) (context.RuntimeContext, error) {
+	if strings.TrimSpace(runtime.ProfileName) == "" {
+		return context.RuntimeContext{}, fmt.Errorf("agent loop requires resolved runtime context")
+	}
+	if strings.TrimSpace(runtime.Workspace) == "" {
+		runtime.Workspace = strings.TrimSpace(runtime.Profile.Workspace)
+	}
+	if strings.TrimSpace(runtime.Workspace) == "" {
+		return context.RuntimeContext{}, fmt.Errorf("agent loop runtime requires workspace")
+	}
+	if strings.TrimSpace(string(runtime.InvocationMode)) == "" {
+		runtime.InvocationMode = context.InvocationModeForeground
+	}
+	return runtime, nil
 }
 
 func (al *agentLoop) buildTools() []Openai.Tool {
@@ -53,14 +80,8 @@ func (al *agentLoop) buildTools() []Openai.Tool {
 }
 
 func (al *agentLoop) loop(msg messagebus.Message) error {
-	config, err := al.context.ConfigManager.GetAgentProfileConfig("default")
-	if err != nil {
-		return err
-	}
-	currentSession, err := al.getOrCreateSession(msg, config.Workspace)
-	if err != nil {
-		return err
-	}
+	runtimeConfig := al.context.Runtime
+	currentSession := al.context.CurrentSession
 	if isNewSessionCommand(msg.Message) {
 		pending := al.prepareSessionMemoryIngestion(currentSession)
 		if pending != nil {
@@ -68,11 +89,15 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 				return err
 			}
 		}
-		al.ingestSessionMemory(currentSession, pending)
-		if _, err := currentSession.ArchiveAndReset(); err != nil {
+		ingestErr := al.ingestSessionMemory(currentSession, pending)
+		if err := currentSession.ArchiveAndReset(); err != nil {
 			return err
 		}
-		return al.publishDirectReply(msg, newSessionReply, "new_session")
+		reply := newSessionReply
+		if ingestErr != nil {
+			reply += "\n⚠️ Memory save failed: " + ingestErr.Error()
+		}
+		return al.publishDirectReply(msg, reply, "new_session")
 	}
 	if strings.TrimSpace(msg.Message) != "" {
 		if err := currentSession.AppendMessage(Openai.ChatCompletionMessage{
@@ -83,21 +108,25 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 		}
 	}
 
-	maxIterations := config.MaxToolIterations
+	maxIterations := runtimeConfig.Profile.MaxToolIterations
 	tools := al.buildTools()
 	completed := false
 
 	for i := 0; i < maxIterations; i++ {
-		messages := al.buildMessage(currentSession, config.MemoryWindow)
+		messages := al.buildMessage(currentSession, runtimeConfig.Profile.MemoryWindow)
 		params := provider.BuildOpenaiRequestParams(provider.ChatCompletionParams{
-			Model:               config.Model,
+			Model:               runtimeConfig.Profile.Model,
 			Messages:            messages,
-			MaxCompletionTokens: config.MaxTokens,
-			Temperature:         config.Temperature,
+			MaxCompletionTokens: runtimeConfig.Profile.MaxTokens,
+			Temperature:         runtimeConfig.Profile.Temperature,
 			Tools:               tools,
 		})
-		response, err := al.context.Provider.ChatCompletion(params)
+		t0 := time.Now()
+		utils.Perf("llm: request start (iteration %d)", i+1)
+		response, err := al.chatCompletionWithRetry(params, runtimeConfig.Profile.MaxRetryTimes)
+		utils.Perf("llm: response received (iteration %d), took %s", i+1, time.Since(t0))
 		if err != nil {
+			_ = al.publishDirectReply(msg, "⚠️ LLM request failed: "+err.Error(), "error")
 			return err
 		}
 
@@ -149,6 +178,27 @@ func isNewSessionCommand(message string) bool {
 	return strings.TrimSpace(message) == newSessionCommand
 }
 
+func (al *agentLoop) chatCompletionWithRetry(params Openai.ChatCompletionRequest, maxRetries int) (provider.LLMCommonResponse, error) {
+	if maxRetries < 1 {
+		maxRetries = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Int63n(int64(backoff)/2 + 1))
+			slog.Warn("llm: retrying after error", "attempt", attempt+1, "backoff", backoff+jitter, "error", lastErr)
+			time.Sleep(backoff + jitter)
+		}
+		response, err := al.context.Provider.ChatCompletion(params)
+		if err == nil {
+			return response, nil
+		}
+		lastErr = err
+	}
+	return provider.NormalizedResponse{}, lastErr
+}
+
 func (al *agentLoop) buildMessage(currentSession session.Session, memoryWindow int) []Openai.ChatCompletionMessage {
 	sessionMessages := currentSession.GetMessages(memoryWindow)
 	systemPrompt := al.buildSystemPrompt()
@@ -186,7 +236,7 @@ func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) []execut
 			continue
 		}
 
-		toolResponse, err := toolDescriptor.Tool.Execute(toolCall.Arguments)
+		toolResponse, err := al.executeToolWithTimeout(toolDescriptor, toolCall.Arguments)
 		if err != nil {
 			messages = append(messages, executedToolMessage{Message: buildToolCallOutputMessage(toolCall, buildToolExecutionErrorOutput(toolCall.Name, err))})
 			continue
@@ -200,6 +250,30 @@ func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) []execut
 	}
 
 	return messages
+}
+
+func (al *agentLoop) executeToolWithTimeout(descriptor toolspkg.ToolDescriptor, args string) (string, error) {
+	timeout := descriptor.Timeout
+	if timeout <= 0 {
+		timeout = toolspkg.DefaultToolExecutionTimeout
+	}
+
+	type result struct {
+		response string
+		err      error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		resp, err := descriptor.Tool.Execute(args)
+		ch <- result{resp, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.response, r.err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("tool %s timed out after %s", descriptor.Name, timeout)
+	}
 }
 
 func buildToolCallOutputMessage(toolCall provider.LLMToolCall, content string) Openai.ChatCompletionMessage {
@@ -244,6 +318,7 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 	if strings.TrimSpace(message.Content) == "" {
 		return nil
 	}
+	metadata := al.outboundMetadata(source.Metadata)
 
 	return al.context.MessageBus.Put(messagebus.Message{
 		ChannelID:    source.ChannelID,
@@ -254,7 +329,7 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 		SenderID:     source.SenderID,
 		MediaPaths:   cloneMediaPaths(source.MediaPaths),
 		ReplyTo:      source.ReplyTo,
-		Metadata:     cloneMetadata(source.Metadata),
+		Metadata:     metadata,
 		FinishReason: finishReason,
 	}, messagebus.OutboundQueue)
 }
@@ -263,6 +338,7 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
+	metadata := al.outboundMetadata(source.Metadata)
 	return al.context.MessageBus.Put(messagebus.Message{
 		ChannelID:    source.ChannelID,
 		Message:      content,
@@ -272,7 +348,7 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 		SenderID:     source.SenderID,
 		MediaPaths:   cloneMediaPaths(source.MediaPaths),
 		ReplyTo:      source.ReplyTo,
-		Metadata:     cloneMetadata(source.Metadata),
+		Metadata:     metadata,
 		FinishReason: finishReason,
 	}, messagebus.OutboundQueue)
 }
@@ -281,7 +357,7 @@ func (al *agentLoop) publishProgressMessage(source messagebus.Message, content s
 	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
-	metadata := cloneMetadata(source.Metadata)
+	metadata := al.outboundMetadata(source.Metadata)
 	if metadata == nil {
 		metadata = make(map[string]string, 2)
 	}
@@ -309,7 +385,7 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 			continue
 		}
 		message := executed.Message
-		outbound := cloneMetadata(source.Metadata)
+		outbound := al.outboundMetadata(source.Metadata)
 		if outbound == nil {
 			outbound = make(map[string]string, 1)
 		}
@@ -334,15 +410,43 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 	return nil
 }
 
+func (al *agentLoop) outboundMetadata(source map[string]string) map[string]string {
+	metadata := cloneMetadata(source)
+	if metadata == nil {
+		metadata = make(map[string]string, 4)
+	}
+	runtime := al.context.Runtime
+	if strings.TrimSpace(runtime.ProfileName) != "" {
+		metadata["agent_profile"] = runtime.ProfileName
+	}
+	if strings.TrimSpace(runtime.EmbeddingProfileName) != "" {
+		metadata["embedding_profile"] = runtime.EmbeddingProfileName
+	}
+	if strings.TrimSpace(runtime.Workspace) != "" {
+		metadata["workspace"] = runtime.Workspace
+	}
+	if strings.TrimSpace(string(runtime.InvocationMode)) != "" {
+		metadata["invocation_mode"] = string(runtime.InvocationMode)
+	}
+	return metadata
+}
+
 func (al *agentLoop) prepareToolsForTurn(message messagebus.Message) {
 	for _, descriptor := range al.context.ToolRegistry.GetAllTools() {
 		if turnTool, ok := descriptor.Tool.(toolspkg.TurnLifecycleTool); ok {
 			turnTool.StartTurn()
 		}
 		if contextTool, ok := descriptor.Tool.(toolspkg.MessageContextTool); ok {
-			contextTool.SetMessageContext(message)
+			contextTool.SetMessageContext(al.toolContextMessage(message))
 		}
 	}
+}
+
+func (al *agentLoop) toolContextMessage(source messagebus.Message) messagebus.Message {
+	contextMessage := source
+	contextMessage.MediaPaths = cloneMediaPaths(source.MediaPaths)
+	contextMessage.Metadata = al.outboundMetadata(source.Metadata)
+	return contextMessage
 }
 
 func (al *agentLoop) sentMessageInTurn() bool {
@@ -369,7 +473,7 @@ func (al *agentLoop) publishToolCallMessages(source messagebus.Message, toolCall
 			SenderID:     source.SenderID,
 			MediaPaths:   cloneMediaPaths(source.MediaPaths),
 			ReplyTo:      source.ReplyTo,
-			Metadata:     cloneMetadata(source.Metadata),
+			Metadata:     al.outboundMetadata(source.Metadata),
 			FinishReason: "tool_calls",
 		}, messagebus.OutboundQueue); err != nil {
 			return err
@@ -441,21 +545,6 @@ func (al *agentLoop) buildMaxIterationsExceededMessage(maxIterations int) Openai
 	}
 }
 
-func (al *agentLoop) getOrCreateSession(msg messagebus.Message, workspace string) (session.Session, error) {
-	if al.context.SessionManager == nil {
-		al.context.SessionManager = session.NewSessionManager(workspace)
-	}
-
-	currentSession, err := al.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
-	if err != nil {
-		return nil, err
-	}
-	if err := currentSession.UpdateMetadata(msg.ChannelID, sessionTypeFromMessage(msg)); err != nil {
-		return nil, err
-	}
-	return currentSession, nil
-}
-
 func sessionTypeFromMessage(msg messagebus.Message) string {
 	if len(msg.Metadata) == 0 {
 		return ""
@@ -490,20 +579,24 @@ func (al *agentLoop) prepareSessionMemoryIngestion(currentSession session.Sessio
 
 // ingestSessionMemory feeds the current session messages into the memory system
 // for 5W1H+R summarization and graph storage before the session is reset.
-func (al *agentLoop) ingestSessionMemory(currentSession session.Session, pending *pendingSessionMemoryIngestion) {
+func (al *agentLoop) ingestSessionMemory(currentSession session.Session, pending *pendingSessionMemoryIngestion) error {
 	if pending == nil {
 		pending = al.prepareSessionMemoryIngestion(currentSession)
 	}
 	if pending == nil {
-		return
+		return nil
 	}
+	t0 := time.Now()
+	utils.Perf("memory: ingest session start")
 	if err := al.context.MemoryService.IngestSession(pending.sessionID, pending.messages); err != nil {
 		slog.Error("ingest session memory failed", "session", pending.sessionID, "err", err)
-		return
+		return err
 	}
+	utils.Perf("memory: ingest session took %s", time.Since(t0))
 	if pending.digest != "" {
 		if err := currentSession.MarkMemoryIngested(pending.digest); err != nil {
 			slog.Error("mark session memory ingested failed", "session", pending.sessionID, "err", err)
 		}
 	}
+	return nil
 }

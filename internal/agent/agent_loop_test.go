@@ -12,6 +12,7 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	internalcontext "github.com/Neneka448/gogoclaw/internal/context"
+	cronpkg "github.com/Neneka448/gogoclaw/internal/cron"
 	"github.com/Neneka448/gogoclaw/internal/memory"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -24,19 +25,29 @@ import (
 
 type fakeProvider struct {
 	responses []provider.LLMCommonResponse
+	errors    []error
 	requests  []openai.ChatCompletionRequest
 }
 
-func (provider *fakeProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
-	provider.requests = append(provider.requests, request)
-	response := provider.responses[0]
-	provider.responses = provider.responses[1:]
+func (p *fakeProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	p.requests = append(p.requests, request)
+	var err error
+	if len(p.errors) > 0 {
+		err = p.errors[0]
+		p.errors = p.errors[1:]
+	}
+	if err != nil {
+		return provider.NormalizedResponse{}, err
+	}
+	response := p.responses[0]
+	p.responses = p.responses[1:]
 	return response, nil
 }
 
 type fakeMemoryService struct {
 	initializeCalls int
 	ingestCalls     int
+	ingestErr       error
 	sessionIDs      []string
 	messages        [][]openai.ChatCompletionMessage
 	blockCh         <-chan struct{}
@@ -47,6 +58,10 @@ func (service *fakeMemoryService) Initialize() error {
 	return nil
 }
 
+func (service *fakeMemoryService) Close() error {
+	return nil
+}
+
 func (service *fakeMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
 	service.ingestCalls++
 	service.sessionIDs = append(service.sessionIDs, sessionID)
@@ -54,7 +69,7 @@ func (service *fakeMemoryService) IngestSession(sessionID string, messages []ope
 	if service.blockCh != nil {
 		<-service.blockCh
 	}
-	return nil
+	return service.ingestErr
 }
 
 func (service *fakeMemoryService) Recall(queryText string, topK int, minSimilarity float64) ([]memory.MemoryNode, error) {
@@ -81,6 +96,17 @@ type fakeToolRegistry struct {
 	tools map[string]tools.ToolDescriptor
 }
 
+func mustFlushAgentSessionForTest(t *testing.T, currentSession session.Session) {
+	t.Helper()
+	if err := currentSession.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func sessionFilePathForTest(workspace string, sessionID string) string {
+	return filepath.Join(workspace, "sessions", sessionID+".json")
+}
+
 func newAgentTestSessionManager(t *testing.T, workspace string) session.SessionManager {
 	t.Helper()
 	manager := session.NewSessionManager(workspace)
@@ -90,6 +116,18 @@ func newAgentTestSessionManager(t *testing.T, workspace string) session.SessionM
 		}
 	})
 	return manager
+}
+
+func newAgentTestCurrentSession(t *testing.T, manager session.SessionManager, msg messagebus.Message) session.Session {
+	t.Helper()
+	currentSession, err := manager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
+	if err != nil {
+		t.Fatalf("GetOrCreateSession() error = %v", err)
+	}
+	if err := currentSession.UpdateMetadata(msg.ChannelID, sessionTypeFromMessage(msg)); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+	return currentSession
 }
 
 func (registry *fakeToolRegistry) RegisterTool(name string, tool tools.ToolDescriptor) error {
@@ -116,9 +154,29 @@ func (registry *fakeToolRegistry) GetAllTools() []tools.ToolDescriptor {
 	return all
 }
 
+func TestNewAgentLoopRequiresCurrentSession(t *testing.T) {
+	_, err := NewAgentLoop(internalcontext.SystemContext{})
+	if err == nil || !strings.Contains(err.Error(), "current session") {
+		t.Fatalf("NewAgentLoop() error = %v, want missing current session", err)
+	}
+}
+
+func TestNewAgentLoopRequiresResolvedRuntimeContext(t *testing.T) {
+	_, err := NewAgentLoop(internalcontext.SystemContext{
+		CurrentSession: newAgentTestCurrentSession(t, newAgentTestSessionManager(t, t.TempDir()), messagebus.Message{
+			ChannelID: "cli",
+			ChatID:    "chat-1",
+			SenderID:  "user-1",
+		}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "resolved runtime context") {
+		t.Fatalf("NewAgentLoop() error = %v, want missing runtime context", err)
+	}
+}
+
 func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
-	configPath := writeTestConfig(t)
-	sessionManager := newAgentTestSessionManager(t, t.TempDir())
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
 	imagePath := filepath.Join(t.TempDir(), "chart.png")
 	if err := os.WriteFile(imagePath, []byte("png"), 0644); err != nil {
@@ -149,14 +207,6 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 		},
 	}}
 
-	loop := NewAgentLoop(internalcontext.SystemContext{
-		ConfigManager:  config.NewConfigManager(configPath),
-		MessageBus:     bus,
-		Provider:       providerStub,
-		ToolRegistry:   toolRegistry,
-		SessionManager: sessionManager,
-	})
-
 	inboundMessage := messagebus.Message{
 		ChannelID:   "test-channel",
 		Message:     "hello",
@@ -164,6 +214,18 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 		MessageType: "group",
 		ChatID:      "chat-1",
 		SenderID:    "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContext(workspace, 4),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
 	}
 
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
@@ -191,7 +253,8 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 		t.Fatalf("messages[3] = %#v, want final assistant message", messages[3])
 	}
 
-	content, err := os.ReadFile(sessionStore.GetSessionFilePath())
+	mustFlushAgentSessionForTest(t, sessionStore)
+	content, err := os.ReadFile(sessionFilePathForTest(workspace, session.MakeSessionID(inboundMessage.ChannelID, inboundMessage.ChatID)))
 	if err != nil {
 		t.Fatalf("os.ReadFile() error = %v", err)
 	}
@@ -308,8 +371,8 @@ func TestExtractOutboundToolPayloadExtractsMediaPaths(t *testing.T) {
 }
 
 func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
-	configPath := writeTestConfig(t)
-	sessionManager := newAgentTestSessionManager(t, t.TempDir())
+	workerWorkspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workerWorkspace)
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -327,15 +390,41 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 		"message": tools.NewMessageTool(bus),
 	}}
 
-	loop := NewAgentLoop(internalcontext.SystemContext{
-		ConfigManager:  config.NewConfigManager(configPath),
+	inboundMessage := messagebus.Message{
+		ChannelID:   "feishu",
+		Message:     "hello",
+		MessageID:   "msg-1",
+		MessageType: "group",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+		Metadata:    map[string]string{"thread_id": "omt_thread"},
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime: internalcontext.RuntimeContext{
+			ProfileName: "worker",
+			Profile: config.ProfileConfig{
+				Workspace:         workerWorkspace,
+				Model:             "gpt-5.4",
+				MaxTokens:         512,
+				Temperature:       0.1,
+				MaxToolIterations: 4,
+				MemoryWindow:      10,
+				MaxRetryTimes:     1,
+			},
+			EmbeddingProfileName: "worker-embedding",
+			Workspace:            workerWorkspace,
+			InvocationMode:       internalcontext.InvocationModeBackground,
+		},
 	})
-
-	inboundMessage := messagebus.Message{ChannelID: "feishu", Message: "hello", MessageID: "msg-1", MessageType: "group", ChatID: "chat-1", SenderID: "user-1"}
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
 		t.Fatalf("ProcessMessage() error = %v", err)
 	}
@@ -356,6 +445,21 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 	if second.Metadata["message_kind"] != "active_message" {
 		t.Fatalf("second.Metadata[message_kind] = %q, want active_message", second.Metadata["message_kind"])
 	}
+	if second.Metadata["workspace"] != workerWorkspace {
+		t.Fatalf("second.Metadata[workspace] = %q, want %q", second.Metadata["workspace"], workerWorkspace)
+	}
+	if second.Metadata["agent_profile"] != "worker" {
+		t.Fatalf("second.Metadata[agent_profile] = %q, want worker", second.Metadata["agent_profile"])
+	}
+	if second.Metadata["invocation_mode"] != string(internalcontext.InvocationModeBackground) {
+		t.Fatalf("second.Metadata[invocation_mode] = %q, want %q", second.Metadata["invocation_mode"], internalcontext.InvocationModeBackground)
+	}
+	if second.Metadata["thread_id"] != "omt_thread" {
+		t.Fatalf("second.Metadata[thread_id] = %q, want omt_thread", second.Metadata["thread_id"])
+	}
+	if _, exists := inboundMessage.Metadata["workspace"]; exists {
+		t.Fatal("inbound message metadata unexpectedly mutated with workspace")
+	}
 
 	select {
 	case extra := <-outboundQueue:
@@ -364,9 +468,85 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 	}
 }
 
+func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
+	defaultWorkspace := t.TempDir()
+	workerWorkspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workerWorkspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
+				ID:        "call_1",
+				Name:      "create_cron",
+				Arguments: `{"cron_id":"worker-report","cron_expression":"0 * * * *","task":"render report","enabled":true}`,
+				Type:      string(openai.ToolTypeFunction),
+			}}},
+			provider.NormalizedResponse{Content: "done"},
+		},
+	}
+	cronResolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: defaultWorkspace},
+		"worker":  {Workspace: workerWorkspace},
+	}, "default")
+	cronService := cronpkg.NewCronService(cronResolver, nil, nil, nil)
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"create_cron": tools.NewCreateCronTool(cronService),
+	}}
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "feishu",
+		ChatID:    "chat-1",
+		SenderID:  "user-1",
+		Message:   "schedule a report",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime: internalcontext.RuntimeContext{
+			ProfileName: "worker",
+			Profile: config.ProfileConfig{
+				Workspace:         workerWorkspace,
+				Model:             "gpt-5.4",
+				MaxTokens:         512,
+				Temperature:       0.1,
+				MaxToolIterations: 4,
+				MemoryWindow:      10,
+				MaxRetryTimes:     1,
+			},
+			Workspace:      workerWorkspace,
+			InvocationMode: internalcontext.InvocationModeBackground,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	storedCron, err := cronService.GetCron("worker-report")
+	if err != nil {
+		t.Fatalf("GetCron() error = %v", err)
+	}
+	if storedCron.Path != filepath.Join(workerWorkspace, "crons", "worker-report") {
+		t.Fatalf("storedCron.Path = %q, want worker workspace cron dir", storedCron.Path)
+	}
+	if storedCron.Config.ProfileName != "worker" {
+		t.Fatalf("storedCron.Config.ProfileName = %q, want worker", storedCron.Config.ProfileName)
+	}
+	if storedCron.Config.InvocationMode != string(internalcontext.InvocationModeBackground) {
+		t.Fatalf("storedCron.Config.InvocationMode = %q, want %q", storedCron.Config.InvocationMode, internalcontext.InvocationModeBackground)
+	}
+}
+
 func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
-	configPath := writeTestConfigWithIterations(t, 1)
-	sessionManager := newAgentTestSessionManager(t, t.TempDir())
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -393,14 +573,6 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 		},
 	}}
 
-	loop := NewAgentLoop(internalcontext.SystemContext{
-		ConfigManager:  config.NewConfigManager(configPath),
-		MessageBus:     bus,
-		Provider:       providerStub,
-		ToolRegistry:   toolRegistry,
-		SessionManager: sessionManager,
-	})
-
 	inboundMessage := messagebus.Message{
 		ChannelID:   "test-channel",
 		Message:     "hello",
@@ -408,6 +580,18 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 		MessageType: "group",
 		ChatID:      "chat-1",
 		SenderID:    "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContext(workspace, 1),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
 	}
 
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
@@ -444,11 +628,12 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 	if message.Message != want {
 		t.Fatalf("message.Message = %q, want %q", message.Message, want)
 	}
+	mustFlushAgentSessionForTest(t, sessionStore)
 }
 
 func TestAgentLoopContinuesAfterToolExecutionError(t *testing.T) {
-	configPath := writeTestConfig(t)
-	sessionManager := newAgentTestSessionManager(t, t.TempDir())
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -475,14 +660,6 @@ func TestAgentLoopContinuesAfterToolExecutionError(t *testing.T) {
 		},
 	}}
 
-	loop := NewAgentLoop(internalcontext.SystemContext{
-		ConfigManager:  config.NewConfigManager(configPath),
-		MessageBus:     bus,
-		Provider:       providerStub,
-		ToolRegistry:   toolRegistry,
-		SessionManager: sessionManager,
-	})
-
 	inboundMessage := messagebus.Message{
 		ChannelID:   "test-channel",
 		Message:     "hello",
@@ -490,6 +667,18 @@ func TestAgentLoopContinuesAfterToolExecutionError(t *testing.T) {
 		MessageType: "group",
 		ChatID:      "chat-1",
 		SenderID:    "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContext(workspace, 4),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
 	}
 
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
@@ -553,32 +742,30 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 	previousNow := session.SessionNowForTest(func() time.Time { return time.Unix(1700000001, 0) })
 	defer previousNow()
 
-	configPath := writeTestConfig(t)
 	workspace := t.TempDir()
 	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
 	providerStub := &fakeProvider{}
+	inboundMessage := messagebus.Message{ChannelID: "feishu", Message: "/new", MessageID: "msg-1", MessageType: "text", ChatID: "chat-1", SenderID: "user-1"}
+	currentSession := newAgentTestCurrentSession(t, sessionManager, inboundMessage)
 
-	loop := NewAgentLoop(internalcontext.SystemContext{
-		ConfigManager:  config.NewConfigManager(configPath),
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
 		Provider:       providerStub,
 		ToolRegistry:   &fakeToolRegistry{},
 		SessionManager: sessionManager,
+		CurrentSession: currentSession,
+		Runtime:        newTestRuntimeContext(workspace, 4),
 	})
-
-	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("feishu", "chat-1"), "user-1")
 	if err != nil {
-		t.Fatalf("GetOrCreateSession() error = %v", err)
+		t.Fatalf("NewAgentLoop() error = %v", err)
 	}
+
 	if err := currentSession.AppendMessage(openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "history"}); err != nil {
 		t.Fatalf("AppendMessage() error = %v", err)
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushAgentSessionForTest(t, currentSession)
 
-	inboundMessage := messagebus.Message{ChannelID: "feishu", Message: "/new", MessageID: "msg-1", MessageType: "text", ChatID: "chat-1", SenderID: "user-1"}
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
 		t.Fatalf("ProcessMessage() error = %v", err)
 	}
@@ -589,7 +776,7 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
 	}
 
-	archiveFiles, err := filepath.Glob(filepath.Join(workspace, "sessions", "achrive", "*.json_achrive_1700000001"))
+	archiveFiles, err := filepath.Glob(filepath.Join(workspace, "sessions", session.ArchiveDirName, "*.json"+session.ArchiveFileSuffixToken+"1700000001"))
 	if err != nil {
 		t.Fatalf("filepath.Glob() error = %v", err)
 	}
@@ -608,8 +795,8 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 	if message.FinishReason != "new_session" {
 		t.Fatalf("message.FinishReason = %q, want new_session", message.FinishReason)
 	}
-	if !strings.Contains(archiveFiles[0], filepath.Join("sessions", "achrive")) {
-		t.Fatalf("archive file path = %q, want achrive folder", archiveFiles[0])
+	if !strings.Contains(archiveFiles[0], filepath.Join("sessions", session.ArchiveDirName)) {
+		t.Fatalf("archive file path = %q, want %s folder", archiveFiles[0], session.ArchiveDirName)
 	}
 }
 
@@ -620,20 +807,28 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 	bus := messagebus.NewMessageBus()
 	blockCh := make(chan struct{})
 	memoryService := &fakeMemoryService{blockCh: blockCh}
+	inboundMessage := messagebus.Message{
+		ChannelID:   "feishu",
+		Message:     "/new",
+		MessageID:   "msg-1",
+		MessageType: "text",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+	}
+	currentSession := newAgentTestCurrentSession(t, sessionManager, inboundMessage)
 
-	loop := NewAgentLoop(internalcontext.SystemContext{
-		ConfigManager:  config.NewConfigManager(configPath),
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
 		Provider:       &fakeProvider{},
 		ToolRegistry:   &fakeToolRegistry{},
 		SessionManager: sessionManager,
+		CurrentSession: currentSession,
 		MemoryService:  memoryService,
 		MemoryEnabled:  true,
+		Runtime:        newTestRuntimeContext(workspace, 4),
 	})
-
-	currentSession, err := sessionManager.GetOrCreateSession(session.MakeSessionID("feishu", "chat-1"), "user-1")
 	if err != nil {
-		t.Fatalf("GetOrCreateSession() error = %v", err)
+		t.Fatalf("NewAgentLoop() error = %v", err)
 	}
 	for i := 0; i < 12; i++ {
 		if err := currentSession.AppendMessage(openai.ChatCompletionMessage{
@@ -643,20 +838,11 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 			t.Fatalf("AppendMessage() error = %v", err)
 		}
 	}
-	if err := currentSession.WriteSessionFile(); err != nil {
-		t.Fatalf("WriteSessionFile() error = %v", err)
-	}
+	mustFlushAgentSessionForTest(t, currentSession)
 
 	doneCh := make(chan error, 1)
 	go func() {
-		doneCh <- loop.ProcessMessage(messagebus.Message{
-			ChannelID:   "feishu",
-			Message:     "/new",
-			MessageID:   "msg-1",
-			MessageType: "text",
-			ChatID:      "chat-1",
-			SenderID:    "user-1",
-		})
+		doneCh <- loop.ProcessMessage(inboundMessage)
 	}()
 
 	select {
@@ -712,8 +898,76 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 	}
 }
 
+func TestAgentLoopSlashNewReportsMemoryIngestionFailure(t *testing.T) {
+	configPath := writeTestConfig(t)
+	workspace := tempWorkspaceFromConfig(t, configPath)
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	memoryService := &fakeMemoryService{ingestErr: errors.New("embedding service unavailable")}
+	inboundMessage := messagebus.Message{
+		ChannelID:   "feishu",
+		Message:     "/new",
+		MessageID:   "msg-1",
+		MessageType: "text",
+		ChatID:      "chat-1",
+		SenderID:    "user-1",
+	}
+	currentSession := newAgentTestCurrentSession(t, sessionManager, inboundMessage)
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       &fakeProvider{},
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+		CurrentSession: currentSession,
+		MemoryService:  memoryService,
+		MemoryEnabled:  true,
+		Runtime:        newTestRuntimeContext(workspace, 4),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		if err := currentSession.AppendMessage(openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: "history-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatalf("AppendMessage() error = %v", err)
+		}
+	}
+	mustFlushAgentSessionForTest(t, currentSession)
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	// Session should still be reset despite ingestion failure.
+	if got := currentSession.GetMessages(10); len(got) != 0 {
+		t.Fatalf("len(currentSession.GetMessages()) = %d, want 0", len(got))
+	}
+
+	outboundQueue, err := bus.Get(messagebus.OutboundQueue)
+	if err != nil {
+		t.Fatalf("Get(OutboundQueue) error = %v", err)
+	}
+	// Drain the progress message first.
+	<-outboundQueue
+	// The final reply should contain both the new-session text and the warning.
+	message := <-outboundQueue
+	if !strings.Contains(message.Message, "new session") {
+		t.Fatalf("reply missing new session text: %q", message.Message)
+	}
+	if !strings.Contains(message.Message, "embedding service unavailable") {
+		t.Fatalf("reply missing ingestion error: %q", message.Message)
+	}
+	if message.FinishReason != "new_session" {
+		t.Fatalf("message.FinishReason = %q, want new_session", message.FinishReason)
+	}
+}
+
 func TestAgentLoopInjectsSkillSystemPrompt(t *testing.T) {
 	configPath := writeTestConfig(t)
+	workspace := tempWorkspaceFromConfig(t, configPath)
 	sessionManager := newAgentTestSessionManager(t, t.TempDir())
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
@@ -735,20 +989,24 @@ func TestAgentLoopInjectsSkillSystemPrompt(t *testing.T) {
 		"get_skill": tools.NewGetSkillTool(skillRegistry),
 	}}
 
-	loop := NewAgentLoop(internalcontext.SystemContext{
-		ConfigManager:  config.NewConfigManager(configPath),
-		Provider:       providerStub,
-		ToolRegistry:   toolRegistry,
-		Skills:         skillRegistry,
-		SystemPrompt:   systemprompt.NewService(tempWorkspaceFromConfig(t, configPath)),
-		SessionManager: sessionManager,
-	})
-
 	inboundMessage := messagebus.Message{
 		ChannelID: "test-channel",
 		ChatID:    "chat-1",
 		SenderID:  "user-1",
 		Message:   "Please summarize this article",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		Skills:         skillRegistry,
+		SystemPrompt:   systemprompt.NewService(workspace),
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContext(workspace, 4),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
 	}
 	if err := loop.ProcessMessage(inboundMessage); err != nil {
 		t.Fatalf("ProcessMessage() error = %v", err)
@@ -792,6 +1050,24 @@ func tempWorkspaceFromConfig(t *testing.T, configPath string) string {
 	return profile.Workspace
 }
 
+func newTestRuntimeContext(workspace string, maxIterations int) internalcontext.RuntimeContext {
+	return internalcontext.RuntimeContext{
+		ProfileName: "default",
+		Profile: config.ProfileConfig{
+			Workspace:         workspace,
+			Provider:          "codex",
+			Model:             "gpt-5.4",
+			MaxTokens:         512,
+			Temperature:       0.1,
+			MaxToolIterations: maxIterations,
+			MemoryWindow:      10,
+			MaxRetryTimes:     1,
+		},
+		Workspace:      workspace,
+		InvocationMode: internalcontext.InvocationModeForeground,
+	}
+}
+
 func writeTestConfigWithIterations(t *testing.T, maxIterations int) string {
 	t.Helper()
 
@@ -818,4 +1094,167 @@ func writeTestConfigWithIterations(t *testing.T, maxIterations int) string {
 	}
 
 	return configPath
+}
+
+func newTestRuntimeContextWithRetries(workspace string, maxIterations int, maxRetries int) internalcontext.RuntimeContext {
+	ctx := newTestRuntimeContext(workspace, maxIterations)
+	ctx.Profile.MaxRetryTimes = maxRetries
+	return ctx
+}
+
+func TestAgentLoopRetriesLLMCallAndSucceeds(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		errors:    []error{errors.New("network timeout"), nil},
+		responses: []provider.LLMCommonResponse{provider.NormalizedResponse{Content: "hello back"}},
+	}
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "cli", Message: "hi", ChatID: "chat-1", SenderID: "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContextWithRetries(workspace, 4, 3),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected 2 LLM calls (1 fail + 1 success), got %d", len(providerStub.requests))
+	}
+}
+
+func TestAgentLoopSendsErrorToUserAfterAllRetriesFail(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		errors: []error{errors.New("rate limited"), errors.New("rate limited")},
+	}
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "cli", Message: "hi", ChatID: "chat-1", SenderID: "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContextWithRetries(workspace, 4, 2),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+
+	err = loop.ProcessMessage(inboundMessage)
+	if err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("ProcessMessage() error = %v, want rate limited", err)
+	}
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(providerStub.requests))
+	}
+
+	// Verify error message was sent to user via outbound.
+	outboundCh, outErr := bus.Get(messagebus.OutboundQueue)
+	if outErr != nil {
+		t.Fatalf("bus.Get(Outbound) error = %v", outErr)
+	}
+	select {
+	case outbound := <-outboundCh:
+		if !strings.Contains(outbound.Message, "LLM request failed") {
+			t.Fatalf("outbound message = %q, want error notification", outbound.Message)
+		}
+		if outbound.FinishReason != "error" {
+			t.Fatalf("outbound FinishReason = %q, want error", outbound.FinishReason)
+		}
+	default:
+		t.Fatal("expected error message on outbound queue, got none")
+	}
+}
+
+type slowTool struct {
+	delay time.Duration
+}
+
+func (s slowTool) Execute(args string) (string, error) {
+	time.Sleep(s.delay)
+	return `{"content":"done"}`, nil
+}
+
+func TestAgentLoopToolExecutionTimesOut(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
+				ID:        "call_1",
+				Name:      "slow_tool",
+				Arguments: `{}`,
+				Type:      string(openai.ToolTypeFunction),
+			}}},
+			provider.NormalizedResponse{Content: "handled"},
+		},
+	}
+
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"slow_tool": {
+			Name:    "slow_tool",
+			Tool:    slowTool{delay: 5 * time.Second},
+			Timeout: 100 * time.Millisecond,
+			ToolForLLM: openai.Tool{
+				Type:     openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{Name: "slow_tool"},
+			},
+		},
+	}}
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "cli", Message: "run it", ChatID: "chat-1", SenderID: "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContext(workspace, 4),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	// The tool timed out, so the second LLM call should have received a timeout error in the tool response.
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(providerStub.requests))
+	}
+	toolResultMessages := providerStub.requests[1].Messages
+	foundTimeout := false
+	for _, msg := range toolResultMessages {
+		if msg.Role == openai.ChatMessageRoleTool && strings.Contains(msg.Content, "timed out") {
+			foundTimeout = true
+			break
+		}
+	}
+	if !foundTimeout {
+		t.Fatal("expected tool timeout error in second LLM request messages")
+	}
 }

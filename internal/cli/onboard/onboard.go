@@ -1,7 +1,6 @@
 package onboard
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/cli/auth"
 	"github.com/Neneka448/gogoclaw/internal/config"
-	"github.com/Neneka448/gogoclaw/internal/vectorstore"
 	workspacepkg "github.com/Neneka448/gogoclaw/internal/workspace"
 	"github.com/charmbracelet/huh"
 )
@@ -19,6 +17,7 @@ const configFileName = "config.json"
 
 type OnboardOptions struct {
 	ProfilePath string
+	ProfileName string
 	Provider    string
 	Model       string
 	APIKey      string
@@ -28,6 +27,7 @@ type OnboardOptions struct {
 
 type onboardContext struct {
 	ProfilePath string
+	ProfileName string
 	Provider    string
 	Model       string
 	APIKey      string
@@ -37,6 +37,7 @@ type onboardContext struct {
 func RunOnboard(options OnboardOptions) error {
 	onboardCtx := onboardContext{
 		ProfilePath: options.ProfilePath,
+		ProfileName: options.ProfileName,
 		Provider:    options.Provider,
 		Model:       options.Model,
 		APIKey:      options.APIKey,
@@ -58,9 +59,17 @@ func RunOnboard(options OnboardOptions) error {
 
 func interactiveOnboard(ctx *onboardContext) error {
 	tmpCtx := *ctx
+	homePath, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get user home directory: %w", err)
+	}
 
-	err := huh.NewForm(
+	err = huh.NewForm(
 		huh.NewGroup(
+			huh.NewInput().
+				Title("What profile name do you want to create or update?").
+				Value(&tmpCtx.ProfileName).
+				Validate(validateProfileName),
 			huh.NewInput().
 				Title("Which directory do you decide to store your config file? (Default: ~/.gogoclaw, so ~/.gogoclaw/config.json is the default profile, Recommended use ~ as path prefix to store your own config file)").
 				Value(&tmpCtx.ProfilePath),
@@ -126,12 +135,17 @@ func interactiveOnboard(ctx *onboardContext) error {
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Where you decide to store your workspace, relative to your config directory or use absolute path to another directory? (Default: config-dir-you-chooose/workspace, Recommended use ~ as path prefix to store your own workspace)").
-				Value(&tmpCtx.Workspace),
+				Value(&tmpCtx.Workspace).
+				Validate(func(value string) error {
+					return validateInteractiveWorkspaceInput(value, &tmpCtx, homePath)
+				}),
 		),
 	).Run()
 	if err != nil {
 		return err
 	}
+	tmpCtx.ProfilePath = resolveInteractiveProfilePath(tmpCtx.ProfilePath, homePath)
+	tmpCtx.Workspace = resolveInteractiveWorkspacePath(tmpCtx.Workspace, tmpCtx.ProfilePath, homePath)
 
 	*ctx = tmpCtx
 
@@ -164,56 +178,40 @@ func onboard(ctx *onboardContext) error {
 		return fmt.Errorf("prepare workspace default skills: %w", err)
 	}
 
-	if err := writeConfig(ctx); err != nil {
+	if _, err := writeConfig(ctx); err != nil {
 		return fmt.Errorf("write config: %w", err)
-	}
-	if err := initializeVectorStore(ctx); err != nil {
-		return fmt.Errorf("initialize vector store: %w", err)
 	}
 
 	return nil
 }
 
-func writeConfig(ctx *onboardContext) error {
-	defaultConfig := config.CreateDefaultConfig()
-	applyOnboardContext(&defaultConfig, ctx)
-
+func writeConfig(ctx *onboardContext) (*config.SysConfig, error) {
 	configPath := filepath.Join(ctx.ProfilePath, configFileName)
-	configFile, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	manager := config.NewConfigManager(configPath)
+	sysConfig, err := manager.ApplyOnboardUpdate(config.OnboardUpdate{
+		ProfileName: ctx.ProfileName,
+		Workspace:   ctx.Workspace,
+		Provider:    ctx.Provider,
+		Model:       ctx.Model,
+		APIKey:      ctx.APIKey,
+	})
 	if err != nil {
-		return fmt.Errorf("create config file %s: %w", configPath, err)
-	}
-	defer configFile.Close()
-
-	encoder := json.NewEncoder(configFile)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(defaultConfig); err != nil {
-		return fmt.Errorf("encode config file %s: %w", configPath, err)
+		return nil, err
 	}
 	slog.Info("Config file created", "path", configPath)
 
-	return nil
-}
-
-func initializeVectorStore(ctx *onboardContext) error {
-	defaultConfig := config.CreateDefaultConfig()
-	applyOnboardContext(&defaultConfig, ctx)
-	service := vectorstore.NewSQLiteVecService(ctx.Workspace, "default", defaultConfig.Embedding.Profiles["default"])
-	if err := service.Start(); err != nil {
-		return err
-	}
-	if err := service.Stop(); err != nil {
-		return err
-	}
-	return nil
+	return &sysConfig, nil
 }
 
 func normalizeContextPaths(ctx *onboardContext, homePath string) {
-	if ctx.ProfilePath == "" {
+	if strings.TrimSpace(ctx.ProfilePath) == "" {
 		ctx.ProfilePath = filepath.Join(homePath, ".gogoclaw")
 		slog.Warn("ProfilePath not set, use default", "path", ctx.ProfilePath)
 	}
 	ctx.ProfilePath = expandHomePath(ctx.ProfilePath, homePath)
+	if strings.TrimSpace(ctx.ProfileName) == "" {
+		ctx.ProfileName = "default"
+	}
 
 	if ctx.Workspace == "" {
 		ctx.Workspace = filepath.Join(ctx.ProfilePath, "workspace")
@@ -250,8 +248,8 @@ func prepareProfilePath(profilePath string) error {
 
 	configPath := filepath.Join(profilePath, configFileName)
 	if _, err := os.Stat(configPath); err == nil {
-		slog.Error("Config file exists", "path", configPath)
-		return fmt.Errorf("config file exists: %s", configPath)
+		slog.Info("Config file exists, will update", "path", configPath)
+		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat config file %s: %w", configPath, err)
 	}
@@ -261,7 +259,8 @@ func prepareProfilePath(profilePath string) error {
 }
 
 func prepareWorkspacePath(workspacePath string) error {
-	if _, err := os.Stat(workspacePath); os.IsNotExist(err) {
+	info, err := os.Stat(workspacePath)
+	if os.IsNotExist(err) {
 		if err := os.MkdirAll(workspacePath, 0755); err != nil {
 			return fmt.Errorf("create workspace directory %s: %w", workspacePath, err)
 		}
@@ -270,22 +269,50 @@ func prepareWorkspacePath(workspacePath string) error {
 	} else if err != nil {
 		return fmt.Errorf("stat workspace path %s: %w", workspacePath, err)
 	}
+	if !info.IsDir() {
+		return fmt.Errorf("workspace path is not a directory: %s", workspacePath)
+	}
 
-	slog.Error("Workspace exists", "path", workspacePath)
-	return fmt.Errorf("workspace exists: %s", workspacePath)
+	slog.Info("Workspace exists, will reuse", "path", workspacePath)
+	return nil
 }
 
-func applyOnboardContext(defaultConfig *config.SysConfig, ctx *onboardContext) {
-	defaultProfile := defaultConfig.Agents.Profiles["default"]
-	defaultProfile.Workspace = ctx.Workspace
-	defaultProfile.Provider = ctx.Provider
-	defaultProfile.Model = ctx.Model
-	defaultConfig.Agents.Profiles["default"] = defaultProfile
-
-	for i := range defaultConfig.Providers {
-		if defaultConfig.Providers[i].Name == ctx.Provider {
-			defaultConfig.Providers[i].Auth.Token = ctx.APIKey
-			break
-		}
+func validateProfileName(profileName string) error {
+	if strings.TrimSpace(profileName) == "" {
+		return fmt.Errorf("profile name is required")
 	}
+	return nil
+}
+
+func resolveInteractiveProfilePath(profilePath string, homePath string) string {
+	trimmed := strings.TrimSpace(profilePath)
+	if trimmed == "" {
+		trimmed = filepath.Join(homePath, ".gogoclaw")
+	}
+	return expandHomePath(trimmed, homePath)
+}
+
+func resolveInteractiveWorkspacePath(workspace string, profilePath string, homePath string) string {
+	trimmed := strings.TrimSpace(workspace)
+	if trimmed == "" {
+		trimmed = filepath.Join(resolveInteractiveProfilePath(profilePath, homePath), "workspace")
+	}
+	return expandHomePath(trimmed, homePath)
+}
+
+func validateInteractiveWorkspaceInput(workspace string, ctx *onboardContext, homePath string) error {
+	if err := validateProfileName(ctx.ProfileName); err != nil {
+		return err
+	}
+	resolvedProfilePath := resolveInteractiveProfilePath(ctx.ProfilePath, homePath)
+	resolvedWorkspace := resolveInteractiveWorkspacePath(workspace, resolvedProfilePath, homePath)
+	manager := config.NewConfigManager(filepath.Join(resolvedProfilePath, configFileName))
+	_, err := manager.PreviewOnboardUpdate(config.OnboardUpdate{
+		ProfileName: strings.TrimSpace(ctx.ProfileName),
+		Workspace:   resolvedWorkspace,
+		Provider:    strings.TrimSpace(ctx.Provider),
+		Model:       strings.TrimSpace(ctx.Model),
+		APIKey:      strings.TrimSpace(ctx.APIKey),
+	})
+	return err
 }

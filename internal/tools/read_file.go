@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/Neneka448/gogoclaw/internal/utils"
+	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -64,20 +65,20 @@ func NewReadFileTool(workspace string) ToolDescriptor {
 func (tool *ReadFileTool) Execute(args string) (string, error) {
 	var input readFileArgs
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
-		return tool.encodeResult(readFileResult{Error: fmt.Sprintf("parse read_file args: %v", err)})
+		return utils.EncodeJSON(readFileResult{Error: fmt.Sprintf("parse read_file args: %v", err)})
 	}
 	if strings.TrimSpace(input.Path) == "" {
-		return tool.encodeResult(readFileResult{Error: "read_file path is required"})
+		return utils.EncodeJSON(readFileResult{Error: "read_file path is required"})
 	}
 
-	resolvedPath, err := tool.resolvePath(input.Path)
+	resolvedPath, err := pathutil.ResolveWithinWorkspace(input.Path, tool.workspace)
 	if err != nil {
-		return tool.encodeResult(readFileResult{Path: input.Path, Error: err.Error()})
+		return utils.EncodeJSON(readFileResult{Path: input.Path, Error: err.Error()})
 	}
 
 	file, err := os.Open(resolvedPath)
 	if err != nil {
-		return tool.encodeResult(readFileResult{Path: input.Path, Error: err.Error()})
+		return utils.EncodeJSON(readFileResult{Path: input.Path, Error: err.Error()})
 	}
 	defer file.Close()
 
@@ -87,7 +88,7 @@ func (tool *ReadFileTool) Execute(args string) (string, error) {
 	}
 	endLine := input.EndLine
 	if endLine > 0 && endLine < startLine {
-		return tool.encodeResult(readFileResult{
+		return utils.EncodeJSON(readFileResult{
 			Path:      input.Path,
 			StartLine: startLine,
 			EndLine:   endLine,
@@ -113,7 +114,7 @@ func (tool *ReadFileTool) Execute(args string) (string, error) {
 		lastLine = lineNumber
 	}
 	if err := scanner.Err(); err != nil {
-		return tool.encodeResult(readFileResult{
+		return utils.EncodeJSON(readFileResult{
 			Path:      input.Path,
 			StartLine: startLine,
 			EndLine:   lastLine,
@@ -131,40 +132,5 @@ func (tool *ReadFileTool) Execute(args string) (string, error) {
 		Content:   strings.Join(selected, "\n"),
 	}
 
-	return tool.encodeResult(result)
-}
-
-func (tool *ReadFileTool) encodeResult(result readFileResult) (string, error) {
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-
-	return string(encoded), nil
-}
-
-func (tool *ReadFileTool) resolvePath(path string) (string, error) {
-	workspaceRoot, err := filepath.Abs(tool.workspace)
-	if err != nil {
-		return "", err
-	}
-	var candidate string
-	if filepath.IsAbs(path) {
-		candidate = filepath.Clean(path)
-	} else {
-		candidate = filepath.Join(workspaceRoot, path)
-	}
-	resolved, err := filepath.Abs(candidate)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(workspaceRoot, resolved)
-	if err != nil {
-		return "", err
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("read_file path %q is outside the workspace", path)
-	}
-
-	return resolved, nil
+	return utils.EncodeJSON(result)
 }

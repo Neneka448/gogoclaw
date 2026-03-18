@@ -7,130 +7,106 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/agent"
 	"github.com/Neneka448/gogoclaw/internal/channels"
+	cliauth "github.com/Neneka448/gogoclaw/internal/cli/auth"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	appcontext "github.com/Neneka448/gogoclaw/internal/context"
 	"github.com/Neneka448/gogoclaw/internal/cron"
 	"github.com/Neneka448/gogoclaw/internal/gateway"
 	mcppkg "github.com/Neneka448/gogoclaw/internal/mcp"
-	"github.com/Neneka448/gogoclaw/internal/memory"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
-	"github.com/Neneka448/gogoclaw/internal/provider"
-	"github.com/Neneka448/gogoclaw/internal/session"
-	"github.com/Neneka448/gogoclaw/internal/skills"
-	"github.com/Neneka448/gogoclaw/internal/systemprompt"
-	"github.com/Neneka448/gogoclaw/internal/tools"
-	"github.com/Neneka448/gogoclaw/internal/vectorstore"
-	workspacepkg "github.com/Neneka448/gogoclaw/internal/workspace"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 )
 
 func Bootstrap(configPath string) (*gateway.Gateway, error) {
+	bootstrapStart := time.Now()
+	utils.Perf("bootstrap: start")
+
+	t0 := time.Now()
 	configManager := config.NewConfigManager(configPath)
-	sysConfig, err := configManager.GetConfig()
+	channelsConfig, err := configManager.GetChannelsConfig()
 	if err != nil {
 		return nil, err
 	}
-	profile, err := configManager.GetAgentProfileConfig("default")
+	cronConfig, err := configManager.GetCronConfig()
 	if err != nil {
 		return nil, err
 	}
-	embeddingProfile, err := configManager.GetEmbeddingProfileConfig("default")
+	defaultProfile, err := configManager.GetAgentProfileConfig("default")
 	if err != nil {
 		return nil, err
 	}
-	providerConfig, err := configManager.GetProviderConfig(profile.Provider)
+	resolver, err := configManager.NewProfileResolver()
 	if err != nil {
 		return nil, err
 	}
-	llmProvider, err := provider.NewOpenAICompatibleProvider(providerConfig)
-	if err != nil {
-		return nil, err
-	}
-	textEmbeddingProvider, modalEmbeddingProvider, err := buildEmbeddingProviders(configManager, embeddingProfile)
-	if err != nil {
-		return nil, err
-	}
-	if err := workspacepkg.EnsureMemorySkill(profile.Workspace); err != nil {
-		return nil, err
-	}
-	if err := workspacepkg.EnsureDefaultSkills(profile.Workspace); err != nil {
-		return nil, err
-	}
-	skillRegistry, err := skills.LoadWorkspaceSkills(profile.Workspace)
-	if err != nil {
-		return nil, err
-	}
-	mcpService, err := mcppkg.NewService(profile.Workspace, sysConfig.MCP, mcppkg.Options{FailFast: true})
-	if err != nil {
-		return nil, err
-	}
+	utils.Perf("bootstrap: config loading took %s", time.Since(t0))
+
+	t0 = time.Now()
 	messageBus := messagebus.NewMessageBus()
 	channelRegistry := channels.NewRegistry()
-	if err := channelRegistry.Register(channels.NewCLIChannel(sysConfig.Channels.CLI, nil)); err != nil {
+	if err := channelRegistry.Register(channels.NewCLIChannel(channelsConfig.CLI, nil)); err != nil {
 		return nil, err
 	}
-	if sysConfig.Channels.Feishu.Enabled {
-		if err := channelRegistry.Register(channels.NewFeishuChannel(sysConfig.Channels.Feishu, messageBus, profile.Workspace)); err != nil {
+	if channelsConfig.Feishu.Enabled {
+		if err := channelRegistry.Register(channels.NewFeishuChannel(channelsConfig.Feishu, messageBus, defaultProfile.Workspace)); err != nil {
 			return nil, err
 		}
 	}
-	cronLocation, err := time.LoadLocation(strings.TrimSpace(sysConfig.Cron.Timezone))
+	utils.Perf("bootstrap: channel registry took %s", time.Since(t0))
+
+	t0 = time.Now()
+	cronLocation, err := time.LoadLocation(strings.TrimSpace(cronConfig.Timezone))
 	if err != nil {
 		return nil, err
 	}
 	cronManager := cron.NewCronManager(cronLocation)
 
-	var sysContext appcontext.SystemContext
-	cronService := cron.NewCronService(profile.Workspace, cronManager, func(request cron.ExecutionRequest) error {
-		return executeCronRequest(sysContext, sysConfig, profile.Workspace, skillRegistry, request)
+	var invoker appcontext.InvocationService
+	cronService := cron.NewCronService(resolver, cronManager, func(request cron.ExecutionRequest) error {
+		return executeCronRequest(invoker, request)
 	}, cronLocation)
+	utils.Perf("bootstrap: cron setup took %s", time.Since(t0))
 
-	sysContext = appcontext.SystemContext{
-		MessageBus:      messageBus,
-		Provider:        llmProvider,
-		TextEmbedding:   textEmbeddingProvider,
-		ModalEmbedding:  modalEmbeddingProvider,
-		ConfigManager:   configManager,
-		ToolRegistry:    tools.NewToolRegistry(),
-		Skills:          skillRegistry,
-		SystemPrompt:    systemprompt.NewService(profile.Workspace),
-		ChannelRegistry: channelRegistry,
-		SessionManager:  session.NewSessionManager(profile.Workspace),
-		VectorStore:     vectorstore.NewSQLiteVecService(profile.Workspace, "default", *embeddingProfile),
-		CronService:     cronService,
-		CronEnabled:     sysConfig.Cron.Enabled,
-		MCPService:      mcpService,
-		MemoryEnabled:   sysConfig.Memory.Enabled && textEmbeddingProvider != nil,
-	}
-
-	if sysContext.MemoryEnabled {
-		if err := config.ValidateMemoryConfig(sysConfig.Memory); err != nil {
-			_ = mcpService.Close()
-			return nil, fmt.Errorf("invalid memory config: %w", err)
-		}
-		memoryService := memory.NewService(
-			sysContext.VectorStore,
-			llmProvider,
-			profile.Model,
-			textEmbeddingProvider,
-			embeddingProfile.Text,
-			sysConfig.Memory,
-		)
-		sysContext.MemoryService = memoryService
-	}
-
-	if err := registerTools(sysContext.ToolRegistry, profile.Workspace, sysConfig, skillRegistry, messageBus, cronService, mcpService, sysContext.MemoryService); err != nil {
-		_ = mcpService.Close()
+	t0 = time.Now()
+	invoker, err = agent.NewInvocationService(configManager, messageBus, channelRegistry, cronService, cronConfig.Enabled, codexTokenProvider{})
+	if err != nil {
 		return nil, err
 	}
+	utils.Perf("bootstrap: invocation service took %s", time.Since(t0))
 
-	gateway := gateway.NewGateway(sysContext)
+	t0 = time.Now()
+	sysContext := appcontext.SystemContext{
+		MessageBus:      messageBus,
+		ConfigManager:   configManager,
+		ChannelRegistry: channelRegistry,
+		CronService:     cronService,
+		CronEnabled:     cronConfig.Enabled,
+		Invoker:         invoker,
+	}
 
+	gateway, err := gateway.NewGateway(sysContext)
+	if err != nil {
+		return nil, err
+	}
+	utils.Perf("bootstrap: gateway creation took %s", time.Since(t0))
+
+	utils.Perf("bootstrap: total took %s", time.Since(bootstrapStart))
 	return &gateway, nil
+}
+
+type codexTokenProvider struct{}
+
+func (codexTokenProvider) GetToken() (string, string, error) {
+	token, err := cliauth.GetCodexToken()
+	if err != nil {
+		return "", "", err
+	}
+	return token.Access, token.AccountID, nil
 }
 
 func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, error) {
 	configManager := config.NewConfigManager(configPath)
-	sysConfig, err := configManager.GetConfig()
+	mcpConfig, err := configManager.GetMCPConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -138,62 +114,25 @@ func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, erro
 	if err != nil {
 		return nil, err
 	}
-	return mcppkg.NewService(profile.Workspace, sysConfig.MCP, mcppkg.Options{FailFast: failFast})
+	return mcppkg.NewService(profile.Workspace, mcpConfig, mcppkg.Options{FailFast: failFast})
 }
 
-func registerBuiltinTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, memoryService memory.Service) error {
-	if err := registry.RegisterTool("read_file", tools.NewReadFileTool(workspace)); err != nil {
-		return err
+func executeCronRequest(invoker appcontext.InvocationService, request cron.ExecutionRequest) error {
+	if invoker == nil {
+		return fmt.Errorf("invoker is not initialized")
 	}
-	if err := registry.RegisterTool("list_dir", tools.NewListDirTool(workspace)); err != nil {
-		return err
-	}
-	if err := registry.RegisterTool("terminal", tools.NewTerminalTool(workspace, resolveToolTimeout(sysConfig.Tools, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
-		return err
-	}
-	if err := registry.RegisterTool("message", tools.NewMessageTool(bus)); err != nil {
-		return err
-	}
-	if err := registry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
-		return err
-	}
-	if err := registry.RegisterTool("create_cron", tools.NewCreateCronTool(cronService)); err != nil {
-		return err
-	}
-	if memoryService != nil {
-		if err := registry.RegisterTool("recall_memory", tools.NewRecallMemoryTool(memoryService)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func registerTools(registry tools.ToolRegistry, workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) error {
-	if err := registerBuiltinTools(registry, workspace, sysConfig, skillRegistry, bus, cronService, memoryService); err != nil {
-		return err
-	}
-	if mcpService == nil {
-		return nil
-	}
-	for _, descriptor := range mcpService.ToolDescriptors() {
-		if err := registry.RegisterTool(descriptor.Name, descriptor); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func executeCronRequest(baseContext appcontext.SystemContext, sysConfig *config.SysConfig, workspace string, skillRegistry skills.Registry, request cron.ExecutionRequest) error {
 	tempBus := messagebus.NewMessageBus()
 	defer tempBus.Close()
-	tempTools := tools.NewToolRegistry()
-	if err := registerTools(tempTools, workspace, sysConfig, skillRegistry, tempBus, baseContext.CronService, baseContext.MCPService, baseContext.MemoryService); err != nil {
-		return err
+	metadata := request.Metadata
+	if metadata == nil {
+		metadata = make(map[string]string, 2)
 	}
-	cronContext := baseContext
-	cronContext.MessageBus = tempBus
-	cronContext.ToolRegistry = tempTools
-	cronContext.ChannelRegistry = nil
+	if strings.TrimSpace(request.ProfileName) != "" {
+		metadata["agent_profile"] = strings.TrimSpace(request.ProfileName)
+	}
+	if strings.TrimSpace(request.Mode) != "" {
+		metadata["invocation_mode"] = strings.TrimSpace(request.Mode)
+	}
 
 	message := messagebus.Message{
 		ChannelID:   "cron",
@@ -201,61 +140,21 @@ func executeCronRequest(baseContext appcontext.SystemContext, sysConfig *config.
 		SenderID:    request.CronID,
 		MessageType: "cron",
 		Message:     request.Prompt,
-		Metadata:    request.Metadata,
+		Metadata:    metadata,
 	}
-	return agent.NewAgentLoop(cronContext).ProcessMessage(message)
-}
-
-func resolveToolTimeout(configs []config.ToolConfig, name string, defaultTimeout time.Duration) time.Duration {
-	for _, toolConfig := range configs {
-		if !strings.EqualFold(strings.TrimSpace(toolConfig.Name), name) {
-			continue
-		}
-		if toolConfig.Timeout <= 0 {
-			return defaultTimeout
-		}
-		return time.Duration(toolConfig.Timeout) * time.Second
+	mode := appcontext.InvocationModeCron
+	if strings.TrimSpace(request.Mode) != "" {
+		mode = appcontext.InvocationMode(request.Mode)
 	}
-
-	return defaultTimeout
-}
-
-func buildEmbeddingProviders(configManager config.ConfigManager, profile *config.EmbeddingProfileConfig) (provider.EmbeddingProvider, provider.EmbeddingProvider, error) {
-	if profile == nil {
-		return nil, nil, nil
-	}
-
-	cache := map[string]provider.EmbeddingProvider{}
-	textProvider, err := resolveEmbeddingProvider(configManager, cache, profile.Text.Provider)
-	if err != nil {
-		return nil, nil, err
-	}
-	modalProvider, err := resolveEmbeddingProvider(configManager, cache, profile.Modal.Provider)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return textProvider, modalProvider, nil
-}
-
-func resolveEmbeddingProvider(configManager config.ConfigManager, cache map[string]provider.EmbeddingProvider, providerName string) (provider.EmbeddingProvider, error) {
-	providerName = strings.TrimSpace(providerName)
-	if providerName == "" {
-		return nil, nil
-	}
-	if embeddingProvider, ok := cache[providerName]; ok {
-		return embeddingProvider, nil
-	}
-
-	providerConfig, err := configManager.GetEmbeddingProviderConfig(providerName)
-	if err != nil {
-		return nil, err
-	}
-	embeddingProvider, err := provider.NewEmbeddingProvider(providerConfig)
-	if err != nil {
-		return nil, err
-	}
-	cache[providerName] = embeddingProvider
-
-	return embeddingProvider, nil
+	return invoker.Invoke(appcontext.InvocationRequest{
+		ProfileName: request.ProfileName,
+		Message:     message,
+		Mode:        mode,
+		Overrides: appcontext.InvocationOverrides{
+			MessageBus:             tempBus,
+			ReplaceMessageBus:      true,
+			ChannelRegistry:        nil,
+			ReplaceChannelRegistry: true,
+		},
+	})
 }

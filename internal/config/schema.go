@@ -79,6 +79,7 @@ type EmbeddingModelConfig struct {
 type ProfileConfig struct {
 	Workspace         string  `json:"workspace"`
 	Provider          string  `json:"provider"`
+	EmbeddingProfile  string  `json:"embeddingProfile,omitempty"`
 	Model             string  `json:"model"`
 	MaxTokens         int     `json:"maxTokens"`
 	Temperature       float64 `json:"temperature"`

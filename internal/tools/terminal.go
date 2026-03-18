@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Neneka448/gogoclaw/internal/utils"
+	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -75,17 +76,17 @@ func NewTerminalTool(workspace string, timeout time.Duration) ToolDescriptor {
 func (tool *TerminalTool) Execute(args string) (string, error) {
 	var input terminalArgs
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
-		return encodeTerminalResult(terminalResult{Error: fmt.Sprintf("parse terminal args: %v", err), ExitCode: -1})
+		return utils.EncodeJSON(terminalResult{Error: fmt.Sprintf("parse terminal args: %v", err), ExitCode: -1})
 	}
 
 	input.Command = strings.TrimSpace(input.Command)
 	if input.Command == "" {
-		return encodeTerminalResult(terminalResult{Cwd: strings.TrimSpace(input.Cwd), Error: "terminal command is required", ExitCode: -1})
+		return utils.EncodeJSON(terminalResult{Cwd: strings.TrimSpace(input.Cwd), Error: "terminal command is required", ExitCode: -1})
 	}
 
 	resolvedCwd, err := tool.resolveWorkingDirectory(input.Cwd)
 	if err != nil {
-		return encodeTerminalResult(terminalResult{Command: input.Command, Cwd: strings.TrimSpace(input.Cwd), Error: err.Error(), ExitCode: -1})
+		return utils.EncodeJSON(terminalResult{Command: input.Command, Cwd: strings.TrimSpace(input.Cwd), Error: err.Error(), ExitCode: -1})
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), tool.timeout)
@@ -109,63 +110,38 @@ func (tool *TerminalTool) Execute(args string) (string, error) {
 	}
 
 	if err == nil {
-		return encodeTerminalResult(result)
+		return utils.EncodeJSON(result)
 	}
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		result.TimedOut = true
 		result.Error = fmt.Sprintf("command timed out after %s", tool.timeout)
 		result.ExitCode = -1
-		return encodeTerminalResult(result)
+		return utils.EncodeJSON(result)
 	}
 
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		result.ExitCode = exitErr.ExitCode()
-		return encodeTerminalResult(result)
+		return utils.EncodeJSON(result)
 	}
 
 	result.ExitCode = -1
 	result.Error = err.Error()
-	return encodeTerminalResult(result)
-}
-
-func encodeTerminalResult(result terminalResult) (string, error) {
-	encoded, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-
-	return string(encoded), nil
+	return utils.EncodeJSON(result)
 }
 
 func (tool *TerminalTool) resolveWorkingDirectory(cwd string) (string, error) {
-	workspaceRoot, err := filepath.Abs(tool.workspace)
+	resolvedCwd, err := pathutil.ResolveRelativeOnly(cwd, tool.workspace)
 	if err != nil {
+		if err.Error() == "must not use absolute path" {
+			return "", fmt.Errorf("terminal cwd must not use absolute path")
+		}
+		if err.Error() == "path is outside the workspace" {
+			return "", fmt.Errorf("terminal cwd %q is outside the workspace", cwd)
+		}
 		return "", err
 	}
 
-	trimmed := strings.TrimSpace(cwd)
-	if trimmed == "" || trimmed == "." {
-		return workspaceRoot, nil
-	}
-	if filepath.IsAbs(trimmed) {
-		return "", fmt.Errorf("terminal cwd must not use absolute path")
-	}
-
-	candidate := filepath.Join(workspaceRoot, filepath.Clean(trimmed))
-	resolved, err := filepath.Abs(candidate)
-	if err != nil {
-		return "", err
-	}
-
-	rel, err := filepath.Rel(workspaceRoot, resolved)
-	if err != nil {
-		return "", err
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("terminal cwd %q is outside the workspace", cwd)
-	}
-
-	return resolved, nil
+	return resolvedCwd, nil
 }

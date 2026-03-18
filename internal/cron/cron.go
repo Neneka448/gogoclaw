@@ -16,6 +16,8 @@ type Config struct {
 	CronExpression string `json:"cronExpression"`
 	CronID         string `json:"cronID"`
 	Enabled        bool   `json:"enabled"`
+	ProfileName    string `json:"profileName,omitempty"`
+	InvocationMode string `json:"invocationMode,omitempty"`
 }
 
 type Cron interface {

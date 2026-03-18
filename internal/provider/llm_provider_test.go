@@ -112,6 +112,11 @@ func TestBuildRequestParamsIncludesToolCallingFields(t *testing.T) {
 	if got.Messages[1].ToolCallID != "call_1" {
 		t.Fatalf("second message ToolCallID = %q, want call_1", got.Messages[1].ToolCallID)
 	}
+
+	params.Messages[0].ToolCalls[0].Function.Name = "mutated"
+	if got.Messages[0].ToolCalls[0].Function.Name != "search_docs" {
+		t.Fatalf("request message tool call = %#v, want copied search_docs", got.Messages[0].ToolCalls[0])
+	}
 }
 
 func TestBuildAssistantMessageReturnsToolCalls(t *testing.T) {

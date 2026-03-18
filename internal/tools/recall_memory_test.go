@@ -19,6 +19,10 @@ func (service *fakeRecallMemoryService) Initialize() error {
 	return nil
 }
 
+func (service *fakeRecallMemoryService) Close() error {
+	return nil
+}
+
 func (service *fakeRecallMemoryService) IngestSession(sessionID string, messages []openai.ChatCompletionMessage) error {
 	return nil
 }

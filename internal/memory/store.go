@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 const (
@@ -14,17 +17,74 @@ const (
 )
 
 // Store handles persistence of memory nodes (metadata in SQLite) and edges.
-// Embedding vectors are managed by the vectorstore.Service that shares the same DB.
+// Embedding vectors are managed by the vectorstore.Service in the same SQLite file.
 type Store struct {
-	db *sql.DB
+	mu     sync.Mutex
+	db     *sql.DB
+	dbPath string
+	ownsDB bool
 }
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
+func NewSQLiteStore(dbPath string) *Store {
+	return &Store{
+		dbPath: strings.TrimSpace(dbPath),
+		ownsDB: true,
+	}
+}
+
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.ownsDB || s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	if err != nil {
+		return fmt.Errorf("close memory store database: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) dbHandle() (*sql.DB, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db != nil {
+		return s.db, nil
+	}
+	if !s.ownsDB {
+		return nil, fmt.Errorf("memory store database is not initialized")
+	}
+	if s.dbPath == "" {
+		return nil, fmt.Errorf("memory store database path is not configured")
+	}
+
+	db, err := sql.Open("sqlite3", s.dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open memory store database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping memory store database: %w", err)
+	}
+	s.db = db
+	return s.db, nil
+}
+
 func (s *Store) Initialize() error {
-	if _, err := s.db.Exec(`
+	db, err := s.dbHandle()
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`
 		create table if not exists ` + memoryNodesTable + ` (
 			id text primary key,
 			kind text not null default 'short_term',
@@ -48,7 +108,7 @@ func (s *Store) Initialize() error {
 		return fmt.Errorf("create memory nodes table: %w", err)
 	}
 
-	if _, err := s.db.Exec(`
+	if _, err := db.Exec(`
 		create table if not exists ` + memoryEdgesTable + ` (
 			source_id text not null,
 			target_id text not null,
@@ -66,13 +126,17 @@ func (s *Store) Initialize() error {
 }
 
 func (s *Store) InsertNode(node MemoryNode) error {
+	db, err := s.dbHandle()
+	if err != nil {
+		return err
+	}
 	sourceIDs, err := json.Marshal(node.SourceNodeIDs)
 	if err != nil {
 		return fmt.Errorf("marshal source node ids: %w", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	if _, err := s.db.Exec(`
+	if _, err := db.Exec(`
 		insert into `+memoryNodesTable+` (
 			id, kind, status, level, summary, who, what, "when", "where", why, how, result,
 			ref_count, source_node_ids, session_id, created_at, updated_at
@@ -88,8 +152,12 @@ func (s *Store) InsertNode(node MemoryNode) error {
 }
 
 func (s *Store) UpdateNodeStatus(nodeID string, status NodeStatus) error {
+	db, err := s.dbHandle()
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.Exec(`
+	if _, err := db.Exec(`
 		update `+memoryNodesTable+` set status = ?, updated_at = ? where id = ?
 	`, string(status), now, nodeID); err != nil {
 		return fmt.Errorf("update node status %s: %w", nodeID, err)
@@ -98,8 +166,12 @@ func (s *Store) UpdateNodeStatus(nodeID string, status NodeStatus) error {
 }
 
 func (s *Store) IncrementRefCount(nodeID string) error {
+	db, err := s.dbHandle()
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.Exec(`
+	if _, err := db.Exec(`
 		update `+memoryNodesTable+` set ref_count = ref_count + 1, updated_at = ? where id = ?
 	`, now, nodeID); err != nil {
 		return fmt.Errorf("increment ref count for %s: %w", nodeID, err)
@@ -108,7 +180,11 @@ func (s *Store) IncrementRefCount(nodeID string) error {
 }
 
 func (s *Store) GetNode(nodeID string) (*MemoryNode, error) {
-	row := s.db.QueryRow(`
+	db, err := s.dbHandle()
+	if err != nil {
+		return nil, err
+	}
+	row := db.QueryRow(`
 		select id, kind, status, level, summary, who, what, "when", "where", why, how, result,
 			ref_count, source_node_ids, session_id, created_at, updated_at
 		from `+memoryNodesTable+` where id = ?
@@ -117,7 +193,11 @@ func (s *Store) GetNode(nodeID string) (*MemoryNode, error) {
 }
 
 func (s *Store) ListActiveNodesByKindAndLevel(kind NodeKind, level int) ([]MemoryNode, error) {
-	rows, err := s.db.Query(`
+	db, err := s.dbHandle()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`
 		select id, kind, status, level, summary, who, what, "when", "where", why, how, result,
 			ref_count, source_node_ids, session_id, created_at, updated_at
 		from `+memoryNodesTable+`
@@ -132,7 +212,11 @@ func (s *Store) ListActiveNodesByKindAndLevel(kind NodeKind, level int) ([]Memor
 }
 
 func (s *Store) ListActiveNodes() ([]MemoryNode, error) {
-	rows, err := s.db.Query(`
+	db, err := s.dbHandle()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`
 		select id, kind, status, level, summary, who, what, "when", "where", why, how, result,
 			ref_count, source_node_ids, session_id, created_at, updated_at
 		from `+memoryNodesTable+`
@@ -147,7 +231,11 @@ func (s *Store) ListActiveNodes() ([]MemoryNode, error) {
 }
 
 func (s *Store) ListActiveNodeIDs(kind NodeKind, level int) ([]string, error) {
-	rows, err := s.db.Query(`
+	db, err := s.dbHandle()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(`
 		select id from `+memoryNodesTable+`
 		where kind = ? and level = ? and status = ?
 	`, string(kind), level, string(NodeStatusActive))
@@ -168,8 +256,12 @@ func (s *Store) ListActiveNodeIDs(kind NodeKind, level int) ([]string, error) {
 }
 
 func (s *Store) InsertEdge(edge MemoryEdge) error {
+	db, err := s.dbHandle()
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.Exec(`
+	if _, err := db.Exec(`
 		insert or ignore into `+memoryEdgesTable+` (source_id, target_id, weight, created_at)
 		values (?, ?, ?, ?)
 	`, edge.SourceID, edge.TargetID, edge.Weight, now); err != nil {
@@ -182,6 +274,10 @@ func (s *Store) ListEdgesForNodes(nodeIDs []string) ([]MemoryEdge, error) {
 	if len(nodeIDs) == 0 {
 		return nil, nil
 	}
+	db, err := s.dbHandle()
+	if err != nil {
+		return nil, err
+	}
 
 	placeholders := make([]string, len(nodeIDs))
 	args := make([]any, 0, len(nodeIDs)*2)
@@ -193,7 +289,7 @@ func (s *Store) ListEdgesForNodes(nodeIDs []string) ([]MemoryEdge, error) {
 	// duplicate args for both source_id and target_id IN clauses
 	args = append(args, args...)
 
-	rows, err := s.db.Query(`
+	rows, err := db.Query(`
 		select source_id, target_id, weight, created_at
 		from `+memoryEdgesTable+`
 		where source_id in (`+inClause+`) and target_id in (`+inClause+`)
@@ -224,13 +320,17 @@ func (s *Store) GetNodesByIDs(nodeIDs []string) ([]MemoryNode, error) {
 	if len(nodeIDs) == 0 {
 		return nil, nil
 	}
+	db, err := s.dbHandle()
+	if err != nil {
+		return nil, err
+	}
 	placeholders := make([]string, len(nodeIDs))
 	args := make([]any, len(nodeIDs))
 	for i, id := range nodeIDs {
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	rows, err := s.db.Query(`
+	rows, err := db.Query(`
 		select id, kind, status, level, summary, who, what, "when", "where", why, how, result,
 			ref_count, source_node_ids, session_id, created_at, updated_at
 		from `+memoryNodesTable+`

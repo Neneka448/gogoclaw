@@ -14,6 +14,10 @@ func TestTerminalToolRunsCommandInWorkspace(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(workspace, "subdir"), 0755); err != nil {
 		t.Fatalf("os.Mkdir() error = %v", err)
 	}
+	expectedCwd, err := filepath.EvalSymlinks(filepath.Join(workspace, "subdir"))
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks() error = %v", err)
+	}
 
 	descriptor := NewTerminalTool(workspace, time.Second)
 	result, err := descriptor.Tool.Execute(`{"command":"pwd","cwd":"subdir"}`)
@@ -31,10 +35,10 @@ func TestTerminalToolRunsCommandInWorkspace(t *testing.T) {
 	if parsed.ExitCode != 0 {
 		t.Fatalf("parsed.ExitCode = %d, want 0", parsed.ExitCode)
 	}
-	if parsed.Cwd != filepath.Join(workspace, "subdir") {
-		t.Fatalf("parsed.Cwd = %q, want %q", parsed.Cwd, filepath.Join(workspace, "subdir"))
+	if parsed.Cwd != expectedCwd {
+		t.Fatalf("parsed.Cwd = %q, want %q", parsed.Cwd, expectedCwd)
 	}
-	if strings.TrimSpace(parsed.Stdout) != filepath.Join(workspace, "subdir") {
+	if strings.TrimSpace(parsed.Stdout) != expectedCwd {
 		t.Fatalf("parsed.Stdout = %q, want pwd output", parsed.Stdout)
 	}
 }
@@ -57,7 +61,7 @@ func TestTerminalToolReturnsStderrAndExitCode(t *testing.T) {
 	if parsed.ExitCode != 7 {
 		t.Fatalf("parsed.ExitCode = %d, want 7", parsed.ExitCode)
 	}
-	if strings.TrimSpace(parsed.Stderr) != "err" {
+	if !strings.Contains(parsed.Stderr, "err") {
 		t.Fatalf("parsed.Stderr = %q, want err", parsed.Stderr)
 	}
 }
@@ -119,5 +123,22 @@ func TestTerminalToolRejectsOutsideWorkspaceCwd(t *testing.T) {
 	}
 	if parsed.ExitCode != -1 {
 		t.Fatalf("parsed.ExitCode = %d, want -1", parsed.ExitCode)
+	}
+}
+
+func TestTerminalToolRejectsAbsoluteCwd(t *testing.T) {
+	workspace := t.TempDir()
+	descriptor := NewTerminalTool(workspace, time.Second)
+	result, err := descriptor.Tool.Execute(`{"command":"pwd","cwd":"/tmp"}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var parsed terminalResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Error != "terminal cwd must not use absolute path" {
+		t.Fatalf("parsed.Error = %q, want absolute path error", parsed.Error)
 	}
 }

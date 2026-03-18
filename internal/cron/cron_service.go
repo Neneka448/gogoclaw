@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Neneka448/gogoclaw/internal/config"
 	ccron "github.com/robfig/cron/v3"
 )
 
@@ -43,6 +44,8 @@ type ExecutionRequest struct {
 	Prompt       string
 	ExecutionDir string
 	Metadata     map[string]string
+	ProfileName  string
+	Mode         string
 }
 
 type Executor func(request ExecutionRequest) error
@@ -65,6 +68,8 @@ type UpsertCronInput struct {
 	CronExpression string
 	Enabled        bool
 	Task           string
+	ProfileName    string
+	InvocationMode string
 }
 
 type StoredCron struct {
@@ -90,11 +95,14 @@ type sessionReference struct {
 	SessionFile string `json:"sessionFile"`
 }
 
-type workspaceService struct {
-	workspace string
-	manager   CronManager
-	executor  Executor
-	location  *time.Location
+// cronService is the single cron management layer. It knows all
+// workspaces via the ProfileResolver and handles CRUD, scheduling,
+// and execution for every cron across every workspace.
+type cronService struct {
+	resolver *config.ProfileResolver
+	manager  CronManager
+	executor Executor
+	location *time.Location
 }
 
 type workspaceCron struct {
@@ -102,15 +110,20 @@ type workspaceCron struct {
 	execute func() error
 }
 
-func NewCronService(workspace string, manager CronManager, executor Executor, location *time.Location) Service {
+type storedCronEntry struct {
+	workspace string
+	stored    StoredCron
+}
+
+func NewCronService(resolver *config.ProfileResolver, manager CronManager, executor Executor, location *time.Location) Service {
 	if location == nil {
 		location = time.Local
 	}
-	return &workspaceService{
-		workspace: strings.TrimSpace(workspace),
-		manager:   manager,
-		executor:  executor,
-		location:  location,
+	return &cronService{
+		resolver: resolver,
+		manager:  manager,
+		executor: executor,
+		location: location,
 	}
 }
 
@@ -119,154 +132,168 @@ func (cronTask *workspaceCron) Execute() error {
 }
 
 func (cronTask *workspaceCron) GetCronConfig() *Config {
-	config := cronTask.config
-	return &config
+	cfg := cronTask.config
+	return &cfg
 }
 
-func (service *workspaceService) EnsureRoot() error {
-	if strings.TrimSpace(service.workspace) == "" {
-		return fmt.Errorf("workspace path is required")
-	}
-	return os.MkdirAll(filepath.Join(service.workspace, cronsDirName), 0755)
-}
+// --- Service interface ---
 
-func (service *workspaceService) LoadAll() error {
-	storedCrons, err := service.ListCrons()
-	if err != nil {
-		return err
-	}
-	if service.manager == nil {
-		return nil
-	}
-	for _, storedCron := range storedCrons {
-		if !storedCron.Config.Enabled {
-			continue
-		}
-		if err := service.manager.RegisterCron(service.buildRuntimeCron(storedCron)); err != nil {
+func (s *cronService) EnsureRoot() error {
+	for _, workspace := range s.resolver.Workspaces() {
+		if err := ensureCronRoot(workspace); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (service *workspaceService) Start() error {
-	if service.manager == nil {
-		return nil
-	}
-	return service.manager.Start()
-}
-
-func (service *workspaceService) Stop() error {
-	if service.manager == nil {
-		return nil
-	}
-	return service.manager.Stop()
-}
-
-func (service *workspaceService) ListCrons() ([]StoredCron, error) {
-	if err := service.EnsureRoot(); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(filepath.Join(service.workspace, cronsDirName))
+func (s *cronService) LoadAll() error {
+	entries, err := s.listAllEntries()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	storedCrons := make([]StoredCron, 0, len(entries))
+	if s.manager == nil {
+		return nil
+	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.stored.Config.Enabled {
 			continue
 		}
-		storedCron, err := service.readCron(entry.Name())
-		if err != nil {
-			return nil, err
+		if err := s.manager.RegisterCron(s.buildRuntimeCron(entry.stored)); err != nil {
+			return err
 		}
-		storedCrons = append(storedCrons, *storedCron)
 	}
-	sort.Slice(storedCrons, func(i int, j int) bool {
-		return storedCrons[i].Config.CronID < storedCrons[j].Config.CronID
-	})
-	return storedCrons, nil
+	return nil
 }
 
-func (service *workspaceService) GetCron(cronID string) (*StoredCron, error) {
-	return service.readCron(cronID)
+func (s *cronService) Start() error {
+	if s.manager == nil {
+		return nil
+	}
+	return s.manager.Start()
 }
 
-func (service *workspaceService) CreateCron(input UpsertCronInput) (*StoredCron, error) {
-	storedCron, err := service.normalizeInput(input)
+func (s *cronService) Stop() error {
+	if s.manager == nil {
+		return nil
+	}
+	return s.manager.Stop()
+}
+
+func (s *cronService) ListCrons() ([]StoredCron, error) {
+	entries, err := s.listAllEntries()
 	if err != nil {
 		return nil, err
 	}
-	cronDir, err := service.cronDir(storedCron.Config.CronID)
+	crons := make([]StoredCron, 0, len(entries))
+	for _, entry := range entries {
+		crons = append(crons, entry.stored)
+	}
+	return crons, nil
+}
+
+func (s *cronService) GetCron(cronID string) (*StoredCron, error) {
+	_, stored, err := s.findCronOwner(cronID)
+	return stored, err
+}
+
+func (s *cronService) CreateCron(input UpsertCronInput) (*StoredCron, error) {
+	resolvedProfile, workspace, err := s.resolver.ResolveWorkspace(input.ProfileName)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(cronDir); err == nil {
+	if ownerWS, existing, findErr := s.findCronOwner(strings.TrimSpace(input.CronID)); findErr == nil {
+		return nil, fmt.Errorf("cron already exists in workspace %s for profile %s: %s", ownerWS, existing.Config.ProfileName, existing.Config.CronID)
+	} else if !isCronNotFound(findErr) {
+		return nil, findErr
+	}
+	input.ProfileName = resolvedProfile
+	storedCron, err := normalizeCronInput(workspace, input)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(storedCron.Path); err == nil {
 		return nil, fmt.Errorf("cron already exists: %s", storedCron.Config.CronID)
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if err := service.writeCron(*storedCron); err != nil {
+	if err := writeCronFiles(workspace, *storedCron); err != nil {
 		return nil, err
 	}
-	if err := service.syncRuntime(*storedCron); err != nil {
+	if err := s.syncRuntime(*storedCron); err != nil {
 		return nil, err
 	}
-	return service.readCron(storedCron.Config.CronID)
+	return readCronFiles(workspace, storedCron.Config.CronID)
 }
 
-func (service *workspaceService) UpdateCron(input UpsertCronInput) (*StoredCron, error) {
-	storedCron, err := service.normalizeInput(input)
+func (s *cronService) UpdateCron(input UpsertCronInput) (*StoredCron, error) {
+	resolvedProfile, workspace, err := s.resolver.ResolveWorkspace(input.ProfileName)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := service.readCron(storedCron.Config.CronID); err != nil {
+	ownerWS, _, ownerErr := s.findCronOwner(strings.TrimSpace(input.CronID))
+	if ownerErr != nil && !isCronNotFound(ownerErr) {
+		return nil, ownerErr
+	}
+	if ownerWS != "" && ownerWS != workspace {
+		return nil, fmt.Errorf("cron %s belongs to workspace %s and cannot be moved to %s", strings.TrimSpace(input.CronID), ownerWS, workspace)
+	}
+	input.ProfileName = resolvedProfile
+	storedCron, err := normalizeCronInput(workspace, input)
+	if err != nil {
 		return nil, err
 	}
-	if err := service.writeCron(*storedCron); err != nil {
+	if _, err := readCronFiles(workspace, storedCron.Config.CronID); err != nil {
 		return nil, err
 	}
-	if err := service.syncRuntime(*storedCron); err != nil {
+	if err := writeCronFiles(workspace, *storedCron); err != nil {
 		return nil, err
 	}
-	return service.readCron(storedCron.Config.CronID)
+	if err := s.syncRuntime(*storedCron); err != nil {
+		return nil, err
+	}
+	return readCronFiles(workspace, storedCron.Config.CronID)
 }
 
-func (service *workspaceService) DeleteCron(cronID string) error {
-	cronID = strings.TrimSpace(cronID)
-	if err := validateCronID(cronID); err != nil {
+func (s *cronService) DeleteCron(cronID string) error {
+	ownerWS, _, err := s.findCronOwner(cronID)
+	if err != nil {
 		return err
 	}
-	if service.manager != nil {
-		if err := service.manager.DeleteCron(cronID); err != nil && !isCronNotFound(err) {
+	cronID = strings.TrimSpace(cronID)
+	if s.manager != nil {
+		if err := s.manager.DeleteCron(cronID); err != nil && !isCronNotFound(err) {
 			return err
 		}
 	}
-	cronDir, err := service.cronDir(cronID)
+	dir, err := resolveCronDir(ownerWS, cronID)
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(cronDir); err != nil {
-		return err
-	}
-	return nil
+	return os.RemoveAll(dir)
 }
 
-func (service *workspaceService) ExecuteCron(cronID string) error {
-	storedCron, err := service.readCron(cronID)
+func (s *cronService) ExecuteCron(cronID string) error {
+	_, stored, err := s.findCronOwner(cronID)
 	if err != nil {
 		return err
 	}
+	return s.executeCron(*stored)
+}
+
+// --- Internal methods ---
+
+func (s *cronService) executeCron(storedCron StoredCron) error {
 	if !storedCron.Config.Enabled {
-		return fmt.Errorf("cron is disabled: %s", cronID)
+		return fmt.Errorf("cron is disabled: %s", storedCron.Config.CronID)
 	}
-	if service.executor == nil {
+	if s.executor == nil {
 		return fmt.Errorf("cron executor is not configured")
 	}
 
-	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", cronID, storedCron.Config.CronExpression)
+	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", storedCron.Config.CronID, storedCron.Config.CronExpression)
 
-	startedAt := service.currentTime()
+	startedAt := s.currentTime()
 	executionID := executionPrefix + startedAt.Format(executionTimeFormat)
 	executionDir := filepath.Join(storedCron.Path, executionID)
 	if err := os.MkdirAll(executionDir, 0755); err != nil {
@@ -289,16 +316,18 @@ func (service *workspaceService) ExecuteCron(cronID string) error {
 		return err
 	}
 
-	execErr := service.executor(ExecutionRequest{
+	execErr := s.executor(ExecutionRequest{
 		CronID:       storedCron.Config.CronID,
 		SessionID:    sessionID,
-		Prompt:       buildExecutionPrompt(storedCron, executionDir),
+		Prompt:       buildExecutionPrompt(&storedCron, executionDir),
 		ExecutionDir: executionDir,
 		Metadata: map[string]string{
 			"source":  defaultCronChannelID,
 			"cron_id": storedCron.Config.CronID,
 			"exec_id": executionID,
 		},
+		ProfileName: storedCron.Config.ProfileName,
+		Mode:        storedCron.Config.InvocationMode,
 	})
 
 	manifest.Status = "succeeded"
@@ -306,7 +335,7 @@ func (service *workspaceService) ExecuteCron(cronID string) error {
 		manifest.Status = "failed"
 		manifest.Error = execErr.Error()
 	}
-	manifest.FinishedAt = service.currentTime().Format(time.RFC3339)
+	manifest.FinishedAt = s.currentTime().Format(time.RFC3339)
 	artifacts, artifactErr := collectArtifacts(executionDir)
 	if artifactErr != nil && execErr == nil {
 		execErr = artifactErr
@@ -320,38 +349,177 @@ func (service *workspaceService) ExecuteCron(cronID string) error {
 	return execErr
 }
 
-func (service *workspaceService) buildRuntimeCron(storedCron StoredCron) Cron {
-	config := storedCron.Config
+func (s *cronService) buildRuntimeCron(storedCron StoredCron) Cron {
+	cronConfig := storedCron.Config
 	return &workspaceCron{
-		config: config,
+		config: cronConfig,
 		execute: func() error {
-			return service.ExecuteCron(config.CronID)
+			return s.ExecuteCron(cronConfig.CronID)
 		},
 	}
 }
 
-func (service *workspaceService) currentTime() time.Time {
+func (s *cronService) currentTime() time.Time {
 	now := cronNow()
-	if service.location == nil {
+	if s.location == nil {
 		return now
 	}
-	return now.In(service.location)
+	return now.In(s.location)
 }
 
-func (service *workspaceService) syncRuntime(storedCron StoredCron) error {
-	if service.manager == nil {
+func (s *cronService) syncRuntime(storedCron StoredCron) error {
+	if s.manager == nil {
 		return nil
 	}
-	if err := service.manager.RegisterCron(service.buildRuntimeCron(storedCron)); err != nil {
+	if err := s.manager.RegisterCron(s.buildRuntimeCron(storedCron)); err != nil {
 		return err
 	}
 	if !storedCron.Config.Enabled {
-		return service.manager.DeleteCron(storedCron.Config.CronID)
+		return s.manager.DeleteCron(storedCron.Config.CronID)
 	}
 	return nil
 }
 
-func (service *workspaceService) normalizeInput(input UpsertCronInput) (*StoredCron, error) {
+func (s *cronService) listAllEntries() ([]storedCronEntry, error) {
+	var entries []storedCronEntry
+	seen := make(map[string]string)
+	for _, workspace := range s.resolver.Workspaces() {
+		storedCrons, err := listWorkspaceCrons(workspace)
+		if err != nil {
+			return nil, err
+		}
+		for _, storedCron := range storedCrons {
+			s.hydrateProfileName(&storedCron, workspace)
+			if ownerWS, ok := seen[storedCron.Config.CronID]; ok && ownerWS != workspace {
+				return nil, fmt.Errorf("cron %s exists in multiple workspaces: %s and %s", storedCron.Config.CronID, ownerWS, workspace)
+			}
+			seen[storedCron.Config.CronID] = workspace
+			entries = append(entries, storedCronEntry{workspace: workspace, stored: storedCron})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].stored.Config.CronID == entries[j].stored.Config.CronID {
+			return entries[i].stored.Config.ProfileName < entries[j].stored.Config.ProfileName
+		}
+		return entries[i].stored.Config.CronID < entries[j].stored.Config.CronID
+	})
+	return entries, nil
+}
+
+func (s *cronService) findCronOwner(cronID string) (string, *StoredCron, error) {
+	cronID = strings.TrimSpace(cronID)
+	if cronID == "" {
+		return "", nil, fmt.Errorf("cron id is required")
+	}
+	var ownerWorkspace string
+	var stored *StoredCron
+	for _, workspace := range s.resolver.Workspaces() {
+		candidate, err := readCronFiles(workspace, cronID)
+		if isCronNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		s.hydrateProfileName(candidate, workspace)
+		if ownerWorkspace != "" && ownerWorkspace != workspace {
+			return "", nil, fmt.Errorf("cron %s exists in multiple workspaces: %s and %s", cronID, ownerWorkspace, workspace)
+		}
+		ownerWorkspace = workspace
+		stored = candidate
+	}
+	if ownerWorkspace == "" {
+		return "", nil, fmt.Errorf("%w: %s", ErrCronNotFound, cronID)
+	}
+	return ownerWorkspace, stored, nil
+}
+
+func (s *cronService) hydrateProfileName(storedCron *StoredCron, workspace string) {
+	if storedCron == nil || strings.TrimSpace(storedCron.Config.ProfileName) != "" {
+		return
+	}
+	storedCron.Config.ProfileName = s.resolver.DefaultProfileForWorkspace(workspace)
+}
+
+// --- Workspace-level file operations (pure functions) ---
+
+func ensureCronRoot(workspace string) error {
+	if strings.TrimSpace(workspace) == "" {
+		return fmt.Errorf("workspace path is required")
+	}
+	return os.MkdirAll(filepath.Join(workspace, cronsDirName), 0755)
+}
+
+func listWorkspaceCrons(workspace string) ([]StoredCron, error) {
+	if err := ensureCronRoot(workspace); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(workspace, cronsDirName))
+	if err != nil {
+		return nil, err
+	}
+	storedCrons := make([]StoredCron, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		storedCron, err := readCronFiles(workspace, entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		storedCrons = append(storedCrons, *storedCron)
+	}
+	sort.Slice(storedCrons, func(i, j int) bool {
+		return storedCrons[i].Config.CronID < storedCrons[j].Config.CronID
+	})
+	return storedCrons, nil
+}
+
+func readCronFiles(workspace string, cronID string) (*StoredCron, error) {
+	cronID = strings.TrimSpace(cronID)
+	if err := validateCronID(cronID); err != nil {
+		return nil, err
+	}
+	dir, err := resolveCronDir(workspace, cronID)
+	if err != nil {
+		return nil, err
+	}
+	configPath := filepath.Join(dir, configFileName)
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrCronNotFound, cronID)
+		}
+		return nil, err
+	}
+	var cfg Config
+	if err := json.Unmarshal(content, &cfg); err != nil {
+		return nil, err
+	}
+	if err := validateCronID(cfg.CronID); err != nil {
+		return nil, err
+	}
+	taskContent, err := os.ReadFile(filepath.Join(dir, taskFileName))
+	if err != nil {
+		return nil, err
+	}
+	return &StoredCron{Config: cfg, Task: strings.TrimSpace(string(taskContent)), Path: dir}, nil
+}
+
+func writeCronFiles(workspace string, storedCron StoredCron) error {
+	if err := ensureCronRoot(workspace); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(storedCron.Path, 0755); err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(storedCron.Path, configFileName), storedCron.Config); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(storedCron.Path, taskFileName), []byte(strings.TrimSpace(storedCron.Task)+"\n"), 0644)
+}
+
+func normalizeCronInput(workspace string, input UpsertCronInput) (*StoredCron, error) {
 	input.CronID = strings.TrimSpace(input.CronID)
 	input.CronExpression = strings.TrimSpace(input.CronExpression)
 	input.Task = strings.TrimSpace(input.Task)
@@ -367,7 +535,7 @@ func (service *workspaceService) normalizeInput(input UpsertCronInput) (*StoredC
 	if input.Task == "" {
 		return nil, fmt.Errorf("task is required")
 	}
-	cronDir, err := service.cronDir(input.CronID)
+	dir, err := resolveCronDir(workspace, input.CronID)
 	if err != nil {
 		return nil, err
 	}
@@ -376,64 +544,22 @@ func (service *workspaceService) normalizeInput(input UpsertCronInput) (*StoredC
 			CronID:         input.CronID,
 			CronExpression: input.CronExpression,
 			Enabled:        input.Enabled,
+			ProfileName:    strings.TrimSpace(input.ProfileName),
+			InvocationMode: strings.TrimSpace(input.InvocationMode),
 		},
 		Task: input.Task,
-		Path: cronDir,
+		Path: dir,
 	}, nil
 }
 
-func (service *workspaceService) readCron(cronID string) (*StoredCron, error) {
-	cronID = strings.TrimSpace(cronID)
-	if err := validateCronID(cronID); err != nil {
-		return nil, err
-	}
-	cronDir, err := service.cronDir(cronID)
-	if err != nil {
-		return nil, err
-	}
-	configPath := filepath.Join(cronDir, configFileName)
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s", ErrCronNotFound, cronID)
-		}
-		return nil, err
-	}
-	var config Config
-	if err := json.Unmarshal(content, &config); err != nil {
-		return nil, err
-	}
-	if err := validateCronID(config.CronID); err != nil {
-		return nil, err
-	}
-	taskContent, err := os.ReadFile(filepath.Join(cronDir, taskFileName))
-	if err != nil {
-		return nil, err
-	}
-	return &StoredCron{Config: config, Task: strings.TrimSpace(string(taskContent)), Path: cronDir}, nil
-}
-
-func (service *workspaceService) writeCron(storedCron StoredCron) error {
-	if err := service.EnsureRoot(); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(storedCron.Path, 0755); err != nil {
-		return err
-	}
-	if err := writeJSON(filepath.Join(storedCron.Path, configFileName), storedCron.Config); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(storedCron.Path, taskFileName), []byte(strings.TrimSpace(storedCron.Task)+"\n"), 0644)
-}
-
-func (service *workspaceService) cronDir(cronID string) (string, error) {
-	if strings.TrimSpace(service.workspace) == "" {
+func resolveCronDir(workspace string, cronID string) (string, error) {
+	if strings.TrimSpace(workspace) == "" {
 		return "", fmt.Errorf("workspace path is required")
 	}
 	if err := validateCronID(cronID); err != nil {
 		return "", err
 	}
-	root := filepath.Join(service.workspace, cronsDirName)
+	root := filepath.Join(workspace, cronsDirName)
 	candidate := filepath.Join(root, cronID)
 	resolvedRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -453,6 +579,8 @@ func (service *workspaceService) cronDir(cronID string) (string, error) {
 	return resolvedCandidate, nil
 }
 
+// --- Shared helpers ---
+
 func validateCronID(cronID string) error {
 	if strings.TrimSpace(cronID) == "" {
 		return fmt.Errorf("cron id is required")
@@ -468,8 +596,7 @@ func buildCronSessionID(cronID string, executionID string) string {
 }
 
 func buildExecutionPrompt(storedCron *StoredCron, executionDir string) string {
-	relExecutionDir := executionDir
-	return fmt.Sprintf("Execute cron task %q.\n\nExecution directory: %s\nStore any generated artifacts under this directory.\n\nTask definition:\n%s", storedCron.Config.CronID, filepath.ToSlash(relExecutionDir), storedCron.Task)
+	return fmt.Sprintf("Execute cron task %q.\n\nExecution directory: %s\nStore any generated artifacts under this directory.\n\nTask definition:\n%s", storedCron.Config.CronID, filepath.ToSlash(executionDir), storedCron.Task)
 }
 
 func collectArtifacts(executionDir string) ([]string, error) {
