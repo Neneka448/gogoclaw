@@ -25,13 +25,22 @@ import (
 
 type fakeProvider struct {
 	responses []provider.LLMCommonResponse
+	errors    []error
 	requests  []openai.ChatCompletionRequest
 }
 
-func (provider *fakeProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
-	provider.requests = append(provider.requests, request)
-	response := provider.responses[0]
-	provider.responses = provider.responses[1:]
+func (p *fakeProvider) ChatCompletion(request openai.ChatCompletionRequest) (provider.LLMCommonResponse, error) {
+	p.requests = append(p.requests, request)
+	var err error
+	if len(p.errors) > 0 {
+		err = p.errors[0]
+		p.errors = p.errors[1:]
+	}
+	if err != nil {
+		return provider.NormalizedResponse{}, err
+	}
+	response := p.responses[0]
+	p.responses = p.responses[1:]
 	return response, nil
 }
 
@@ -1085,4 +1094,93 @@ func writeTestConfigWithIterations(t *testing.T, maxIterations int) string {
 	}
 
 	return configPath
+}
+
+func newTestRuntimeContextWithRetries(workspace string, maxIterations int, maxRetries int) internalcontext.RuntimeContext {
+	ctx := newTestRuntimeContext(workspace, maxIterations)
+	ctx.Profile.MaxRetryTimes = maxRetries
+	return ctx
+}
+
+func TestAgentLoopRetriesLLMCallAndSucceeds(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		errors:    []error{errors.New("network timeout"), nil},
+		responses: []provider.LLMCommonResponse{provider.NormalizedResponse{Content: "hello back"}},
+	}
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "cli", Message: "hi", ChatID: "chat-1", SenderID: "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContextWithRetries(workspace, 4, 3),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected 2 LLM calls (1 fail + 1 success), got %d", len(providerStub.requests))
+	}
+}
+
+func TestAgentLoopSendsErrorToUserAfterAllRetriesFail(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		errors: []error{errors.New("rate limited"), errors.New("rate limited")},
+	}
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "cli", Message: "hi", ChatID: "chat-1", SenderID: "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   &fakeToolRegistry{},
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContextWithRetries(workspace, 4, 2),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+
+	err = loop.ProcessMessage(inboundMessage)
+	if err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("ProcessMessage() error = %v, want rate limited", err)
+	}
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(providerStub.requests))
+	}
+
+	// Verify error message was sent to user via outbound.
+	outboundCh, outErr := bus.Get(messagebus.OutboundQueue)
+	if outErr != nil {
+		t.Fatalf("bus.Get(Outbound) error = %v", outErr)
+	}
+	select {
+	case outbound := <-outboundCh:
+		if !strings.Contains(outbound.Message, "LLM request failed") {
+			t.Fatalf("outbound message = %q, want error notification", outbound.Message)
+		}
+		if outbound.FinishReason != "error" {
+			t.Fatalf("outbound FinishReason = %q, want error", outbound.FinishReason)
+		}
+	default:
+		t.Fatal("expected error message on outbound queue, got none")
+	}
 }

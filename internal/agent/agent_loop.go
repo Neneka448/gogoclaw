@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strconv"
 	"strings"
 	"time"
@@ -122,9 +123,10 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 		})
 		t0 := time.Now()
 		utils.Perf("llm: request start (iteration %d)", i+1)
-		response, err := al.context.Provider.ChatCompletion(params)
+		response, err := al.chatCompletionWithRetry(params, runtimeConfig.Profile.MaxRetryTimes)
 		utils.Perf("llm: response received (iteration %d), took %s", i+1, time.Since(t0))
 		if err != nil {
+			_ = al.publishDirectReply(msg, "⚠️ LLM request failed: "+err.Error(), "error")
 			return err
 		}
 
@@ -174,6 +176,27 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 
 func isNewSessionCommand(message string) bool {
 	return strings.TrimSpace(message) == newSessionCommand
+}
+
+func (al *agentLoop) chatCompletionWithRetry(params Openai.ChatCompletionRequest, maxRetries int) (provider.LLMCommonResponse, error) {
+	if maxRetries < 1 {
+		maxRetries = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Int63n(int64(backoff)/2 + 1))
+			slog.Warn("llm: retrying after error", "attempt", attempt+1, "backoff", backoff+jitter, "error", lastErr)
+			time.Sleep(backoff + jitter)
+		}
+		response, err := al.context.Provider.ChatCompletion(params)
+		if err == nil {
+			return response, nil
+		}
+		lastErr = err
+	}
+	return provider.NormalizedResponse{}, lastErr
 }
 
 func (al *agentLoop) buildMessage(currentSession session.Session, memoryWindow int) []Openai.ChatCompletionMessage {
