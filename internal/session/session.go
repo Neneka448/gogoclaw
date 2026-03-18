@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -286,7 +287,7 @@ func (session *fileSession) GetMessages(memoryWindow int) []openai.ChatCompletio
 	}
 	start = normalizeWindowStart(session.data.Messages, start)
 
-	return cloneMessages(session.data.Messages[start:])
+	return utils.CloneMessages(session.data.Messages[start:])
 }
 
 func normalizeWindowStart(messages []openai.ChatCompletionMessage, start int) int {
@@ -331,7 +332,7 @@ func (session *fileSession) AppendMessages(messages []openai.ChatCompletionMessa
 		return err
 	}
 
-	session.data.Messages = append(session.data.Messages, cloneMessages(messages)...)
+	session.data.Messages = append(session.data.Messages, utils.CloneMessages(messages)...)
 	session.scheduleFlushLocked()
 	return nil
 }
@@ -460,7 +461,7 @@ func (session *fileSession) snapshotLocked() SessionFile {
 			Type:           session.data.Meta.Type,
 			IngestedDigest: session.data.Meta.IngestedDigest,
 		},
-		Messages: cloneMessages(session.data.Messages),
+		Messages: utils.CloneMessages(session.data.Messages),
 	}
 	if snapshot.Meta.SessionKey == "" {
 		snapshot.Meta.SessionKey = session.id
@@ -553,34 +554,6 @@ func (session *fileSession) flushLoop() {
 	}
 }
 
-func cloneMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
-	clonedMessages := make([]openai.ChatCompletionMessage, 0, len(messages))
-	for _, message := range messages {
-		var functionCall *openai.FunctionCall
-		if message.FunctionCall != nil {
-			copied := *message.FunctionCall
-			functionCall = &copied
-		}
-
-		toolCalls := make([]openai.ToolCall, 0, len(message.ToolCalls))
-		for _, toolCall := range message.ToolCalls {
-			toolCalls = append(toolCalls, toolCall)
-		}
-
-		clonedMessages = append(clonedMessages, openai.ChatCompletionMessage{
-			Role:         message.Role,
-			Content:      message.Content,
-			Name:         message.Name,
-			Refusal:      message.Refusal,
-			FunctionCall: functionCall,
-			ToolCalls:    toolCalls,
-			ToolCallID:   message.ToolCallID,
-		})
-	}
-
-	return clonedMessages
-}
-
 func inferSessionChannel(sessionID string) string {
 	normalized := strings.TrimSpace(sessionID)
 	if normalized == "" {
@@ -594,7 +567,7 @@ func inferSessionChannel(sessionID string) string {
 }
 
 func MessagesDigest(messages []openai.ChatCompletionMessage) string {
-	encoded, err := json.Marshal(cloneMessages(messages))
+	encoded, err := json.Marshal(utils.CloneMessages(messages))
 	if err != nil {
 		return ""
 	}

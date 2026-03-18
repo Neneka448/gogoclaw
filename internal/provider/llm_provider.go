@@ -3,6 +3,7 @@ package provider
 import (
 	"maps"
 
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -133,7 +134,7 @@ func FirstToolCallName(response LLMCommonResponse) (string, bool) {
 }
 
 func BuildOpenaiRequestParams(params ChatCompletionParams) openai.ChatCompletionRequest {
-	messages := cloneMessages(params.Messages)
+	messages := utils.CloneMessages(params.Messages)
 
 	tools := make([]openai.Tool, 0, len(params.Tools))
 	for _, tool := range params.Tools {
@@ -200,34 +201,6 @@ func BuildAssistantMessage(response LLMCommonResponse) openai.ChatCompletionMess
 	}
 
 	return message
-}
-
-func cloneMessages(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
-	clonedMessages := make([]openai.ChatCompletionMessage, 0, len(messages))
-	for _, message := range messages {
-		var functionCall *openai.FunctionCall
-		if message.FunctionCall != nil {
-			copied := *message.FunctionCall
-			functionCall = &copied
-		}
-
-		toolCalls := make([]openai.ToolCall, 0, len(message.ToolCalls))
-		for _, toolCall := range message.ToolCalls {
-			toolCalls = append(toolCalls, toolCall)
-		}
-
-		clonedMessages = append(clonedMessages, openai.ChatCompletionMessage{
-			Role:         message.Role,
-			Content:      message.Content,
-			Name:         message.Name,
-			Refusal:      message.Refusal,
-			FunctionCall: functionCall,
-			ToolCalls:    toolCalls,
-			ToolCallID:   message.ToolCallID,
-		})
-	}
-
-	return clonedMessages
 }
 
 func buildOpenaiToolChoice(tool openai.Tool) openai.ToolChoice {
