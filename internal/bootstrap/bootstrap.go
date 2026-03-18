@@ -68,7 +68,10 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		Invoker:         invoker,
 	}
 
-	gateway := gateway.NewGateway(sysContext)
+	gateway, err := gateway.NewGateway(sysContext)
+	if err != nil {
+		return nil, err
+	}
 
 	return &gateway, nil
 }

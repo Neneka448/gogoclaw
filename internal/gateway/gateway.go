@@ -5,12 +5,10 @@ import (
 	"io"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Neneka448/gogoclaw/internal/agent"
 	"github.com/Neneka448/gogoclaw/internal/context"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/session"
@@ -50,7 +48,10 @@ type gateway struct {
 	readySessions     []string
 }
 
-func NewGateway(context context.SystemContext) Gateway {
+func NewGateway(context context.SystemContext) (Gateway, error) {
+	if context.Invoker == nil {
+		return nil, fmt.Errorf("gateway invoker is required")
+	}
 	gateway := &gateway{
 		context:          context,
 		inboundStopCh:    make(chan struct{}),
@@ -58,25 +59,10 @@ func NewGateway(context context.SystemContext) Gateway {
 		sessionMailboxes: make(map[string]*sessionMailbox),
 	}
 	gateway.schedulerCond = sync.NewCond(&gateway.schedulerMu)
-	return gateway
+	return gateway, nil
 }
 
 func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.Message, error) {
-	if g.context.Invoker == nil && g.context.SessionManager == nil {
-		return nil, nil
-	}
-	if g.context.Invoker == nil {
-		_, err := g.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(msg.Message) == "" {
-			return nil, nil
-		}
-	}
-	if err := g.ensureRuntimeReady(); err != nil {
-		return nil, err
-	}
 	outboundQueue, err := g.context.MessageBus.Get(messagebus.OutboundQueue)
 	if err != nil {
 		return nil, err
@@ -88,30 +74,12 @@ func (g *gateway) DirectProcessAndReturn(msg messagebus.Message) ([]messagebus.M
 }
 
 func (g *gateway) startAgentLoop(msg messagebus.Message) <-chan error {
-	if g.context.Invoker != nil {
-		errCh, err := g.context.Invoker.InvokeAsync(context.InvocationRequest{
-			ProfileName: profileNameForMessage(msg),
-			Message:     msg,
-			Mode:        context.InvocationModeForeground,
-		})
-		if err != nil {
-			failed := make(chan error, 1)
-			failed <- err
-			return failed
-		}
-		return errCh
+	errCh, err := g.context.Invoker.InvokeAsync(buildInvocationRequest(msg, context.InvocationModeForeground))
+	if err != nil {
+		failed := make(chan error, 1)
+		failed <- err
+		return failed
 	}
-	agentLoop := agent.NewAgentLoop(g.context)
-	errCh := make(chan error, 1)
-	go func() {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				errCh <- fmt.Errorf("agent loop panic: %v\n%s", recovered, debug.Stack())
-			}
-		}()
-		errCh <- agentLoop.ProcessMessage(msg)
-	}()
-
 	return errCh
 }
 
@@ -186,7 +154,7 @@ func (g *gateway) Start() error {
 	g.started = true
 	g.mu.Unlock()
 
-	if err := g.ensureRuntimeReady(); err != nil {
+	if err := g.ensureDefaultProfileReady(); err != nil {
 		return g.failStart(err)
 	}
 
@@ -251,11 +219,7 @@ func (g *gateway) Start() error {
 }
 
 func (g *gateway) failStart(startErr error) error {
-	if g.context.Invoker != nil {
-		_ = g.context.Invoker.Close()
-	} else if g.context.VectorStore != nil {
-		_ = g.context.VectorStore.Stop()
-	}
+	_ = g.context.Invoker.Close()
 	g.mu.Lock()
 	g.started = false
 	g.mu.Unlock()
@@ -368,11 +332,8 @@ func (g *gateway) Stop() error {
 	return nil
 }
 
-func (g *gateway) ensureRuntimeReady() error {
-	if g.context.Invoker != nil {
-		return g.context.Invoker.EnsureProfile("default")
-	}
-	return context.NewRuntimeInitializer(g.context).EnsureReady()
+func (g *gateway) ensureDefaultProfileReady() error {
+	return g.context.Invoker.EnsureProfile("default")
 }
 
 func (g *gateway) enqueueInboundMessage(message messagebus.Message) error {
@@ -404,21 +365,18 @@ func (g *gateway) runInboundWorker() {
 		if !ok {
 			return
 		}
-		if g.context.Invoker != nil {
-			if err := g.context.Invoker.Invoke(context.InvocationRequest{
-				ProfileName: profileNameForMessage(message),
-				Message:     message,
-				Mode:        context.InvocationModeBackground,
-			}); err != nil {
-				g.logBackgroundError("inbound", message, err)
-			}
-			g.completeInboundMessage(sessionID)
-			continue
-		}
-		if err := agent.NewAgentLoop(g.context).ProcessMessage(message); err != nil {
+		if err := g.context.Invoker.Invoke(buildInvocationRequest(message, context.InvocationModeBackground)); err != nil {
 			g.logBackgroundError("inbound", message, err)
 		}
 		g.completeInboundMessage(sessionID)
+	}
+}
+
+func buildInvocationRequest(msg messagebus.Message, mode context.InvocationMode) context.InvocationRequest {
+	return context.InvocationRequest{
+		ProfileName: profileNameForMessage(msg),
+		Message:     msg,
+		Mode:        mode,
 	}
 }
 
