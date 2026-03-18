@@ -3,10 +3,13 @@ package tools
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	Openai "github.com/sashabaranov/go-openai"
 )
+
+const DefaultToolExecutionTimeout = 60 * time.Second
 
 type Tool interface {
 	Execute(args string) (string, error)
@@ -32,6 +35,7 @@ type ToolDescriptor struct {
 	Name       string
 	Tool       Tool
 	ToolForLLM Openai.Tool
+	Timeout    time.Duration
 }
 
 type ToolRegistry interface {

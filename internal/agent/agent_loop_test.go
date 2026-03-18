@@ -1184,3 +1184,77 @@ func TestAgentLoopSendsErrorToUserAfterAllRetriesFail(t *testing.T) {
 		t.Fatal("expected error message on outbound queue, got none")
 	}
 }
+
+type slowTool struct {
+	delay time.Duration
+}
+
+func (s slowTool) Execute(args string) (string, error) {
+	time.Sleep(s.delay)
+	return `{"content":"done"}`, nil
+}
+
+func TestAgentLoopToolExecutionTimesOut(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
+	bus := messagebus.NewMessageBus()
+	providerStub := &fakeProvider{
+		responses: []provider.LLMCommonResponse{
+			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
+				ID:        "call_1",
+				Name:      "slow_tool",
+				Arguments: `{}`,
+				Type:      string(openai.ToolTypeFunction),
+			}}},
+			provider.NormalizedResponse{Content: "handled"},
+		},
+	}
+
+	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
+		"slow_tool": {
+			Name:    "slow_tool",
+			Tool:    slowTool{delay: 5 * time.Second},
+			Timeout: 100 * time.Millisecond,
+			ToolForLLM: openai.Tool{
+				Type:     openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{Name: "slow_tool"},
+			},
+		},
+	}}
+
+	inboundMessage := messagebus.Message{
+		ChannelID: "cli", Message: "run it", ChatID: "chat-1", SenderID: "user-1",
+	}
+
+	loop, err := NewAgentLoop(internalcontext.SystemContext{
+		MessageBus:     bus,
+		Provider:       providerStub,
+		ToolRegistry:   toolRegistry,
+		SessionManager: sessionManager,
+		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
+		Runtime:        newTestRuntimeContext(workspace, 4),
+	})
+	if err != nil {
+		t.Fatalf("NewAgentLoop() error = %v", err)
+	}
+
+	if err := loop.ProcessMessage(inboundMessage); err != nil {
+		t.Fatalf("ProcessMessage() error = %v", err)
+	}
+
+	// The tool timed out, so the second LLM call should have received a timeout error in the tool response.
+	if len(providerStub.requests) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(providerStub.requests))
+	}
+	toolResultMessages := providerStub.requests[1].Messages
+	foundTimeout := false
+	for _, msg := range toolResultMessages {
+		if msg.Role == openai.ChatMessageRoleTool && strings.Contains(msg.Content, "timed out") {
+			foundTimeout = true
+			break
+		}
+	}
+	if !foundTimeout {
+		t.Fatal("expected tool timeout error in second LLM request messages")
+	}
+}

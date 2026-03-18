@@ -236,7 +236,7 @@ func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) []execut
 			continue
 		}
 
-		toolResponse, err := toolDescriptor.Tool.Execute(toolCall.Arguments)
+		toolResponse, err := al.executeToolWithTimeout(toolDescriptor, toolCall.Arguments)
 		if err != nil {
 			messages = append(messages, executedToolMessage{Message: buildToolCallOutputMessage(toolCall, buildToolExecutionErrorOutput(toolCall.Name, err))})
 			continue
@@ -250,6 +250,30 @@ func (al *agentLoop) executeToolCalls(toolCalls []provider.LLMToolCall) []execut
 	}
 
 	return messages
+}
+
+func (al *agentLoop) executeToolWithTimeout(descriptor toolspkg.ToolDescriptor, args string) (string, error) {
+	timeout := descriptor.Timeout
+	if timeout <= 0 {
+		timeout = toolspkg.DefaultToolExecutionTimeout
+	}
+
+	type result struct {
+		response string
+		err      error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		resp, err := descriptor.Tool.Execute(args)
+		ch <- result{resp, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.response, r.err
+	case <-time.After(timeout):
+		return "", fmt.Errorf("tool %s timed out after %s", descriptor.Name, timeout)
+	}
 }
 
 func buildToolCallOutputMessage(toolCall provider.LLMToolCall, content string) Openai.ChatCompletionMessage {

@@ -483,31 +483,48 @@ func resolveInvocationEmbeddingProvider(configManager config.ConfigManager, cach
 func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) (tools.ToolRegistry, error) {
 	registry := tools.NewToolRegistry()
 	toolConfigIndex := buildInvocationToolConfigIndex(toolConfigs)
-	if err := registry.RegisterTool("read_file", tools.NewReadFileTool(workspace)); err != nil {
+	readFile := tools.NewReadFileTool(workspace)
+	readFile.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "read_file", tools.DefaultToolExecutionTimeout)
+	if err := registry.RegisterTool("read_file", readFile); err != nil {
 		return nil, err
 	}
-	if err := registry.RegisterTool("list_dir", tools.NewListDirTool(workspace)); err != nil {
+	listDir := tools.NewListDirTool(workspace)
+	listDir.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "list_dir", tools.DefaultToolExecutionTimeout)
+	if err := registry.RegisterTool("list_dir", listDir); err != nil {
 		return nil, err
 	}
-	if err := registry.RegisterTool("terminal", tools.NewTerminalTool(workspace, resolveInvocationToolTimeout(toolConfigIndex, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
+	terminal := tools.NewTerminalTool(workspace, resolveInvocationToolTimeout(toolConfigIndex, "terminal", tools.DefaultTerminalTimeout()))
+	terminal.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "terminal", tools.DefaultTerminalTimeout())
+	if err := registry.RegisterTool("terminal", terminal); err != nil {
 		return nil, err
 	}
-	if err := registry.RegisterTool("message", tools.NewMessageTool(bus)); err != nil {
+	messageTool := tools.NewMessageTool(bus)
+	messageTool.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "message", tools.DefaultToolExecutionTimeout)
+	if err := registry.RegisterTool("message", messageTool); err != nil {
 		return nil, err
 	}
-	if err := registry.RegisterTool("get_skill", tools.NewGetSkillTool(skillRegistry)); err != nil {
+	getSkill := tools.NewGetSkillTool(skillRegistry)
+	getSkill.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "get_skill", tools.DefaultToolExecutionTimeout)
+	if err := registry.RegisterTool("get_skill", getSkill); err != nil {
 		return nil, err
 	}
-	if err := registry.RegisterTool("create_cron", tools.NewCreateCronTool(cronService)); err != nil {
+	createCron := tools.NewCreateCronTool(cronService)
+	createCron.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "create_cron", tools.DefaultToolExecutionTimeout)
+	if err := registry.RegisterTool("create_cron", createCron); err != nil {
 		return nil, err
 	}
 	if memoryService != nil {
-		if err := registry.RegisterTool("recall_memory", tools.NewRecallMemoryTool(memoryService)); err != nil {
+		recallMemory := tools.NewRecallMemoryTool(memoryService)
+		recallMemory.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "recall_memory", tools.DefaultToolExecutionTimeout)
+		if err := registry.RegisterTool("recall_memory", recallMemory); err != nil {
 			return nil, err
 		}
 	}
 	if mcpService != nil {
 		for _, descriptor := range mcpService.ToolDescriptors() {
+			if descriptor.Timeout <= 0 {
+				descriptor.Timeout = resolveInvocationToolTimeout(toolConfigIndex, descriptor.Name, tools.DefaultToolExecutionTimeout)
+			}
 			if err := registry.RegisterTool(descriptor.Name, descriptor); err != nil {
 				return nil, err
 			}
