@@ -9,7 +9,6 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/cli/auth"
 	"github.com/Neneka448/gogoclaw/internal/config"
-	"github.com/Neneka448/gogoclaw/internal/vectorstore"
 	workspacepkg "github.com/Neneka448/gogoclaw/internal/workspace"
 	"github.com/charmbracelet/huh"
 )
@@ -182,9 +181,6 @@ func onboard(ctx *onboardContext) error {
 	if _, err := writeConfig(ctx); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
-	if err := initializeVectorStore(ctx); err != nil {
-		return fmt.Errorf("initialize vector store: %w", err)
-	}
 
 	return nil
 }
@@ -205,31 +201,6 @@ func writeConfig(ctx *onboardContext) (*config.SysConfig, error) {
 	slog.Info("Config file created", "path", configPath)
 
 	return &sysConfig, nil
-}
-
-func initializeVectorStore(ctx *onboardContext) error {
-	configPath := filepath.Join(ctx.ProfilePath, configFileName)
-	manager := config.NewConfigManager(configPath)
-	profileName := strings.TrimSpace(ctx.ProfileName)
-	if profileName == "" {
-		profileName = "default"
-	}
-	profile, err := manager.GetAgentProfileConfig(profileName)
-	if err != nil {
-		return err
-	}
-	_, embeddingProfile, err := manager.ResolveEmbeddingProfile(profileName)
-	if err != nil {
-		return err
-	}
-	service := vectorstore.NewSQLiteVecService(profile.Workspace, profileName, *embeddingProfile)
-	if err := service.Start(); err != nil {
-		return err
-	}
-	if err := service.Stop(); err != nil {
-		return err
-	}
-	return nil
 }
 
 func normalizeContextPaths(ctx *onboardContext, homePath string) {
