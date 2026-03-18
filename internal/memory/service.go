@@ -245,7 +245,7 @@ func (s *service) insertNodeWithEdgesAndCommunityCheck(node MemoryNode, kind Nod
 	}
 	if upsertErr != nil {
 		fmt.Fprintf(os.Stderr, "[warning] vector upsert for node %s failed after %d attempts, node record saved but vector missing\n", node.ID, vectorUpsertMaxRetries)
-		return nil
+		return fmt.Errorf("vector upsert for node %s failed after %d attempts: %w", node.ID, vectorUpsertMaxRetries, upsertErr)
 	}
 
 	if err := s.connectEdges(node, embedding, kind, level); err != nil {
