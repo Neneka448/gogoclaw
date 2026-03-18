@@ -64,6 +64,7 @@ type SystemContext struct {
 	SystemPrompt    systemprompt.Service
 	ChannelRegistry channels.Registry
 	SessionManager  session.SessionManager
+	CurrentSession  session.Session
 	VectorStore     vectorstore.Service
 	CronService     cron.Service
 	CronEnabled     bool

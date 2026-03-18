@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
+	appcontext "github.com/Neneka448/gogoclaw/internal/context"
+	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
 )
 
@@ -100,5 +102,47 @@ func TestResolveInvocationToolTimeoutUsesIndexedConfig(t *testing.T) {
 	}
 	if got := resolveInvocationToolTimeout(index, "missing", defaultTimeout); got != defaultTimeout {
 		t.Fatalf("resolveInvocationToolTimeout(missing) = %s, want %s", got, defaultTimeout)
+	}
+}
+
+func TestBuildExecutionContextResolvesCurrentSession(t *testing.T) {
+	configPath := writeTestConfig(t)
+	configManager := config.NewConfigManager(configPath)
+
+	rawService, err := NewInvocationService(configManager, nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
+	if err != nil {
+		t.Fatalf("NewInvocationService() error = %v", err)
+	}
+	service, ok := rawService.(*invocationService)
+	if !ok {
+		t.Fatalf("service type = %T, want *invocationService", rawService)
+	}
+	defer func() {
+		if err := service.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	executionContext, err := service.buildExecutionContext(appcontext.InvocationRequest{
+		Message: messagebus.Message{
+			ChannelID:   "feishu",
+			ChatID:      "chat-1",
+			SenderID:    "user-1",
+			MessageType: "group",
+			Message:     "hello",
+			Metadata:    map[string]string{"session_type": "thread"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildExecutionContext() error = %v", err)
+	}
+	if executionContext.SessionManager == nil {
+		t.Fatal("executionContext.SessionManager = nil, want initialized manager")
+	}
+	if executionContext.CurrentSession == nil {
+		t.Fatal("executionContext.CurrentSession = nil, want resolved session")
+	}
+	if got := executionContext.CurrentSession.GetSessionID(); got != "feishu:chat-1" {
+		t.Fatalf("CurrentSession.GetSessionID() = %q, want feishu:chat-1", got)
 	}
 }

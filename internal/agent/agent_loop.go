@@ -34,8 +34,8 @@ const newSessionReply = "🎸A new session has started"
 const memoryProgressMessage = "[memory]: short-term memory generating"
 
 func NewAgentLoop(context context.SystemContext) (AgentLoop, error) {
-	if context.SessionManager == nil {
-		return nil, fmt.Errorf("agent loop requires session manager")
+	if context.CurrentSession == nil {
+		return nil, fmt.Errorf("agent loop requires current session")
 	}
 	runtime, err := normalizeRuntimeContext(context.Runtime)
 	if err != nil {
@@ -78,10 +78,7 @@ func (al *agentLoop) buildTools() []Openai.Tool {
 
 func (al *agentLoop) loop(msg messagebus.Message) error {
 	runtimeConfig := al.context.Runtime
-	currentSession, err := al.getOrCreateSession(msg)
-	if err != nil {
-		return err
-	}
+	currentSession := al.context.CurrentSession
 	if isNewSessionCommand(msg.Message) {
 		pending := al.prepareSessionMemoryIngestion(currentSession)
 		if pending != nil {
@@ -490,17 +487,6 @@ func (al *agentLoop) buildMaxIterationsExceededMessage(maxIterations int) Openai
 		Role:    Openai.ChatMessageRoleAssistant,
 		Content: "I reached the maximum number of tool call iterations (" + strconv.Itoa(maxIterations) + ") without finishing. If you want me to continue, please reply \"continue\".",
 	}
-}
-
-func (al *agentLoop) getOrCreateSession(msg messagebus.Message) (session.Session, error) {
-	currentSession, err := al.context.SessionManager.GetOrCreateSession(session.MakeSessionID(msg.ChannelID, msg.ChatID), msg.SenderID)
-	if err != nil {
-		return nil, err
-	}
-	if err := currentSession.UpdateMetadata(msg.ChannelID, sessionTypeFromMessage(msg)); err != nil {
-		return nil, err
-	}
-	return currentSession, nil
 }
 
 func sessionTypeFromMessage(msg messagebus.Message) string {

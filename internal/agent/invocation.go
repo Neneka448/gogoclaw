@@ -81,9 +81,6 @@ func (service *invocationService) Invoke(request appcontext.InvocationRequest) e
 	if err != nil {
 		return err
 	}
-	if err := ensureInvocationSession(executionContext, request.Message); err != nil {
-		return err
-	}
 	if strings.TrimSpace(request.Message.Message) == "" {
 		return nil
 	}
@@ -100,10 +97,6 @@ func (service *invocationService) InvokeAsync(request appcontext.InvocationReque
 		return nil, err
 	}
 	errCh := make(chan error, 1)
-	if err := ensureInvocationSession(executionContext, request.Message); err != nil {
-		errCh <- err
-		return errCh, nil
-	}
 	if strings.TrimSpace(request.Message.Message) == "" {
 		errCh <- nil
 		return errCh, nil
@@ -179,6 +172,11 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 		Workspace:            runtime.workspace,
 		InvocationMode:       normalizeInvocationMode(request.Mode),
 	}
+	currentSession, err := resolveInvocationSession(executionContext, request.Message)
+	if err != nil {
+		return appcontext.SystemContext{}, err
+	}
+	executionContext.CurrentSession = currentSession
 	return executionContext, nil
 }
 
@@ -354,12 +352,18 @@ func (runtime *profileRuntime) close() error {
 	return firstErr
 }
 
-func ensureInvocationSession(executionContext appcontext.SystemContext, message messagebus.Message) error {
+func resolveInvocationSession(executionContext appcontext.SystemContext, message messagebus.Message) (session.Session, error) {
 	if executionContext.SessionManager == nil {
-		return nil
+		return nil, nil
 	}
-	_, err := executionContext.SessionManager.GetOrCreateSession(session.MakeSessionID(message.ChannelID, message.ChatID), message.SenderID)
-	return err
+	currentSession, err := executionContext.SessionManager.GetOrCreateSession(session.MakeSessionID(message.ChannelID, message.ChatID), message.SenderID)
+	if err != nil {
+		return nil, err
+	}
+	if err := currentSession.UpdateMetadata(message.ChannelID, sessionTypeFromMessage(message)); err != nil {
+		return nil, err
+	}
+	return currentSession, nil
 }
 
 func recordFirstError(target *error, err error) {
