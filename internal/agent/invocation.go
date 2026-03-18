@@ -27,7 +27,6 @@ const defaultAgentProfileName = "default"
 
 type invocationService struct {
 	configManager          config.ConfigManager
-	sysConfig              *config.SysConfig
 	defaultMessageBus      messagebus.MessageBus
 	defaultChannelRegistry channels.Registry
 	cronService            cron.Service
@@ -44,7 +43,6 @@ type profileRuntime struct {
 	embeddingProfile       config.EmbeddingProfileConfig
 	workspace              string
 	skillRegistry          skills.Registry
-	sysConfig              *config.SysConfig
 	configManager          config.ConfigManager
 	defaultMessageBus      messagebus.MessageBus
 	defaultChannelRegistry channels.Registry
@@ -54,16 +52,12 @@ type profileRuntime struct {
 	startErr               error
 }
 
-func NewInvocationService(configManager config.ConfigManager, sysConfig *config.SysConfig, defaultMessageBus messagebus.MessageBus, defaultChannelRegistry channels.Registry, cronService cron.Service, cronEnabled bool) (appcontext.InvocationService, error) {
+func NewInvocationService(configManager config.ConfigManager, defaultMessageBus messagebus.MessageBus, defaultChannelRegistry channels.Registry, cronService cron.Service, cronEnabled bool) (appcontext.InvocationService, error) {
 	if configManager == nil {
 		return nil, fmt.Errorf("config manager is required")
 	}
-	if sysConfig == nil {
-		return nil, fmt.Errorf("system config is required")
-	}
 	return &invocationService{
 		configManager:          configManager,
-		sysConfig:              sysConfig,
 		defaultMessageBus:      defaultMessageBus,
 		defaultChannelRegistry: defaultChannelRegistry,
 		cronService:            cronService,
@@ -153,7 +147,11 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 	if request.Overrides.ReplaceChannelRegistry {
 		channelRegistry = request.Overrides.ChannelRegistry
 	}
-	toolRegistry, err := buildInvocationToolRegistry(runtime.workspace, runtime.sysConfig, runtime.skillRegistry, messageBus, runtime.cronService, runtime.context.MCPService, runtime.context.MemoryService)
+	toolConfigs, err := service.configManager.GetToolsConfig()
+	if err != nil {
+		return appcontext.SystemContext{}, err
+	}
+	toolRegistry, err := buildInvocationToolRegistry(runtime.workspace, toolConfigs, runtime.skillRegistry, messageBus, runtime.cronService, runtime.context.MCPService, runtime.context.MemoryService)
 	if err != nil {
 		return appcontext.SystemContext{}, err
 	}
@@ -238,7 +236,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 	if err != nil {
 		return nil, err
 	}
-	embeddingProfileName, embeddingProfile, err := resolveEmbeddingProfile(service.configManager, profileName, profile)
+	embeddingProfileName, embeddingProfile, err := resolveEmbeddingProfile(service.configManager, profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -254,15 +252,24 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 	if err != nil {
 		return nil, err
 	}
-	mcpService, err := mcppkg.NewService(workspace, service.sysConfig.MCP, mcppkg.Options{FailFast: true})
+	mcpConfig, err := service.configManager.GetMCPConfig()
+	if err != nil {
+		return nil, err
+	}
+	mcpService, err := mcppkg.NewService(workspace, mcpConfig, mcppkg.Options{FailFast: true})
 	if err != nil {
 		return nil, err
 	}
 	vectorStore := vectorstore.NewSQLiteVecService(workspace, profileName, *embeddingProfile)
-	memoryEnabled := service.sysConfig.Memory.Enabled && textEmbeddingProvider != nil
+	memoryConfig, err := service.configManager.GetMemoryConfig()
+	if err != nil {
+		_ = mcpService.Close()
+		return nil, err
+	}
+	memoryEnabled := memoryConfig.Enabled && textEmbeddingProvider != nil
 	var memoryService memory.Service
 	if memoryEnabled {
-		if err := config.ValidateMemoryConfig(service.sysConfig.Memory); err != nil {
+		if err := config.ValidateMemoryConfig(memoryConfig); err != nil {
 			_ = mcpService.Close()
 			return nil, fmt.Errorf("invalid memory config: %w", err)
 		}
@@ -272,7 +279,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 			profile.Model,
 			textEmbeddingProvider,
 			embeddingProfile.Text,
-			service.sysConfig.Memory,
+			memoryConfig,
 		)
 	}
 
@@ -298,7 +305,6 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 		embeddingProfile:       *embeddingProfile,
 		workspace:              workspace,
 		skillRegistry:          skillRegistry,
-		sysConfig:              service.sysConfig,
 		configManager:          service.configManager,
 		defaultMessageBus:      service.defaultMessageBus,
 		defaultChannelRegistry: service.defaultChannelRegistry,
@@ -382,30 +388,8 @@ func normalizeInvocationMode(mode appcontext.InvocationMode) appcontext.Invocati
 	return mode
 }
 
-func resolveEmbeddingProfile(configManager config.ConfigManager, profileName string, profile *config.ProfileConfig) (string, *config.EmbeddingProfileConfig, error) {
-	candidates := []string{}
-	if profile != nil {
-		if explicit := strings.TrimSpace(profile.EmbeddingProfile); explicit != "" {
-			candidates = append(candidates, explicit)
-		}
-	}
-	if trimmedProfileName := strings.TrimSpace(profileName); trimmedProfileName != "" {
-		candidates = append(candidates, trimmedProfileName)
-	}
-	candidates = append(candidates, defaultAgentProfileName)
-
-	seen := map[string]struct{}{}
-	for _, candidate := range candidates {
-		if _, ok := seen[candidate]; ok {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		embeddingProfile, err := configManager.GetEmbeddingProfileConfig(candidate)
-		if err == nil {
-			return candidate, embeddingProfile, nil
-		}
-	}
-	return "", nil, fmt.Errorf("embedding profile not found for agent profile %s", normalizeProfileName(profileName))
+func resolveEmbeddingProfile(configManager config.ConfigManager, profileName string) (string, *config.EmbeddingProfileConfig, error) {
+	return configManager.ResolveEmbeddingProfile(profileName)
 }
 
 func buildInvocationEmbeddingProviders(configManager config.ConfigManager, profile *config.EmbeddingProfileConfig) (provider.EmbeddingProvider, provider.EmbeddingProvider, error) {
@@ -444,7 +428,7 @@ func resolveInvocationEmbeddingProvider(configManager config.ConfigManager, cach
 	return embeddingProvider, nil
 }
 
-func buildInvocationToolRegistry(workspace string, sysConfig *config.SysConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) (tools.ToolRegistry, error) {
+func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) (tools.ToolRegistry, error) {
 	registry := tools.NewToolRegistry()
 	if err := registry.RegisterTool("read_file", tools.NewReadFileTool(workspace)); err != nil {
 		return nil, err
@@ -452,7 +436,7 @@ func buildInvocationToolRegistry(workspace string, sysConfig *config.SysConfig, 
 	if err := registry.RegisterTool("list_dir", tools.NewListDirTool(workspace)); err != nil {
 		return nil, err
 	}
-	if err := registry.RegisterTool("terminal", tools.NewTerminalTool(workspace, resolveInvocationToolTimeout(sysConfig.Tools, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
+	if err := registry.RegisterTool("terminal", tools.NewTerminalTool(workspace, resolveInvocationToolTimeout(toolConfigs, "terminal", tools.DefaultTerminalTimeout()))); err != nil {
 		return nil, err
 	}
 	if err := registry.RegisterTool("message", tools.NewMessageTool(bus)); err != nil {

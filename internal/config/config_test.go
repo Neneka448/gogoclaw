@@ -122,3 +122,86 @@ func TestNewConfigManagerLoadsMCPConfig(t *testing.T) {
 		t.Fatalf("server.Env[TOKEN] = %q, want abc", server.Env["TOKEN"])
 	}
 }
+
+func TestGetConfigReturnsSnapshot(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	defaultConfig := CreateDefaultConfig()
+	defaultConfig.Agents.Profiles["default"] = ProfileConfig{
+		Workspace:         tempDir,
+		Provider:          "codex",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+
+	encoded, err := json.Marshal(defaultConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
+
+	manager := NewConfigManager(configPath)
+	cfg, err := manager.GetConfig()
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+
+	cfg.Agents.Profiles["default"] = ProfileConfig{Workspace: "changed"}
+	cfg.MCP.MCPServers["docs"] = MCPServerConfig{Enabled: true}
+
+	loadedAgain, err := manager.GetConfig()
+	if err != nil {
+		t.Fatalf("GetConfig() second error = %v", err)
+	}
+	if loadedAgain.Agents.Profiles["default"].Workspace != tempDir {
+		t.Fatalf("default workspace = %q, want %q", loadedAgain.Agents.Profiles["default"].Workspace, tempDir)
+	}
+	if len(loadedAgain.MCP.MCPServers) != 0 {
+		t.Fatalf("MCP server count = %d, want 0", len(loadedAgain.MCP.MCPServers))
+	}
+}
+
+func TestConfigManagerApplyOnboardUpdatePersistsNamedProfile(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	manager := NewConfigManager(configPath)
+
+	updated, err := manager.ApplyOnboardUpdate(OnboardUpdate{
+		ProfileName: "worker",
+		Workspace:   filepath.Join(tempDir, "worker"),
+		Provider:    "openrouter",
+		Model:       "openai/gpt-4.1",
+		APIKey:      "worker-token",
+	})
+	if err != nil {
+		t.Fatalf("ApplyOnboardUpdate() error = %v", err)
+	}
+
+	worker, ok := updated.Agents.Profiles["worker"]
+	if !ok {
+		t.Fatal("worker profile missing after update")
+	}
+	if worker.Workspace != filepath.Join(tempDir, "worker") {
+		t.Fatalf("worker workspace = %q, want %q", worker.Workspace, filepath.Join(tempDir, "worker"))
+	}
+
+	reloaded := NewConfigManager(configPath)
+	cfg, err := reloaded.GetConfig()
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if cfg.Agents.Profiles["worker"].Provider != "openrouter" {
+		t.Fatalf("worker provider = %q, want openrouter", cfg.Agents.Profiles["worker"].Provider)
+	}
+	for _, provider := range cfg.Providers {
+		if provider.Name == "openrouter" && provider.Auth.Token != "worker-token" {
+			t.Fatalf("openrouter token = %q, want worker-token", provider.Auth.Token)
+		}
+	}
+}

@@ -11,10 +11,6 @@ import (
 func TestInvocationServiceEvictsRuntimeAfterInitializationFailure(t *testing.T) {
 	configPath := writeTestConfig(t)
 	configManager := config.NewConfigManager(configPath)
-	sysConfig, err := configManager.GetConfig()
-	if err != nil {
-		t.Fatalf("GetConfig() error = %v", err)
-	}
 
 	previousExtensionPath, hadExtensionPath := os.LookupEnv("GOGOCLAW_SQLITE_VEC_PATH")
 	badExtensionPath := filepath.Join(t.TempDir(), "missing", "vec0")
@@ -29,7 +25,7 @@ func TestInvocationServiceEvictsRuntimeAfterInitializationFailure(t *testing.T) 
 		_ = os.Unsetenv("GOGOCLAW_SQLITE_VEC_PATH")
 	}()
 
-	rawService, err := NewInvocationService(configManager, sysConfig, nil, nil, nil, false)
+	rawService, err := NewInvocationService(configManager, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("NewInvocationService() error = %v", err)
 	}

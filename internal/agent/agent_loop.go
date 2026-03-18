@@ -164,7 +164,7 @@ func (al *agentLoop) resolveRuntimeContext() (context.RuntimeContext, error) {
 	if err != nil {
 		return context.RuntimeContext{}, err
 	}
-	embeddingProfileName, embeddingProfile, err := resolveEmbeddingProfile(al.context.ConfigManager, defaultAgentProfileName, profile)
+	embeddingProfileName, embeddingProfile, err := resolveEmbeddingProfile(al.context.ConfigManager, defaultAgentProfileName)
 	if err != nil {
 		return context.RuntimeContext{}, err
 	}

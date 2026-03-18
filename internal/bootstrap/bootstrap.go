@@ -17,7 +17,11 @@ import (
 
 func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	configManager := config.NewConfigManager(configPath)
-	sysConfig, err := configManager.GetConfig()
+	channelsConfig, err := configManager.GetChannelsConfig()
+	if err != nil {
+		return nil, err
+	}
+	cronConfig, err := configManager.GetCronConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -25,18 +29,21 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	resolver := config.NewProfileResolver(sysConfig.Agents.Profiles, "default")
-	messageBus := messagebus.NewMessageBus()
-	channelRegistry := channels.NewRegistry()
-	if err := channelRegistry.Register(channels.NewCLIChannel(sysConfig.Channels.CLI, nil)); err != nil {
+	resolver, err := configManager.NewProfileResolver()
+	if err != nil {
 		return nil, err
 	}
-	if sysConfig.Channels.Feishu.Enabled {
-		if err := channelRegistry.Register(channels.NewFeishuChannel(sysConfig.Channels.Feishu, messageBus, defaultProfile.Workspace)); err != nil {
+	messageBus := messagebus.NewMessageBus()
+	channelRegistry := channels.NewRegistry()
+	if err := channelRegistry.Register(channels.NewCLIChannel(channelsConfig.CLI, nil)); err != nil {
+		return nil, err
+	}
+	if channelsConfig.Feishu.Enabled {
+		if err := channelRegistry.Register(channels.NewFeishuChannel(channelsConfig.Feishu, messageBus, defaultProfile.Workspace)); err != nil {
 			return nil, err
 		}
 	}
-	cronLocation, err := time.LoadLocation(strings.TrimSpace(sysConfig.Cron.Timezone))
+	cronLocation, err := time.LoadLocation(strings.TrimSpace(cronConfig.Timezone))
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +53,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	cronService := cron.NewCronService(resolver, cronManager, func(request cron.ExecutionRequest) error {
 		return executeCronRequest(invoker, request)
 	}, cronLocation)
-	invoker, err = agent.NewInvocationService(configManager, sysConfig, messageBus, channelRegistry, cronService, sysConfig.Cron.Enabled)
+	invoker, err = agent.NewInvocationService(configManager, messageBus, channelRegistry, cronService, cronConfig.Enabled)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +63,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 		ConfigManager:   configManager,
 		ChannelRegistry: channelRegistry,
 		CronService:     cronService,
-		CronEnabled:     sysConfig.Cron.Enabled,
+		CronEnabled:     cronConfig.Enabled,
 		Invoker:         invoker,
 	}
 
@@ -67,7 +74,7 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 
 func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, error) {
 	configManager := config.NewConfigManager(configPath)
-	sysConfig, err := configManager.GetConfig()
+	mcpConfig, err := configManager.GetMCPConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +82,7 @@ func BootstrapMCPService(configPath string, failFast bool) (mcppkg.Service, erro
 	if err != nil {
 		return nil, err
 	}
-	return mcppkg.NewService(profile.Workspace, sysConfig.MCP, mcppkg.Options{FailFast: failFast})
+	return mcppkg.NewService(profile.Workspace, mcpConfig, mcppkg.Options{FailFast: failFast})
 }
 
 func executeCronRequest(invoker appcontext.InvocationService, request cron.ExecutionRequest) error {

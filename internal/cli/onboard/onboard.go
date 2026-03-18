@@ -1,7 +1,6 @@
 package onboard
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -190,50 +189,36 @@ func onboard(ctx *onboardContext) error {
 	return nil
 }
 
-
 func writeConfig(ctx *onboardContext) (*config.SysConfig, error) {
 	configPath := filepath.Join(ctx.ProfilePath, configFileName)
-	sysConfig, err := loadConfigForWrite(configPath)
+	manager := config.NewConfigManager(configPath)
+	sysConfig, err := manager.ApplyOnboardUpdate(config.OnboardUpdate{
+		ProfileName: ctx.ProfileName,
+		Workspace:   ctx.Workspace,
+		Provider:    ctx.Provider,
+		Model:       ctx.Model,
+		APIKey:      ctx.APIKey,
+	})
 	if err != nil {
 		return nil, err
-	}
-	if err := ensureWorkspaceConflict(*sysConfig, ctx); err != nil {
-		return nil, err
-	}
-	applyOnboardContext(sysConfig, ctx)
-
-	configFile, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open config file %s: %w", configPath, err)
-	}
-	defer configFile.Close()
-
-	encoder := json.NewEncoder(configFile)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(sysConfig); err != nil {
-		return nil, fmt.Errorf("encode config file %s: %w", configPath, err)
 	}
 	slog.Info("Config file created", "path", configPath)
 
-	return sysConfig, nil
+	return &sysConfig, nil
 }
 
 func initializeVectorStore(ctx *onboardContext) error {
 	configPath := filepath.Join(ctx.ProfilePath, configFileName)
-	sysConfig, err := loadConfigForWrite(configPath)
-	if err != nil {
-		return err
-	}
-	applyOnboardContext(sysConfig, ctx)
+	manager := config.NewConfigManager(configPath)
 	profileName := strings.TrimSpace(ctx.ProfileName)
 	if profileName == "" {
 		profileName = "default"
 	}
-	profile, ok := sysConfig.Agents.Profiles[profileName]
-	if !ok {
-		return fmt.Errorf("profile not found after onboard write: %s", profileName)
+	profile, err := manager.GetAgentProfileConfig(profileName)
+	if err != nil {
+		return err
 	}
-	_, embeddingProfile, err := resolveOnboardEmbeddingProfile(*sysConfig, profileName, &profile)
+	_, embeddingProfile, err := manager.ResolveEmbeddingProfile(profileName)
 	if err != nil {
 		return err
 	}
@@ -321,70 +306,6 @@ func prepareWorkspacePath(workspacePath string) error {
 	return nil
 }
 
-func applyOnboardContext(defaultConfig *config.SysConfig, ctx *onboardContext) {
-	if defaultConfig.Agents.Profiles == nil {
-		defaultConfig.Agents.Profiles = make(map[string]config.ProfileConfig)
-	}
-	profileName := strings.TrimSpace(ctx.ProfileName)
-	if profileName == "" {
-		profileName = "default"
-	}
-	profile, ok := defaultConfig.Agents.Profiles[profileName]
-	if !ok {
-		profile = config.CreateDefaultConfig().Agents.Profiles["default"]
-	}
-	profile.Workspace = ctx.Workspace
-	profile.Provider = ctx.Provider
-	profile.Model = ctx.Model
-	defaultConfig.Agents.Profiles[profileName] = profile
-
-	for i := range defaultConfig.Providers {
-		if defaultConfig.Providers[i].Name == ctx.Provider && strings.TrimSpace(ctx.APIKey) != "" {
-			defaultConfig.Providers[i].Auth.Token = ctx.APIKey
-			break
-		}
-	}
-}
-
-func loadConfigForWrite(configPath string) (*config.SysConfig, error) {
-	defaultConfig := config.CreateDefaultConfig()
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &defaultConfig, nil
-		}
-		return nil, fmt.Errorf("read config file %s: %w", configPath, err)
-	}
-	if err := json.Unmarshal(content, &defaultConfig); err != nil {
-		return nil, fmt.Errorf("decode config file %s: %w", configPath, err)
-	}
-	return &defaultConfig, nil
-}
-
-func ensureWorkspaceConflict(sysConfig config.SysConfig, ctx *onboardContext) error {
-	targetProfile := strings.TrimSpace(ctx.ProfileName)
-	if targetProfile == "" {
-		targetProfile = "default"
-	}
-	targetWorkspace := canonicalOnboardPath(ctx.Workspace)
-	for profileName, profile := range sysConfig.Agents.Profiles {
-		if profileName == targetProfile {
-			continue
-		}
-		if canonicalOnboardPath(profile.Workspace) == targetWorkspace {
-			return fmt.Errorf("workspace already used by profile %s: %s", profileName, ctx.Workspace)
-		}
-	}
-	return nil
-}
-
-func canonicalOnboardPath(path string) string {
-	if abs, err := filepath.Abs(path); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(path)
-}
-
 func validateProfileName(profileName string) error {
 	if strings.TrimSpace(profileName) == "" {
 		return fmt.Errorf("profile name is required")
@@ -414,41 +335,13 @@ func validateInteractiveWorkspaceInput(workspace string, ctx *onboardContext, ho
 	}
 	resolvedProfilePath := resolveInteractiveProfilePath(ctx.ProfilePath, homePath)
 	resolvedWorkspace := resolveInteractiveWorkspacePath(workspace, resolvedProfilePath, homePath)
-	sysConfig, err := loadConfigForWrite(filepath.Join(resolvedProfilePath, configFileName))
-	if err != nil {
-		return err
-	}
-	tmpCtx := &onboardContext{
-		ProfilePath: resolvedProfilePath,
+	manager := config.NewConfigManager(filepath.Join(resolvedProfilePath, configFileName))
+	_, err := manager.PreviewOnboardUpdate(config.OnboardUpdate{
 		ProfileName: strings.TrimSpace(ctx.ProfileName),
 		Workspace:   resolvedWorkspace,
-	}
-	return ensureWorkspaceConflict(*sysConfig, tmpCtx)
-}
-
-func resolveOnboardEmbeddingProfile(sysConfig config.SysConfig, profileName string, profile *config.ProfileConfig) (string, *config.EmbeddingProfileConfig, error) {
-	candidates := []string{}
-	if profile != nil {
-		if explicit := strings.TrimSpace(profile.EmbeddingProfile); explicit != "" {
-			candidates = append(candidates, explicit)
-		}
-	}
-	if trimmedProfileName := strings.TrimSpace(profileName); trimmedProfileName != "" {
-		candidates = append(candidates, trimmedProfileName)
-	}
-	candidates = append(candidates, "default")
-
-	seen := map[string]struct{}{}
-	for _, candidate := range candidates {
-		if _, ok := seen[candidate]; ok {
-			continue
-		}
-		seen[candidate] = struct{}{}
-		embeddingProfile, ok := sysConfig.Embedding.Profiles[candidate]
-		if ok {
-			profileCopy := embeddingProfile
-			return candidate, &profileCopy, nil
-		}
-	}
-	return "", nil, fmt.Errorf("embedding profile not found for agent profile %s", profileName)
+		Provider:    strings.TrimSpace(ctx.Provider),
+		Model:       strings.TrimSpace(ctx.Model),
+		APIKey:      strings.TrimSpace(ctx.APIKey),
+	})
+	return err
 }
