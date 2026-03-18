@@ -17,6 +17,7 @@ import (
 var stderrWriter io.Writer = os.Stderr
 
 const minimumGatewayWorkerCount = 2
+const defaultGatewayShutdownTimeout = 30 * time.Second
 
 type sessionMailbox struct {
 	pending []messagebus.Message
@@ -41,6 +42,7 @@ type gateway struct {
 	outboundWG        sync.WaitGroup
 	workerWG          sync.WaitGroup
 	workerCount       int
+	shutdownTimeout   time.Duration
 	schedulerMu       sync.Mutex
 	schedulerCond     *sync.Cond
 	schedulerStopping bool
@@ -56,6 +58,7 @@ func NewGateway(context context.SystemContext) (Gateway, error) {
 		context:          context,
 		inboundStopCh:    make(chan struct{}),
 		workerCount:      defaultGatewayWorkerCount(),
+		shutdownTimeout:  defaultGatewayShutdownTimeout,
 		sessionMailboxes: make(map[string]*sessionMailbox),
 	}
 	gateway.schedulerCond = sync.NewCond(&gateway.schedulerMu)
@@ -280,13 +283,17 @@ func (g *gateway) Stop() error {
 	if started && stopCh != nil {
 		close(stopCh)
 	}
-	g.inboundWG.Wait()
+	if err := waitForShutdown(&g.inboundWG, g.shutdownTimeout, "inbound consumer"); err != nil {
+		return err
+	}
 
 	g.schedulerMu.Lock()
 	g.schedulerStopping = true
 	g.schedulerCond.Broadcast()
 	g.schedulerMu.Unlock()
-	g.workerWG.Wait()
+	if err := waitForShutdown(&g.workerWG, g.shutdownTimeout, "session workers"); err != nil {
+		return err
+	}
 
 	if g.context.SessionManager != nil {
 		if err := g.context.SessionManager.Close(); err != nil {
@@ -298,7 +305,9 @@ func (g *gateway) Stop() error {
 			return err
 		}
 	}
-	g.outboundWG.Wait()
+	if err := waitForShutdown(&g.outboundWG, g.shutdownTimeout, "outbound consumer"); err != nil {
+		return err
+	}
 
 	if g.context.ChannelRegistry != nil {
 		g.context.ChannelRegistry = nil
@@ -507,4 +516,26 @@ func defaultGatewayWorkerCount() int {
 		return minimumGatewayWorkerCount
 	}
 	return count
+}
+
+func waitForShutdown(wg *sync.WaitGroup, timeout time.Duration, phase string) error {
+	if timeout <= 0 {
+		timeout = defaultGatewayShutdownTimeout
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("gateway shutdown timed out after %s waiting for %s", timeout, phase)
+	}
 }

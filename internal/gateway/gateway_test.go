@@ -454,6 +454,51 @@ func TestGatewayStopWaitsForActiveSessionWorkers(t *testing.T) {
 	}
 }
 
+func TestGatewayStopReturnsTimeoutForBlockedWorkers(t *testing.T) {
+	bus := messagebus.NewMessageBus()
+	invoker := newBlockingGatewayInvoker(nil)
+
+	gw := mustNewGateway(t, appcontext.SystemContext{
+		MessageBus: bus,
+		Invoker:    invoker,
+	}).(*gateway)
+	gw.shutdownTimeout = 50 * time.Millisecond
+
+	if err := gw.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		closeIfOpen(invoker.releaseFirst)
+		_ = gw.Stop()
+	})
+
+	if err := bus.Put(messagebus.Message{
+		ChannelID: "cli",
+		ChatID:    "shutdown-timeout",
+		SenderID:  "user-1",
+		Message:   "block forever",
+	}, messagebus.InboundQueue); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	select {
+	case <-invoker.firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first request")
+	}
+
+	startedAt := time.Now()
+	err := gw.Stop()
+	if err == nil {
+		t.Fatal("Stop() error = nil, want shutdown timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "session workers") {
+		t.Fatalf("Stop() error = %v, want session workers timeout", err)
+	}
+	if time.Since(startedAt) > time.Second {
+		t.Fatalf("Stop() took too long: %s", time.Since(startedAt))
+	}
+}
+
 type channelsTestChannel struct {
 	name     string
 	enabled  bool
