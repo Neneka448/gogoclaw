@@ -127,6 +127,8 @@ type CronConfig struct {
 
 type MemoryConfig struct {
 	Enabled                     bool    `json:"enabled"`
+	Provider                    string  `json:"provider,omitempty"`
+	Model                       string  `json:"model,omitempty"`
 	EdgeSimilarityThreshold     float64 `json:"edgeSimilarityThreshold"`
 	ShortTermCommunityThreshold int     `json:"shortTermCommunityThreshold"`
 	LongTermCommunityThreshold  int     `json:"longTermCommunityThreshold"`

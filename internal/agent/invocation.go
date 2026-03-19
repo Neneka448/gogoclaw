@@ -322,24 +322,42 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 	utils.Perf("buildProfileRuntime: mcp service took %s", time.Since(t0))
 
 	t0 = time.Now()
-	vectorStore := vectorstore.NewSQLiteVecService(workspace, profileName, *embeddingProfile)
 	memoryConfig, err := service.configManager.GetMemoryConfig()
 	if err != nil {
 		_ = mcpService.Close()
 		return nil, err
 	}
 	memoryEnabled := memoryConfig.Enabled && textEmbeddingProvider != nil
+	var vectorStore vectorstore.Service
 	var memoryService memory.Service
 	if memoryEnabled {
 		if err := config.ValidateMemoryConfig(memoryConfig); err != nil {
 			_ = mcpService.Close()
 			return nil, fmt.Errorf("invalid memory config: %w", err)
 		}
+		vectorStore = vectorstore.NewSQLiteVecService(workspace, profileName, *embeddingProfile)
+		memoryLLM := llmProvider
+		memoryModel := profile.Model
+		if memoryConfig.Provider != "" {
+			memoryProviderConfig, err := service.configManager.GetProviderConfig(memoryConfig.Provider)
+			if err != nil {
+				_ = mcpService.Close()
+				return nil, fmt.Errorf("resolve memory provider %q: %w", memoryConfig.Provider, err)
+			}
+			memoryLLM, err = provider.NewOpenAICompatibleProvider(memoryProviderConfig, service.codexTokenProvider)
+			if err != nil {
+				_ = mcpService.Close()
+				return nil, fmt.Errorf("create memory provider %q: %w", memoryConfig.Provider, err)
+			}
+		}
+		if memoryConfig.Model != "" {
+			memoryModel = memoryConfig.Model
+		}
 		memoryService = memory.NewService(
 			memory.NewSQLiteStore(vectorStore.Path()),
 			vectorStore,
-			llmProvider,
-			profile.Model,
+			memoryLLM,
+			memoryModel,
 			textEmbeddingProvider,
 			embeddingProfile.Text,
 			memoryConfig,
