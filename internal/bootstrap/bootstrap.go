@@ -144,6 +144,9 @@ func executeCronRequest(invoker appcontext.InvocationService, request cron.Execu
 	}
 	mode := appcontext.InvocationModeCron
 	if strings.TrimSpace(request.Mode) != "" {
+		if err := appcontext.ValidateInvocationMode(request.Mode); err != nil {
+			return err
+		}
 		mode = appcontext.InvocationMode(request.Mode)
 	}
 	return invoker.Invoke(appcontext.InvocationRequest{

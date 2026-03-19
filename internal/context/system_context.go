@@ -1,6 +1,9 @@
 package context
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/Neneka448/gogoclaw/internal/channels"
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/cron"
@@ -22,6 +25,19 @@ const (
 	InvocationModeBackground InvocationMode = "background"
 	InvocationModeCron       InvocationMode = "cron"
 )
+
+func ValidateInvocationMode(mode string) error {
+	trimmed := strings.TrimSpace(mode)
+	if trimmed == "" {
+		return nil
+	}
+	switch InvocationMode(trimmed) {
+	case InvocationModeForeground, InvocationModeBackground, InvocationModeCron:
+		return nil
+	default:
+		return fmt.Errorf("invalid invocation mode %q: must be one of foreground, background, cron", trimmed)
+	}
+}
 
 type RuntimeContext struct {
 	ProfileName          string

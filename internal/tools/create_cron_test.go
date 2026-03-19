@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
@@ -172,5 +173,131 @@ func TestCreateCronToolAllowsExplicitProfileOverride(t *testing.T) {
 	}
 	if storedCron.Config.ProfileName != "worker" {
 		t.Fatalf("storedCron.Config.ProfileName = %q, want worker", storedCron.Config.ProfileName)
+	}
+}
+
+func TestCreateCronToolPersistsInvocationModeFromExplicitParam(t *testing.T) {
+	workspace := t.TempDir()
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
+	descriptor := NewCreateCronTool(service)
+
+	result, err := descriptor.Tool.Execute(`{"cron_id":"bg-task","cron_expression":"0 * * * *","task":"run background","enabled":true,"invocation_mode":"background"}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var parsed createCronResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Error != "" {
+		t.Fatalf("parsed.Error = %q, want empty", parsed.Error)
+	}
+	storedCron, err := service.GetCron("bg-task")
+	if err != nil {
+		t.Fatalf("GetCron() error = %v", err)
+	}
+	if storedCron.Config.InvocationMode != "background" {
+		t.Fatalf("storedCron.Config.InvocationMode = %q, want background", storedCron.Config.InvocationMode)
+	}
+}
+
+func TestCreateCronToolExplicitModeOverridesContextMode(t *testing.T) {
+	workspace := t.TempDir()
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
+	descriptor := NewCreateCronTool(service)
+	contextTool, ok := descriptor.Tool.(*CreateCronTool)
+	if !ok {
+		t.Fatal("tool is not *CreateCronTool")
+	}
+	contextTool.SetMessageContext(messagebus.Message{
+		Metadata: map[string]string{"invocation_mode": "foreground"},
+	})
+
+	result, err := descriptor.Tool.Execute(`{"cron_id":"override-task","cron_expression":"0 * * * *","task":"run override","enabled":true,"invocation_mode":"background"}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var parsed createCronResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Error != "" {
+		t.Fatalf("parsed.Error = %q, want empty", parsed.Error)
+	}
+	storedCron, err := service.GetCron("override-task")
+	if err != nil {
+		t.Fatalf("GetCron() error = %v", err)
+	}
+	if storedCron.Config.InvocationMode != "background" {
+		t.Fatalf("storedCron.Config.InvocationMode = %q, want background", storedCron.Config.InvocationMode)
+	}
+}
+
+func TestCreateCronToolInheritsInvocationModeFromContext(t *testing.T) {
+	workspace := t.TempDir()
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
+	descriptor := NewCreateCronTool(service)
+	contextTool, ok := descriptor.Tool.(*CreateCronTool)
+	if !ok {
+		t.Fatal("tool is not *CreateCronTool")
+	}
+	contextTool.SetMessageContext(messagebus.Message{
+		Metadata: map[string]string{"invocation_mode": "background"},
+	})
+
+	result, err := descriptor.Tool.Execute(`{"cron_id":"inherit-task","cron_expression":"0 * * * *","task":"run inherited","enabled":true}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var parsed createCronResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Error != "" {
+		t.Fatalf("parsed.Error = %q, want empty", parsed.Error)
+	}
+	storedCron, err := service.GetCron("inherit-task")
+	if err != nil {
+		t.Fatalf("GetCron() error = %v", err)
+	}
+	if storedCron.Config.InvocationMode != "background" {
+		t.Fatalf("storedCron.Config.InvocationMode = %q, want background", storedCron.Config.InvocationMode)
+	}
+}
+
+func TestCreateCronToolRejectsInvalidInvocationMode(t *testing.T) {
+	workspace := t.TempDir()
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := cronpkg.NewCronService(resolver, nil, nil, nil)
+	descriptor := NewCreateCronTool(service)
+
+	result, err := descriptor.Tool.Execute(`{"cron_id":"bad-mode","cron_expression":"0 * * * *","task":"run bad","enabled":true,"invocation_mode":"invalid_mode"}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var parsed createCronResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Error == "" {
+		t.Fatal("parsed.Error = empty, want invalid mode error")
+	}
+	if !strings.Contains(parsed.Error, "invalid invocation mode") {
+		t.Fatalf("parsed.Error = %q, want error containing 'invalid invocation mode'", parsed.Error)
 	}
 }

@@ -231,6 +231,7 @@ func TestMultiProfileCronServiceExecuteCronPropagatesStoredProfile(t *testing.T)
 		Enabled:        true,
 		Task:           "generate worker report",
 		ProfileName:    "worker",
+		InvocationMode: "background",
 	}); err != nil {
 		t.Fatalf("CreateCron() error = %v", err)
 	}
@@ -239,6 +240,9 @@ func TestMultiProfileCronServiceExecuteCronPropagatesStoredProfile(t *testing.T)
 	}
 	if captured.ProfileName != "worker" {
 		t.Fatalf("captured.ProfileName = %q, want worker", captured.ProfileName)
+	}
+	if captured.Mode != "background" {
+		t.Fatalf("captured.Mode = %q, want background", captured.Mode)
 	}
 	if !strings.HasPrefix(captured.ExecutionDir, filepath.Join(workerWorkspace, "crons", "worker-report")) {
 		t.Fatalf("captured.ExecutionDir = %q, want worker workspace execution dir", captured.ExecutionDir)
