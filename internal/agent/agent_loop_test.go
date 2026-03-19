@@ -470,36 +470,48 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 	}
 }
 
-func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
-	defaultWorkspace := t.TempDir()
-	workerWorkspace := t.TempDir()
-	sessionManager := newAgentTestSessionManager(t, workerWorkspace)
+func TestAgentLoopSyncsCronsWrittenToDisk(t *testing.T) {
+	workspace := t.TempDir()
+	sessionManager := newAgentTestSessionManager(t, workspace)
 	bus := messagebus.NewMessageBus()
+
+	// Pre-create a cron on disk so sync_crons can pick it up.
+	cronDir := filepath.Join(workspace, "crons", "disk-cron")
+	if err := os.MkdirAll(cronDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	configJSON := `{"cronID":"disk-cron","cronExpression":"*/5 * * * *","enabled":true,"profileName":"default"}`
+	if err := os.WriteFile(filepath.Join(cronDir, "config.json"), []byte(configJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile(config.json) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cronDir, "task.md"), []byte("synced task"), 0o644); err != nil {
+		t.Fatalf("WriteFile(task.md) error = %v", err)
+	}
+
 	providerStub := &fakeProvider{
 		responses: []provider.LLMCommonResponse{
 			provider.NormalizedResponse{ToolCalls: []provider.LLMToolCall{{
 				ID:        "call_1",
-				Name:      "create_cron",
-				Arguments: `{"cron_id":"worker-report","cron_expression":"0 * * * *","task":"render report","enabled":true}`,
+				Name:      "sync_crons",
+				Arguments: `{}`,
 				Type:      string(openai.ToolTypeFunction),
 			}}},
 			provider.NormalizedResponse{Content: "done"},
 		},
 	}
 	cronResolver := config.NewProfileResolver(map[string]config.ProfileConfig{
-		"default": {Workspace: defaultWorkspace},
-		"worker":  {Workspace: workerWorkspace},
+		"default": {Workspace: workspace},
 	}, "default")
-	cronService := cronpkg.NewCronService(cronResolver, nil, nil, nil)
+	cronService := cronpkg.NewCronService(cronResolver, cronpkg.NewCronManager(nil), nil, nil)
 	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
-		"create_cron": tools.NewCreateCronTool(cronService),
+		"sync_crons": tools.NewSyncCronsTool(cronService),
 	}}
 
 	inboundMessage := messagebus.Message{
 		ChannelID: "feishu",
 		ChatID:    "chat-1",
 		SenderID:  "user-1",
-		Message:   "schedule a report",
+		Message:   "sync crons",
 	}
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
@@ -510,9 +522,9 @@ func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
 		SessionManager: sessionManager,
 		CurrentSession: newAgentTestCurrentSession(t, sessionManager, inboundMessage),
 		Runtime: internalcontext.RuntimeContext{
-			ProfileName: "worker",
+			ProfileName: "default",
 			Profile: config.ProfileConfig{
-				Workspace:         workerWorkspace,
+				Workspace:         workspace,
 				Model:             "gpt-5.4",
 				MaxTokens:         512,
 				Temperature:       0.1,
@@ -520,7 +532,7 @@ func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
 				MemoryWindow:      10,
 				MaxRetryTimes:     1,
 			},
-			Workspace:      workerWorkspace,
+			Workspace:      workspace,
 			InvocationMode: internalcontext.InvocationModeBackground,
 		},
 	})
@@ -532,18 +544,15 @@ func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
 		t.Fatalf("ProcessMessage() error = %v", err)
 	}
 
-	storedCron, err := cronService.GetCron("worker-report")
+	storedCron, err := cronService.GetCron("disk-cron")
 	if err != nil {
 		t.Fatalf("GetCron() error = %v", err)
 	}
-	if storedCron.Path != filepath.Join(workerWorkspace, "crons", "worker-report") {
-		t.Fatalf("storedCron.Path = %q, want worker workspace cron dir", storedCron.Path)
+	if storedCron.Config.CronID != "disk-cron" {
+		t.Fatalf("storedCron.Config.CronID = %q, want disk-cron", storedCron.Config.CronID)
 	}
-	if storedCron.Config.ProfileName != "worker" {
-		t.Fatalf("storedCron.Config.ProfileName = %q, want worker", storedCron.Config.ProfileName)
-	}
-	if storedCron.Config.InvocationMode != string(internalcontext.InvocationModeBackground) {
-		t.Fatalf("storedCron.Config.InvocationMode = %q, want %q", storedCron.Config.InvocationMode, internalcontext.InvocationModeBackground)
+	if storedCron.Path != filepath.Join(workspace, "crons", "disk-cron") {
+		t.Fatalf("storedCron.Path = %q, want workspace cron dir", storedCron.Path)
 	}
 }
 
