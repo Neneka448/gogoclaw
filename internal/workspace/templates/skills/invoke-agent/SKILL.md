@@ -81,7 +81,7 @@ python -m skills.invoke-agent.scripts.write_agent_file \
 
 ### Step 5: Create Task Cron
 
-Render the task prompt and pass it to `create_cron`:
+Render the task prompt:
 
 ```bash
 python -m skills.invoke-agent.scripts.render_prompt \
@@ -91,13 +91,18 @@ python -m skills.invoke-agent.scripts.render_prompt \
   --workspace {workspace}
 ```
 
-Use the output as the `task` parameter for `create_cron`:
+Use the output as the `--task` parameter:
 
-- `cron_id`: `{invocation_id}-task`
-- `cron_expression`: `*/1 * * * *`
-- `profile_name`: target agent profile
-- `invocation_mode`: `cron`
-- `enabled`: true
+```bash
+python -m skills.cron-task.scripts.create \
+  --workspace {workspace} \
+  --cron-id {invocation_id}-task \
+  --cron-expression "*/1 * * * *" \
+  --task "<rendered prompt output>" \
+  --profile-name {target_profile} \
+  --invocation-mode cron \
+  --enabled
+```
 
 ### Step 6: Create Heartbeat Cron
 
@@ -111,13 +116,24 @@ python -m skills.invoke-agent.scripts.render_prompt \
   --workspace {workspace}
 ```
 
-Use the output as the `task` parameter for `create_cron`:
+Use the output as the `--task` parameter:
 
-- `cron_id`: `{invocation_id}-heartbeat`
-- `cron_expression`: `*/5 * * * *` (adapt to expected task duration)
-- `profile_name`: target agent profile
-- `invocation_mode`: `cron`
-- `enabled`: true
+```bash
+python -m skills.cron-task.scripts.create \
+  --workspace {workspace} \
+  --cron-id {invocation_id}-heartbeat \
+  --cron-expression "*/5 * * * *" \
+  --task "<rendered prompt output>" \
+  --profile-name {target_profile} \
+  --invocation-mode cron \
+  --enabled
+```
+
+Adapt the heartbeat interval to the expected task duration.
+
+### Step 6b: Sync Crons
+
+Call the `sync_crons` tool to load both new crons into the runtime scheduler.
 
 ### Step 7: Trigger Immediate Execution
 

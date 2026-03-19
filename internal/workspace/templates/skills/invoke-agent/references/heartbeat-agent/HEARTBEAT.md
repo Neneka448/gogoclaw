@@ -27,4 +27,13 @@ python -m skills.inbox.scripts.send \
   --metadata '{{"invocation_id": "{invocation_id}", "report_path": "invocations/{invocation_id}/reports/final.md"}}'
 ```
 
-Then update this heartbeat cron to enabled: false using create_cron.
+Then disable this heartbeat cron:
+
+```bash
+python -m skills.cron-task.scripts.update \
+  --workspace {workspace} \
+  --cron-id {invocation_id}-heartbeat \
+  --disabled
+```
+
+Then call the `sync_crons` tool to apply the change.
