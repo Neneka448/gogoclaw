@@ -206,6 +206,7 @@ if err := registry.RegisterTool("my_tool", myTool); err != nil {
 
 - **Workspace-scoped**: Tools like `read_file`, `list_dir`, `terminal` reject paths outside the workspace. New tools that touch the filesystem should do the same.
 - **OutputSink abstraction**: Foreground mode writes to `MessageBusOutputSink`; background/cron mode uses `NoopOutputSink`. Tools that emit messages should go through `OutputSink`, not `MessageBus` directly.
+- **Cron as agent launcher**: Cron is a profile-aware, mode-aware, file-oriented agent launcher — not a workflow engine or a second agent runtime. Each cron task stores `profileName` and `invocationMode` in its config, and at execution time these are passed through the unified `InvocationService` path (`executeCronRequest` → `buildExecutionContext`). Execution artifacts (manifest, session references) are written to the cron execution directory. Do not add orchestration logic, task DAGs, or channel coupling into the cron layer.
 - **Lazy initialization**: `profileRuntime` uses `sync.Once` for startup. Services are built once per profile and cached.
 - **Retry with backoff**: LLM calls use exponential backoff with jitter (`chatCompletionWithRetry`). Follow this pattern for any external call that can transiently fail.
 - **Tool filtering**: Profiles can set `allowedTools` / `forbiddenTools`. `FilteredRegistry` wraps the inner registry. Wildcard `"*"` is supported.

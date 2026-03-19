@@ -12,6 +12,12 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+var validInvocationModes = map[string]bool{
+	"foreground": true,
+	"background": true,
+	"cron":       true,
+}
+
 type CreateCronTool struct {
 	service cronpkg.Service
 
@@ -25,6 +31,7 @@ type createCronArgs struct {
 	Task           string `json:"task"`
 	Enabled        bool   `json:"enabled"`
 	ProfileName    string `json:"profile_name,omitempty"`
+	InvocationMode string `json:"invocation_mode,omitempty"`
 }
 
 type createCronResult struct {
@@ -67,8 +74,11 @@ func NewCreateCronTool(service cronpkg.Service) ToolDescriptor {
 						"profile_name": map[string]any{
 							"type":        "string",
 							"description": "Optional target agent profile. Omit this unless the user explicitly wants a different profile than the current conversation profile.",
-						},
-					},
+						},					"invocation_mode": map[string]any{
+						"type":        "string",
+						"enum":        []string{"foreground", "background", "cron"},
+						"description": "Optional invocation mode for the cron execution. Defaults to cron. Use background for silent file-oriented runs or foreground when you need channel output.",
+					},					},
 					"required": []string{"cron_id", "cron_expression", "task", "enabled"},
 				},
 			},
@@ -90,6 +100,10 @@ func (tool *CreateCronTool) Execute(args string) (string, error) {
 	input.CronExpression = strings.TrimSpace(input.CronExpression)
 	input.Task = strings.TrimSpace(input.Task)
 	input.ProfileName = strings.TrimSpace(input.ProfileName)
+	input.InvocationMode = strings.TrimSpace(input.InvocationMode)
+	if input.InvocationMode != "" && !validInvocationModes[input.InvocationMode] {
+		return encodeCreateCronResult(createCronResult{Error: fmt.Sprintf("invalid invocation mode %q: must be one of foreground, background, cron", input.InvocationMode)})
+	}
 	if input.CronID == "" {
 		return encodeCreateCronResult(createCronResult{Error: "cron_id is required"})
 	}
@@ -110,6 +124,9 @@ func (tool *CreateCronTool) Execute(args string) (string, error) {
 	}
 	if input.ProfileName != "" {
 		profileName = input.ProfileName
+	}
+	if input.InvocationMode != "" {
+		invocationMode = input.InvocationMode
 	}
 
 	storedCron, err := tool.service.CreateCron(cronpkg.UpsertCronInput{
