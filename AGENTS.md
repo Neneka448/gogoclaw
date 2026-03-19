@@ -279,7 +279,7 @@ To ship a skill as part of the gogoclaw binary:
 - Write the protocol as imperative steps, not explanations.
 - If the skill needs shell commands, put them in `scripts/` and reference them from the protocol.
 - Skills can reference other workspace files via `read_file` — instruct the agent to do so in the protocol.
-- A skill can call `create_cron` to schedule follow-up work, enabling autonomous multi-step workflows.
+- A skill can use the cron-task scripts and `sync_crons` tool to schedule follow-up work, enabling autonomous multi-step workflows.
 
 ---
 
@@ -316,7 +316,7 @@ Some changes touch multiple modules. Common patterns:
 `config/schema.go` → `tools/<name>.go` → `agent/invocation.go` (register) → optionally `workspace/templates/TOOLS.md` (document for the agent)
 
 **Adding a new autonomous behavior (skill + cron):**
-`workspace/templates/skills/<name>/SKILL.md` → skill protocol calls `create_cron` → `cron/cron_service.go` executes on schedule
+`workspace/templates/skills/<name>/SKILL.md` → skill protocol uses cron-task scripts + `sync_crons` → `cron/cron_service.go` executes on schedule
 
 **Adding a new external integration (provider + config + bootstrap):**
 `config/schema.go` → `provider/<name>.go` → `agent/invocation.go` (construct) → `context/system_context.go` (if new field needed)

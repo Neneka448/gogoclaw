@@ -382,7 +382,7 @@ The runtime currently registers these built-in tools:
 - terminal: run non-interactive shell commands inside the workspace
 - message: actively send a message back through the channel layer
 - get_skill: load a workspace skill by name
-- create_cron: create or update workspace cron tasks
+- sync_crons: reload cron tasks from disk into the runtime scheduler
 - recall_memory: query stored memory when memory is enabled
 
 Additional MCP-backed tools may also be registered from configured MCP servers.
