@@ -542,9 +542,9 @@ func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConf
 	if err := registry.RegisterTool("get_skill", getSkill); err != nil {
 		return nil, err
 	}
-	createCron := tools.NewCreateCronTool(cronService)
-	createCron.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "create_cron", tools.DefaultToolExecutionTimeout)
-	if err := registry.RegisterTool("create_cron", createCron); err != nil {
+	syncCrons := tools.NewSyncCronsTool(cronService)
+	syncCrons.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "sync_crons", tools.DefaultToolExecutionTimeout)
+	if err := registry.RegisterTool("sync_crons", syncCrons); err != nil {
 		return nil, err
 	}
 	executeCron := tools.NewExecuteCronTool(cronService)
