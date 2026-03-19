@@ -547,6 +547,11 @@ func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConf
 	if err := registry.RegisterTool("create_cron", createCron); err != nil {
 		return nil, err
 	}
+	executeCron := tools.NewExecuteCronTool(cronService)
+	executeCron.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "execute_cron", tools.DefaultToolExecutionTimeout)
+	if err := registry.RegisterTool("execute_cron", executeCron); err != nil {
+		return nil, err
+	}
 	if memoryService != nil {
 		recallMemory := tools.NewRecallMemoryTool(memoryService)
 		recallMemory.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "recall_memory", tools.DefaultToolExecutionTimeout)
