@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -32,11 +34,38 @@ func newCodexProvider(providerConfig *config.ProviderConfig, tokenProvider Token
 	if tokenProvider == nil {
 		return nil, fmt.Errorf("codex token provider is required")
 	}
+	endpoint, err := resolveCodexEndpoint(providerConfig)
+	if err != nil {
+		return nil, err
+	}
 	return &codexProvider{
 		timeout:       providerTimeout(providerConfig.Timeout),
 		tokenProvider: tokenProvider,
-		endpoint:      defaultCodexURL,
+		endpoint:      endpoint,
 	}, nil
+}
+
+func resolveCodexEndpoint(providerConfig *config.ProviderConfig) (string, error) {
+	if providerConfig == nil {
+		return defaultCodexURL, nil
+	}
+	baseURL := strings.TrimSpace(providerConfig.BaseURL)
+	requestPath := strings.TrimSpace(providerConfig.Path)
+	if baseURL == "" {
+		if requestPath != "" {
+			return "", fmt.Errorf("provider %s path configured without base url", providerConfig.Name)
+		}
+		return defaultCodexURL, nil
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse codex base url: %w", err)
+	}
+	if requestPath == "" {
+		requestPath = "v1/responses"
+	}
+	parsed.Path = path.Join(parsed.Path, requestPath)
+	return parsed.String(), nil
 }
 
 func (provider *codexProvider) ChatCompletion(params openai.ChatCompletionRequest) (LLMCommonResponse, error) {

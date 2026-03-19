@@ -461,15 +461,19 @@ func normalizeSysConfig(cfg *SysConfig) {
 
 func findProviderConfig(providers []ProviderConfig, providerName string) (*ProviderConfig, error) {
 	providerName = strings.TrimSpace(providerName)
+	var explicit *ProviderConfig
 	for i := range providers {
 		if strings.TrimSpace(providers[i].Name) == providerName {
 			provider := providers[i]
-			return &provider, nil
+			explicit = &provider
+			break
 		}
 	}
-	// Codex uses OAuth from ~/.codex/auth.json and does not require explicit provider config.
 	if providerName == "codex" {
-		return &ProviderConfig{Name: "codex", Timeout: 60}, nil
+		return resolveCodexProviderConfig(explicit)
+	}
+	if explicit != nil {
+		return explicit, nil
 	}
 	return nil, fmt.Errorf("provider not found: %s", providerName)
 }
