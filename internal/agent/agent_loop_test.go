@@ -218,6 +218,7 @@ func TestAgentLoopAppendsAssistantAndToolMessagesToSession(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,
@@ -387,7 +388,7 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 	}
 
 	toolRegistry := &fakeToolRegistry{tools: map[string]tools.ToolDescriptor{
-		"message": tools.NewMessageTool(bus),
+		"message": tools.NewMessageTool(messagebus.NewMessageBusOutputSink(bus)),
 	}}
 
 	inboundMessage := messagebus.Message{
@@ -402,6 +403,7 @@ func TestAgentLoopSuppressesFinalReplyAfterMessageToolSend(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,
@@ -502,6 +504,7 @@ func TestAgentLoopProvidesRuntimeMetadataToCreateCronTool(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,
@@ -584,6 +587,7 @@ func TestAgentLoopReturnsMaxIterationsMessageWhenNotCompleted(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,
@@ -671,6 +675,7 @@ func TestAgentLoopContinuesAfterToolExecutionError(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,
@@ -751,6 +756,7 @@ func TestAgentLoopStartsNewSessionOnSlashNew(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   &fakeToolRegistry{},
 		SessionManager: sessionManager,
@@ -819,6 +825,7 @@ func TestAgentLoopIngestsFullSessionMemorySynchronouslyOnNew(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       &fakeProvider{},
 		ToolRegistry:   &fakeToolRegistry{},
 		SessionManager: sessionManager,
@@ -916,6 +923,7 @@ func TestAgentLoopSlashNewReportsMemoryIngestionFailure(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       &fakeProvider{},
 		ToolRegistry:   &fakeToolRegistry{},
 		SessionManager: sessionManager,
@@ -1117,6 +1125,7 @@ func TestAgentLoopRetriesLLMCallAndSucceeds(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   &fakeToolRegistry{},
 		SessionManager: sessionManager,
@@ -1149,6 +1158,7 @@ func TestAgentLoopSendsErrorToUserAfterAllRetriesFail(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   &fakeToolRegistry{},
 		SessionManager: sessionManager,
@@ -1228,6 +1238,7 @@ func TestAgentLoopToolExecutionTimesOut(t *testing.T) {
 
 	loop, err := NewAgentLoop(internalcontext.SystemContext{
 		MessageBus:     bus,
+		OutputSink:     messagebus.NewMessageBusOutputSink(bus),
 		Provider:       providerStub,
 		ToolRegistry:   toolRegistry,
 		SessionManager: sessionManager,

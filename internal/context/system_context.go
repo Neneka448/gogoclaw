@@ -55,6 +55,7 @@ type InvocationService interface {
 
 type SystemContext struct {
 	MessageBus      messagebus.MessageBus
+	OutputSink      messagebus.OutputSink
 	Provider        provider.LLMProviderOpenaiCompatible
 	TextEmbedding   provider.EmbeddingProvider
 	ModalEmbedding  provider.EmbeddingProvider

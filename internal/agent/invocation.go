@@ -161,7 +161,16 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 	if err != nil {
 		return appcontext.SystemContext{}, err
 	}
-	toolRegistry, err := buildInvocationToolRegistry(runtime.workspace, toolConfigs, runtime.skillRegistry, messageBus, runtime.cronService, runtime.context.MCPService, runtime.context.MemoryService)
+
+	var outputSink messagebus.OutputSink
+	switch normalizeInvocationMode(request.Mode) {
+	case appcontext.InvocationModeForeground:
+		outputSink = messagebus.NewMessageBusOutputSink(messageBus)
+	default:
+		outputSink = messagebus.NewNoopOutputSink()
+	}
+
+	toolRegistry, err := buildInvocationToolRegistry(runtime.workspace, toolConfigs, runtime.skillRegistry, outputSink, runtime.cronService, runtime.context.MCPService, runtime.context.MemoryService)
 	if err != nil {
 		return appcontext.SystemContext{}, err
 	}
@@ -169,8 +178,15 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 
 	executionContext := runtime.context
 	executionContext.MessageBus = messageBus
+	executionContext.OutputSink = outputSink
 	executionContext.ChannelRegistry = channelRegistry
 	executionContext.ToolRegistry = toolRegistry
+
+	profile := runtime.profile
+	if len(profile.AllowedTools) > 0 || len(profile.ForbiddenTools) > 0 {
+		executionContext.ToolRegistry = tools.NewFilteredRegistry(toolRegistry, profile.AllowedTools, profile.ForbiddenTools)
+	}
+
 	executionContext.Runtime = appcontext.RuntimeContext{
 		ProfileName:          runtime.profileName,
 		Profile:              runtime.profile,
@@ -480,7 +496,7 @@ func resolveInvocationEmbeddingProvider(configManager config.ConfigManager, cach
 	return embeddingProvider, nil
 }
 
-func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConfig, skillRegistry skills.Registry, bus messagebus.MessageBus, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) (tools.ToolRegistry, error) {
+func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConfig, skillRegistry skills.Registry, sink messagebus.OutputSink, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) (tools.ToolRegistry, error) {
 	registry := tools.NewToolRegistry()
 	toolConfigIndex := buildInvocationToolConfigIndex(toolConfigs)
 	readFile := tools.NewReadFileTool(workspace)
@@ -498,7 +514,7 @@ func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConf
 	if err := registry.RegisterTool("terminal", terminal); err != nil {
 		return nil, err
 	}
-	messageTool := tools.NewMessageTool(bus)
+	messageTool := tools.NewMessageTool(sink)
 	messageTool.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "message", tools.DefaultToolExecutionTimeout)
 	if err := registry.RegisterTool("message", messageTool); err != nil {
 		return nil, err

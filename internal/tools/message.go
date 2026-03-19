@@ -12,7 +12,7 @@ import (
 )
 
 type MessageTool struct {
-	messageBus messagebus.MessageBus
+	sink messagebus.OutputSink
 
 	mu         sync.Mutex
 	context    messagebus.Message
@@ -30,10 +30,10 @@ type messageToolResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
-func NewMessageTool(bus messagebus.MessageBus) ToolDescriptor {
+func NewMessageTool(sink messagebus.OutputSink) ToolDescriptor {
 	return ToolDescriptor{
 		Name: "message",
-		Tool: &MessageTool{messageBus: bus},
+		Tool: &MessageTool{sink: sink},
 		ToolForLLM: openai.Tool{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
@@ -96,8 +96,8 @@ func (tool *MessageTool) Execute(args string) (string, error) {
 	if input.Content == "" && len(mediaPaths) == 0 {
 		return encodeMessageToolResult(messageToolResult{Error: "message requires content or media_paths"})
 	}
-	if tool.messageBus == nil {
-		return encodeMessageToolResult(messageToolResult{Error: "message bus is not initialized"})
+	if tool.sink == nil {
+		return encodeMessageToolResult(messageToolResult{Error: "output sink is not initialized"})
 	}
 
 	tool.mu.Lock()
@@ -124,7 +124,7 @@ func (tool *MessageTool) Execute(args string) (string, error) {
 	}
 	outbound.Metadata["message_kind"] = "active_message"
 
-	if err := tool.messageBus.Put(outbound, messagebus.OutboundQueue); err != nil {
+	if err := tool.sink.Emit(outbound); err != nil {
 		return encodeMessageToolResult(messageToolResult{Error: err.Error()})
 	}
 
