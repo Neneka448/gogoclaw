@@ -86,6 +86,10 @@ func GetCodexToken() (*CodexOAuthToken, error) {
 	if err != nil {
 		return nil, err
 	}
+	// API keys (no Refresh token) don't expire; return directly.
+	if token.Refresh == "" {
+		return token, nil
+	}
 	if token.Expires > time.Now().Add(tokenRefreshLeeway).UnixMilli() {
 		return token, nil
 	}
@@ -144,6 +148,16 @@ func loadCodexToken() (*CodexOAuthToken, error) {
 	var flat CodexOAuthToken
 	if err := json.Unmarshal(content, &flat); err == nil && flat.Access != "" {
 		return &flat, nil
+	}
+
+	// Try API key format: {"OPENAI_API_KEY": "sk-..."}
+	var apiKeyPayload struct {
+		APIKey string `json:"OPENAI_API_KEY"`
+	}
+	if err := json.Unmarshal(content, &apiKeyPayload); err == nil && apiKeyPayload.APIKey != "" {
+		return &CodexOAuthToken{
+			Access: apiKeyPayload.APIKey,
+		}, nil
 	}
 
 	return nil, errors.New("codex credentials not found; run `codex` or `gogoclaw auth --provider codex` to authenticate")

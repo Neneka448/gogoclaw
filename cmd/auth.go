@@ -17,6 +17,10 @@ var authCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		switch strings.ToLower(strings.TrimSpace(authProvider)) {
 		case "codex", "openai-codex", "openai_codex":
+			if _, err := cliauth.GetCodexToken(); err == nil {
+				fmt.Fprintln(cmd.OutOrStdout(), "Already authenticated with OpenAI Codex (credentials found in ~/.codex/auth.json).")
+				return nil
+			}
 			_, err := cliauth.AuthCodex()
 			if err != nil {
 				return err
