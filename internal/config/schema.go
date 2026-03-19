@@ -77,16 +77,18 @@ type EmbeddingModelConfig struct {
 }
 
 type ProfileConfig struct {
-	Workspace         string  `json:"workspace"`
-	Provider          string  `json:"provider"`
-	EmbeddingProfile  string  `json:"embeddingProfile,omitempty"`
-	Model             string  `json:"model"`
-	MaxTokens         int     `json:"maxTokens"`
-	Temperature       float64 `json:"temperature"`
-	MaxToolIterations int     `json:"maxToolIterations"`
-	MemoryWindow      int     `json:"memoryWindow"`
-	MaxRetryTimes     int     `json:"maxRetryTimes"`
-	ReasoningEffort   string  `json:"reasoningEffort,omitempty"`
+	Workspace         string   `json:"workspace"`
+	Provider          string   `json:"provider"`
+	EmbeddingProfile  string   `json:"embeddingProfile,omitempty"`
+	Model             string   `json:"model"`
+	MaxTokens         int      `json:"maxTokens"`
+	Temperature       float64  `json:"temperature"`
+	MaxToolIterations int      `json:"maxToolIterations"`
+	MemoryWindow      int      `json:"memoryWindow"`
+	MaxRetryTimes     int      `json:"maxRetryTimes"`
+	ReasoningEffort   string   `json:"reasoningEffort,omitempty"`
+	AllowedTools      []string `json:"allowedTools,omitempty"`
+	ForbiddenTools    []string `json:"forbiddenTools,omitempty"`
 }
 
 type ProviderConfig struct {
