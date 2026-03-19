@@ -86,6 +86,7 @@ type ProfileConfig struct {
 	MaxToolIterations int     `json:"maxToolIterations"`
 	MemoryWindow      int     `json:"memoryWindow"`
 	MaxRetryTimes     int     `json:"maxRetryTimes"`
+	ReasoningEffort   string  `json:"reasoningEffort,omitempty"`
 }
 
 type ProviderConfig struct {
@@ -190,13 +191,6 @@ func CreateDefaultConfig() SysConfig {
 		Providers: []ProviderConfig{
 			{
 				Name:    "openrouter",
-				Timeout: 60,
-				Auth: AuthConfig{
-					Token: "",
-				},
-			},
-			{
-				Name:    "codex",
 				Timeout: 60,
 				Auth: AuthConfig{
 					Token: "",

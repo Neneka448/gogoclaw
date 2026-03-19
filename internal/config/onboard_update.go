@@ -61,20 +61,25 @@ func applyOnboardUpdate(cfg *SysConfig, update OnboardUpdate) error {
 	profile.Model = update.Model
 	cfg.Agents.Profiles[profileName] = profile
 
-	if strings.TrimSpace(update.Provider) == "" {
+	provider := strings.TrimSpace(update.Provider)
+	if provider == "" {
+		return nil
+	}
+	// Codex uses OAuth from ~/.codex/auth.json; no provider config entry needed.
+	if provider == "codex" {
 		return nil
 	}
 	if strings.TrimSpace(update.APIKey) == "" {
 		return nil
 	}
 	for i := range cfg.Providers {
-		if strings.TrimSpace(cfg.Providers[i].Name) != strings.TrimSpace(update.Provider) {
+		if strings.TrimSpace(cfg.Providers[i].Name) != provider {
 			continue
 		}
 		cfg.Providers[i].Auth.Token = update.APIKey
 		return nil
 	}
-	return fmt.Errorf("provider not found: %s", update.Provider)
+	return fmt.Errorf("provider not found: %s", provider)
 }
 
 func ensureWorkspaceConflict(cfg SysConfig, targetProfile string, workspace string) error {

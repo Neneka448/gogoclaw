@@ -14,6 +14,7 @@ type ConfigManager interface {
 	GetConfig() (SysConfig, error)
 	PreviewOnboardUpdate(update OnboardUpdate) (SysConfig, error)
 	ApplyOnboardUpdate(update OnboardUpdate) (SysConfig, error)
+	SetProfileModel(profileName string, model string, reasoningEffort string) error
 
 	GetProviderConfig(providerName string) (*ProviderConfig, error)
 	GetAgentProfileConfig(profileName string) (*ProfileConfig, error)
@@ -57,6 +58,23 @@ func (cm *configManager) GetConfig() (SysConfig, error) {
 		return SysConfig{}, err
 	}
 	return cloneSysConfig(cm.configCache), nil
+}
+
+func (cm *configManager) SetProfileModel(profileName string, model string, reasoningEffort string) error {
+	_, err := cm.applyConfigUpdate(func(cfg *SysConfig) error {
+		name := normalizeProfileName(profileName)
+		profile, ok := cfg.Agents.Profiles[name]
+		if !ok {
+			return fmt.Errorf("profile not found: %s", name)
+		}
+		profile.Model = strings.TrimSpace(model)
+		if reasoningEffort != "" {
+			profile.ReasoningEffort = strings.TrimSpace(reasoningEffort)
+		}
+		cfg.Agents.Profiles[name] = profile
+		return nil
+	})
+	return err
 }
 
 func (cm *configManager) applyConfigUpdate(fn func(*SysConfig) error) (SysConfig, error) {
@@ -448,6 +466,10 @@ func findProviderConfig(providers []ProviderConfig, providerName string) (*Provi
 			provider := providers[i]
 			return &provider, nil
 		}
+	}
+	// Codex uses OAuth from ~/.codex/auth.json and does not require explicit provider config.
+	if providerName == "codex" {
+		return &ProviderConfig{Name: "codex", Timeout: 60}, nil
 	}
 	return nil, fmt.Errorf("provider not found: %s", providerName)
 }

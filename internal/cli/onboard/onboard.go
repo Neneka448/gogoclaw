@@ -109,25 +109,27 @@ func interactiveOnboard(ctx *onboardContext) error {
 	}
 
 	if tmpCtx.Provider == "codex" {
-		var authNow bool
-		err := huh.NewForm(
-			huh.NewGroup(
-				huh.NewConfirm().
-					Title("Do you want to authenticate now?").
-					Value(&authNow),
-			),
-		).Run()
-		if err != nil {
-			return err
-		}
-		if authNow {
-			if token, err := auth.AuthCodex(); err != nil {
-				return err
+		// Check if ~/.codex/auth.json already has valid credentials.
+		if _, err := auth.GetCodexToken(); err != nil {
+			var authNow bool
+			if promptErr := huh.NewForm(
+				huh.NewGroup(
+					huh.NewConfirm().
+						Title("No Codex credentials found in ~/.codex/auth.json. Authenticate now?").
+						Value(&authNow),
+				),
+			).Run(); promptErr != nil {
+				return promptErr
+			}
+			if authNow {
+				if _, authErr := auth.AuthCodex(); authErr != nil {
+					return authErr
+				}
 			} else {
-				tmpCtx.APIKey = token
+				fmt.Println("You can authenticate later: `codex` or `gogoclaw auth --provider codex`")
 			}
 		} else {
-			fmt.Println("You can authenticate later: `gogoclaw auth --provider codex`")
+			fmt.Println("Codex credentials found in ~/.codex/auth.json.")
 		}
 	}
 
