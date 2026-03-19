@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +20,30 @@ func (stubCodexTokenProvider) GetToken() (string, string, error) {
 }
 
 func TestInvocationServiceEvictsRuntimeAfterInitializationFailure(t *testing.T) {
-	configPath := writeTestConfig(t)
+	// Build a config with an embedding provider so that memory is enabled and vectorStore is created.
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	defaultConfig := config.CreateDefaultConfig()
+	defaultConfig.Agents.Profiles["default"] = config.ProfileConfig{
+		Workspace:         tempDir,
+		Provider:          "codex",
+		Model:             "gpt-5.4",
+		MaxTokens:         512,
+		Temperature:       0.1,
+		MaxToolIterations: 4,
+		MemoryWindow:      10,
+		MaxRetryTimes:     1,
+	}
+	defaultConfig.Embedding.Profiles["default"] = config.EmbeddingProfileConfig{
+		Text: config.EmbeddingModelConfig{Provider: "voyageai", Model: "voyage-3"},
+	}
+	encoded, err := json.Marshal(defaultConfig)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0644); err != nil {
+		t.Fatalf("os.WriteFile() error = %v", err)
+	}
 	configManager := config.NewConfigManager(configPath)
 
 	previousExtensionPath, hadExtensionPath := os.LookupEnv("GOGOCLAW_SQLITE_VEC_PATH")

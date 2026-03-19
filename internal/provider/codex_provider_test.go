@@ -30,6 +30,9 @@ func TestNewOpenAICompatibleProviderRejectsCodexWithoutTokenProvider(t *testing.
 
 func TestCodexProviderUsesInjectedTokenProvider(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/v1/responses" {
+			t.Fatalf("r.URL.Path = %q, want /v1/responses", got)
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
 			t.Fatalf("Authorization = %q, want Bearer access-token", got)
 		}
@@ -51,11 +54,15 @@ func TestCodexProviderUsesInjectedTokenProvider(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := &codexProvider{
-		timeout:       time.Second,
-		tokenProvider: stubTokenProvider{accessToken: "access-token", accountID: "account-123"},
-		endpoint:      server.URL,
+	rawProvider, err := newCodexProvider(&config.ProviderConfig{Name: "codex", BaseURL: server.URL}, stubTokenProvider{accessToken: "access-token", accountID: "account-123"})
+	if err != nil {
+		t.Fatalf("newCodexProvider() error = %v", err)
 	}
+	provider, ok := rawProvider.(*codexProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *codexProvider", rawProvider)
+	}
+	provider.timeout = time.Second
 
 	response, err := provider.ChatCompletion(openai.ChatCompletionRequest{
 		Model: "openai-codex/gpt-5.4",
@@ -72,5 +79,15 @@ func TestCodexProviderUsesInjectedTokenProvider(t *testing.T) {
 	}
 	if response.GetFinishReason() != "stop" {
 		t.Fatalf("response.GetFinishReason() = %q, want stop", response.GetFinishReason())
+	}
+}
+
+func TestResolveCodexEndpointDefaultsToChatGPTBackend(t *testing.T) {
+	endpoint, err := resolveCodexEndpoint(&config.ProviderConfig{Name: "codex"})
+	if err != nil {
+		t.Fatalf("resolveCodexEndpoint() error = %v", err)
+	}
+	if endpoint != defaultCodexURL {
+		t.Fatalf("endpoint = %q, want %q", endpoint, defaultCodexURL)
 	}
 }
