@@ -120,6 +120,7 @@ func (al *agentLoop) loop(msg messagebus.Message) error {
 			MaxCompletionTokens: runtimeConfig.Profile.MaxTokens,
 			Temperature:         runtimeConfig.Profile.Temperature,
 			Tools:               tools,
+			ReasoningEffort:     runtimeConfig.Profile.ReasoningEffort,
 		})
 		t0 := time.Now()
 		utils.Perf("llm: request start (iteration %d)", i+1)

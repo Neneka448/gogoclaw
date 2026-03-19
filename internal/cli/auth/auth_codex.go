@@ -451,6 +451,4 @@ func codexTokenPath() (string, error) {
 	return filepath.Join(homeDir, ".codex", "auth.json"), nil
 }
 
-
-
 var netListen = net.Listen

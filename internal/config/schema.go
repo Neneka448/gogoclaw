@@ -86,6 +86,7 @@ type ProfileConfig struct {
 	MaxToolIterations int     `json:"maxToolIterations"`
 	MemoryWindow      int     `json:"memoryWindow"`
 	MaxRetryTimes     int     `json:"maxRetryTimes"`
+	ReasoningEffort   string  `json:"reasoningEffort,omitempty"`
 }
 
 type ProviderConfig struct {

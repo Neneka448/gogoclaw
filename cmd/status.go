@@ -9,8 +9,8 @@ import (
 
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/session"
-	"github.com/spf13/cobra"
 	openai "github.com/sashabaranov/go-openai"
+	"github.com/spf13/cobra"
 )
 
 var statusProfileName string
