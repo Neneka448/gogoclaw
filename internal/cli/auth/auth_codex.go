@@ -110,19 +110,43 @@ func loadCodexToken() (*CodexOAuthToken, error) {
 	if err != nil {
 		return nil, err
 	}
-	if token, err := readTokenFile(tokenPath); err == nil && token != nil {
-		return token, nil
-	}
-
-	imported, err := importCodexCLIToken(tokenPath)
+	content, err := os.ReadFile(tokenPath)
 	if err != nil {
-		return nil, err
-	}
-	if imported != nil {
-		return imported, nil
+		return nil, errors.New("codex credentials not found; run `codex` or `gogoclaw auth --provider codex` to authenticate")
 	}
 
-	return nil, errors.New("codex credentials not found; run `gogoclaw auth --provider codex`")
+	// Try oauth_cli_kit / Codex CLI format: {"tokens": {"access_token": ..., "refresh_token": ..., "account_id": ...}}
+	var oauthPayload struct {
+		Tokens struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+			AccountID    string `json:"account_id"`
+			ExpiresAt    int64  `json:"expires_at"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(content, &oauthPayload); err == nil && oauthPayload.Tokens.AccessToken != "" {
+		expires := oauthPayload.Tokens.ExpiresAt
+		if expires == 0 {
+			info, statErr := os.Stat(tokenPath)
+			if statErr == nil {
+				expires = info.ModTime().Add(time.Hour).UnixMilli()
+			}
+		}
+		return &CodexOAuthToken{
+			Access:    oauthPayload.Tokens.AccessToken,
+			Refresh:   oauthPayload.Tokens.RefreshToken,
+			AccountID: oauthPayload.Tokens.AccountID,
+			Expires:   expires,
+		}, nil
+	}
+
+	// Try flat format: {"access": ..., "refresh": ..., "account_id": ..., "expires": ...}
+	var flat CodexOAuthToken
+	if err := json.Unmarshal(content, &flat); err == nil && flat.Access != "" {
+		return &flat, nil
+	}
+
+	return nil, errors.New("codex credentials not found; run `codex` or `gogoclaw auth --provider codex` to authenticate")
 }
 
 func saveCodexToken(token *CodexOAuthToken) error {
@@ -133,7 +157,16 @@ func saveCodexToken(token *CodexOAuthToken) error {
 	if err := os.MkdirAll(filepath.Dir(tokenPath), 0700); err != nil {
 		return err
 	}
-	encoded, err := json.MarshalIndent(token, "", "  ")
+	// Save in oauth_cli_kit compatible format so Codex CLI / nanobot can also read it.
+	payload := map[string]any{
+		"tokens": map[string]any{
+			"access_token":  token.Access,
+			"refresh_token": token.Refresh,
+			"account_id":    token.AccountID,
+			"expires_at":    token.Expires,
+		},
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -397,71 +430,13 @@ func codexTokenPath() (string, error) {
 	if override := strings.TrimSpace(os.Getenv("OAUTH_CLI_KIT_TOKEN_PATH")); override != "" {
 		return override, nil
 	}
-	configDir, err := os.UserConfigDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configDir, "gogoclaw", "auth", "codex.json"), nil
+	return filepath.Join(homeDir, ".codex", "auth.json"), nil
 }
 
-func importCodexCLIToken(targetPath string) (*CodexOAuthToken, error) {
-	codexPath, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	content, err := os.ReadFile(filepath.Join(codexPath, ".codex", "auth.json"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var payload struct {
-		Tokens struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			AccountID    string `json:"account_id"`
-		} `json:"tokens"`
-	}
-	if err := json.Unmarshal(content, &payload); err != nil {
-		return nil, nil
-	}
-	if payload.Tokens.AccessToken == "" || payload.Tokens.RefreshToken == "" || payload.Tokens.AccountID == "" {
-		return nil, nil
-	}
-	info, err := os.Stat(filepath.Join(codexPath, ".codex", "auth.json"))
-	if err != nil {
-		return nil, err
-	}
-	token := &CodexOAuthToken{
-		Access:    payload.Tokens.AccessToken,
-		Refresh:   payload.Tokens.RefreshToken,
-		AccountID: payload.Tokens.AccountID,
-		Expires:   info.ModTime().Add(time.Hour).UnixMilli(),
-	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
-		return nil, err
-	}
-	encoded, err := json.MarshalIndent(token, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(targetPath, encoded, 0600); err != nil {
-		return nil, err
-	}
-	return token, nil
-}
 
-func readTokenFile(path string) (*CodexOAuthToken, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var token CodexOAuthToken
-	if err := json.Unmarshal(content, &token); err != nil {
-		return nil, err
-	}
-	return &token, nil
-}
 
 var netListen = net.Listen

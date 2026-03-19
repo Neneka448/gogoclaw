@@ -449,6 +449,10 @@ func findProviderConfig(providers []ProviderConfig, providerName string) (*Provi
 			return &provider, nil
 		}
 	}
+	// Codex uses OAuth from ~/.codex/auth.json and does not require explicit provider config.
+	if providerName == "codex" {
+		return &ProviderConfig{Name: "codex", Timeout: 60}, nil
+	}
 	return nil, fmt.Errorf("provider not found: %s", providerName)
 }
 

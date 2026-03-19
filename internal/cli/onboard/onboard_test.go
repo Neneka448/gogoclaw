@@ -74,7 +74,6 @@ func TestWriteConfigWritesDefaultProfileOverrides(t *testing.T) {
 		Workspace:   filepath.Join(t.TempDir(), "workspace"),
 		Provider:    "codex",
 		Model:       "openai-codex/gpt-5.4",
-		APIKey:      "secret-token",
 	}
 
 	writtenConfig, err := writeConfig(ctx)
@@ -110,16 +109,12 @@ func TestWriteConfigWritesDefaultProfileOverrides(t *testing.T) {
 		t.Fatalf("default maxTokens = %d, want 8192", defaultProfile.MaxTokens)
 	}
 
+	// Codex uses OAuth from ~/.codex/auth.json; no provider entry should be written in config.
 	for _, provider := range got.Providers {
-		if provider.Name == ctx.Provider {
-			if provider.Auth.Token != ctx.APIKey {
-				t.Fatalf("provider token = %q, want %q", provider.Auth.Token, ctx.APIKey)
-			}
-			return
+		if provider.Name == "codex" {
+			t.Fatal("codex provider should not appear in config.Providers")
 		}
 	}
-
-	t.Fatalf("provider %q not found", ctx.Provider)
 }
 
 func TestWriteConfigRejectsWorkspaceConflictAcrossProfiles(t *testing.T) {

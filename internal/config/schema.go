@@ -195,13 +195,6 @@ func CreateDefaultConfig() SysConfig {
 					Token: "",
 				},
 			},
-			{
-				Name:    "codex",
-				Timeout: 60,
-				Auth: AuthConfig{
-					Token: "",
-				},
-			},
 		},
 		Channels: ChannelsConfig{
 			CLI: CLIChannelConfig{
