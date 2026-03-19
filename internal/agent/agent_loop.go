@@ -313,7 +313,7 @@ func executedMessagesToChatMessages(executed []executedToolMessage) []Openai.Cha
 }
 
 func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message Openai.ChatCompletionMessage, finishReason string) error {
-	if al.context.MessageBus == nil {
+	if al.context.OutputSink == nil {
 		return nil
 	}
 	if strings.TrimSpace(message.Content) == "" {
@@ -321,7 +321,7 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 	}
 	metadata := al.outboundMetadata(source.Metadata)
 
-	return al.context.MessageBus.Put(messagebus.Message{
+	return al.context.OutputSink.Emit(messagebus.Message{
 		ChannelID:    source.ChannelID,
 		Message:      message.Content,
 		MessageID:    source.MessageID,
@@ -332,15 +332,15 @@ func (al *agentLoop) publishOutboundMessage(source messagebus.Message, message O
 		ReplyTo:      source.ReplyTo,
 		Metadata:     metadata,
 		FinishReason: finishReason,
-	}, messagebus.OutboundQueue)
+	})
 }
 
 func (al *agentLoop) publishDirectReply(source messagebus.Message, content string, finishReason string) error {
-	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
+	if al.context.OutputSink == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
 	metadata := al.outboundMetadata(source.Metadata)
-	return al.context.MessageBus.Put(messagebus.Message{
+	return al.context.OutputSink.Emit(messagebus.Message{
 		ChannelID:    source.ChannelID,
 		Message:      content,
 		MessageID:    source.MessageID,
@@ -351,11 +351,11 @@ func (al *agentLoop) publishDirectReply(source messagebus.Message, content strin
 		ReplyTo:      source.ReplyTo,
 		Metadata:     metadata,
 		FinishReason: finishReason,
-	}, messagebus.OutboundQueue)
+	})
 }
 
 func (al *agentLoop) publishProgressMessage(source messagebus.Message, content string, progressKind string) error {
-	if al.context.MessageBus == nil || strings.TrimSpace(content) == "" {
+	if al.context.OutputSink == nil || strings.TrimSpace(content) == "" {
 		return nil
 	}
 	metadata := al.outboundMetadata(source.Metadata)
@@ -366,7 +366,7 @@ func (al *agentLoop) publishProgressMessage(source messagebus.Message, content s
 	if strings.TrimSpace(progressKind) != "" {
 		metadata["progress_kind"] = progressKind
 	}
-	return al.context.MessageBus.Put(messagebus.Message{
+	return al.context.OutputSink.Emit(messagebus.Message{
 		ChannelID:    source.ChannelID,
 		Message:      content,
 		MessageID:    source.MessageID,
@@ -377,7 +377,7 @@ func (al *agentLoop) publishProgressMessage(source messagebus.Message, content s
 		ReplyTo:      source.ReplyTo,
 		Metadata:     metadata,
 		FinishReason: "",
-	}, messagebus.OutboundQueue)
+	})
 }
 
 func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages []executedToolMessage) error {
@@ -392,7 +392,7 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 		}
 		outbound["message_kind"] = "tool_result"
 		content, mediaPaths := extractOutboundToolPayload(message.Content)
-		if err := al.context.MessageBus.Put(messagebus.Message{
+		if err := al.context.OutputSink.Emit(messagebus.Message{
 			ChannelID:    source.ChannelID,
 			Message:      content,
 			MessageID:    source.MessageID,
@@ -403,7 +403,7 @@ func (al *agentLoop) publishOutboundMessages(source messagebus.Message, messages
 			ReplyTo:      source.ReplyTo,
 			Metadata:     outbound,
 			FinishReason: "",
-		}, messagebus.OutboundQueue); err != nil {
+		}); err != nil {
 			return err
 		}
 	}

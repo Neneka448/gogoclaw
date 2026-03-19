@@ -9,7 +9,7 @@ import (
 
 func TestMessageToolPublishesOutboundMessage(t *testing.T) {
 	bus := messagebus.NewMessageBus()
-	descriptor := NewMessageTool(bus)
+	descriptor := NewMessageTool(messagebus.NewMessageBusOutputSink(bus))
 	messageTool, ok := descriptor.Tool.(*MessageTool)
 	if !ok {
 		t.Fatal("descriptor.Tool is not *MessageTool")
@@ -54,7 +54,7 @@ func TestMessageToolPublishesOutboundMessage(t *testing.T) {
 
 func TestMessageToolRequiresContentOrMedia(t *testing.T) {
 	bus := messagebus.NewMessageBus()
-	descriptor := NewMessageTool(bus)
+	descriptor := NewMessageTool(messagebus.NewMessageBusOutputSink(bus))
 	messageTool := descriptor.Tool.(*MessageTool)
 	messageTool.SetMessageContext(messagebus.Message{ChannelID: "feishu", ChatID: "chat-1"})
 
