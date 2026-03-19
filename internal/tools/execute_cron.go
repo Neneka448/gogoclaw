@@ -35,7 +35,7 @@ func NewExecuteCronTool(service cronpkg.Service) ToolDescriptor {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "execute_cron",
-				Description: "Trigger an existing cron task to execute immediately, without waiting for its next scheduled tick. Use this after creating a cron with create_cron when you need the task to start right away.",
+				Description: "Trigger an existing cron task to execute immediately, without waiting for its next scheduled tick. Use this after creating a cron via the cron-task skill scripts and calling sync_crons when you need the task to start right away.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
