@@ -5,7 +5,7 @@ Workspace: {workspace}
 
 1. Check current task status:
    ```bash
-   python -m skills.invoke-agent.scripts.task_status --invocation-dir {invocation_dir}
+   python -m skills.invoke_agent.scripts.task_status --invocation-dir {invocation_dir}
    ```
 2. If status is "pending": report that the task has not started yet. Write a brief note to reports/{timestamp}.md.
 3. If status is "running":
@@ -26,7 +26,7 @@ Workspace: {workspace}
      ```
    - Then disable this heartbeat cron:
      ```bash
-     python -m skills.cron-task.scripts.update \
+     python -m skills.cron_task.scripts.update \
        --workspace {workspace} \
        --cron-id {invocation_id}-heartbeat \
        --disabled

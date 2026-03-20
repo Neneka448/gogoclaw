@@ -1,5 +1,5 @@
 ---
-name: invoke-agent
+name: invoke_agent
 description: "Delegate a task to another agent profile through cron-driven execution with heartbeat monitoring. Use when the user asks to hand off, delegate, or assign a task to another agent profile for independent background execution."
 trigger: "When the user asks to delegate, hand off, assign, or dispatch a task to another agent or profile, or when a long-running task should execute independently in the background."
 ---
@@ -32,7 +32,7 @@ Completion notifications are delivered via the **inbox** skill — see `skills/i
 ### Step 1: Initialize Invocation
 
 ```bash
-python -m skills.invoke-agent.scripts.init_invocation \
+python -m skills.invoke_agent.scripts.init_invocation \
   --workspace {workspace} \
   --caller-profile {caller} \
   --target-profile {target} \
@@ -46,7 +46,7 @@ Capture `invocation_id` and `invocation_dir` for subsequent steps.
 ### Step 2: Write Task File
 
 ```bash
-python -m skills.invoke-agent.scripts.write_agent_file \
+python -m skills.invoke_agent.scripts.write_agent_file \
   --invocation-dir {invocation_dir} \
   --type task \
   --content "Full task definition from user request"
@@ -57,7 +57,7 @@ python -m skills.invoke-agent.scripts.write_agent_file \
 Use the default template (recommended):
 
 ```bash
-python -m skills.invoke-agent.scripts.write_agent_file \
+python -m skills.invoke_agent.scripts.write_agent_file \
   --invocation-dir {invocation_dir} \
   --type bootstrap
 ```
@@ -65,7 +65,7 @@ python -m skills.invoke-agent.scripts.write_agent_file \
 Or provide custom content:
 
 ```bash
-python -m skills.invoke-agent.scripts.write_agent_file \
+python -m skills.invoke_agent.scripts.write_agent_file \
   --invocation-dir {invocation_dir} \
   --type bootstrap \
   --content "Custom bootstrap instructions"
@@ -74,7 +74,7 @@ python -m skills.invoke-agent.scripts.write_agent_file \
 ### Step 4: Write Heartbeat File
 
 ```bash
-python -m skills.invoke-agent.scripts.write_agent_file \
+python -m skills.invoke_agent.scripts.write_agent_file \
   --invocation-dir {invocation_dir} \
   --type heartbeat \
   --template-vars '{"invocation_id": "{invocation_id}", "workspace": "{workspace}"}'
@@ -85,7 +85,7 @@ python -m skills.invoke-agent.scripts.write_agent_file \
 Render the task prompt:
 
 ```bash
-python -m skills.invoke-agent.scripts.render_prompt \
+python -m skills.invoke_agent.scripts.render_prompt \
   --type task \
   --invocation-id {invocation_id} \
   --invocation-dir {invocation_dir} \
@@ -95,7 +95,7 @@ python -m skills.invoke-agent.scripts.render_prompt \
 Use the output as the `--task` parameter:
 
 ```bash
-python -m skills.cron-task.scripts.create \
+python -m skills.cron_task.scripts.create \
   --workspace {workspace} \
   --cron-id {invocation_id}-task \
   --cron-expression "*/1 * * * *" \
@@ -110,7 +110,7 @@ python -m skills.cron-task.scripts.create \
 Render the heartbeat prompt:
 
 ```bash
-python -m skills.invoke-agent.scripts.render_prompt \
+python -m skills.invoke_agent.scripts.render_prompt \
   --type heartbeat \
   --invocation-id {invocation_id} \
   --invocation-dir {invocation_dir} \
@@ -120,7 +120,7 @@ python -m skills.invoke-agent.scripts.render_prompt \
 Use the output as the `--task` parameter:
 
 ```bash
-python -m skills.cron-task.scripts.create \
+python -m skills.cron_task.scripts.create \
   --workspace {workspace} \
   --cron-id {invocation_id}-heartbeat \
   --cron-expression "*/5 * * * *" \
@@ -172,10 +172,10 @@ The task and heartbeat agents use these scripts to manage task status instead of
 
 | Script | Usage | Description |
 |--------|-------|-------------|
-| `task_start` | `python -m skills.invoke-agent.scripts.task_start --invocation-dir <dir>` | Mark task as running |
-| `task_complete` | `python -m skills.invoke-agent.scripts.task_complete --invocation-dir <dir>` | Mark task as succeeded |
-| `task_fail` | `python -m skills.invoke-agent.scripts.task_fail --invocation-dir <dir> --reason "..."` | Mark task as failed |
-| `task_status` | `python -m skills.invoke-agent.scripts.task_status --invocation-dir <dir>` | Query current status |
+| `task_start` | `python -m skills.invoke_agent.scripts.task_start --invocation-dir <dir>` | Mark task as running |
+| `task_complete` | `python -m skills.invoke_agent.scripts.task_complete --invocation-dir <dir>` | Mark task as succeeded |
+| `task_fail` | `python -m skills.invoke_agent.scripts.task_fail --invocation-dir <dir> --reason "..."` | Mark task as failed |
+| `task_status` | `python -m skills.invoke_agent.scripts.task_status --invocation-dir <dir>` | Query current status |
 
 ### Concurrency
 

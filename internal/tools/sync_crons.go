@@ -24,7 +24,7 @@ func NewSyncCronsTool(service cronpkg.Service) ToolDescriptor {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "sync_crons",
-				Description: "Reload all workspace cron tasks from disk and synchronize the in-memory scheduler. Call this after creating, updating, or deleting crons via the cron-task skill scripts.",
+				Description: "Reload all workspace cron tasks from disk and synchronize the in-memory scheduler. Call this after creating, updating, or deleting crons via the cron_task skill scripts.",
 				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{},

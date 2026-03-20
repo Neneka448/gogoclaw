@@ -30,7 +30,7 @@ python -m skills.inbox.scripts.send \
 Then disable this heartbeat cron:
 
 ```bash
-python -m skills.cron-task.scripts.update \
+python -m skills.cron_task.scripts.update \
   --workspace {workspace} \
   --cron-id {invocation_id}-heartbeat \
   --disabled

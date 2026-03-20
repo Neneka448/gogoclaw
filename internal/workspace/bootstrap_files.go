@@ -103,6 +103,26 @@ func EnsureDefaultSkills(workspacePath string) error {
 		return fmt.Errorf("read embedded skill templates: %w", err)
 	}
 
+	// Migrate legacy hyphenated skill directories to underscore naming so that
+	// python -m imports work. If both old and new exist, remove the old one.
+	legacyRenames := map[string]string{
+		"cron-task":    "cron_task",
+		"invoke-agent": "invoke_agent",
+	}
+	for oldName, newName := range legacyRenames {
+		oldDir := filepath.Join(workspacePath, "skills", oldName)
+		newDir := filepath.Join(workspacePath, "skills", newName)
+		if _, err := os.Stat(oldDir); err == nil {
+			if _, err := os.Stat(newDir); err == nil {
+				// New dir already deployed — remove the legacy one.
+				os.RemoveAll(oldDir)
+			} else {
+				// Rename old → new.
+				os.Rename(oldDir, newDir)
+			}
+		}
+	}
+
 	for _, entry := range skillEntries {
 		if !entry.IsDir() {
 			continue

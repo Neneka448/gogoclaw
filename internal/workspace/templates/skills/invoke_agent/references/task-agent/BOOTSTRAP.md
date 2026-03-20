@@ -16,5 +16,5 @@ You are executing a delegated task in this invocation directory.
 
 ## Completion
 
-- On success: run `python -m skills.invoke-agent.scripts.task_complete --invocation-dir <this_dir>`
-- On failure: run `python -m skills.invoke-agent.scripts.task_fail --invocation-dir <this_dir> --reason "what went wrong"`
+- On success: run `python -m skills.invoke_agent.scripts.task_complete --invocation-dir <this_dir>`
+- On failure: run `python -m skills.invoke_agent.scripts.task_fail --invocation-dir <this_dir> --reason "what went wrong"`

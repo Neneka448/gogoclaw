@@ -95,13 +95,13 @@ func TestEnsureDefaultSkillsCreatesCronTask(t *testing.T) {
 		t.Fatalf("EnsureDefaultSkills() error = %v", err)
 	}
 
-	skillPath := filepath.Join(workspacePath, "skills", "cron-task", skillFileName)
+	skillPath := filepath.Join(workspacePath, "skills", "cron_task", skillFileName)
 	info, err := os.Stat(skillPath)
 	if err != nil {
 		t.Fatalf("Stat(%s) error = %v", skillPath, err)
 	}
 	if info.Size() == 0 {
-		t.Fatalf("cron-task SKILL.md is empty")
+		t.Fatalf("cron_task SKILL.md is empty")
 	}
 }
 

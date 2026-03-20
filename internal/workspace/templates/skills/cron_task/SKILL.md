@@ -1,5 +1,5 @@
 ---
-name: cron-task
+name: cron_task
 description: "Create, list, update, and delete workspace cron tasks that run the agent on a schedule. Use when the user wants a repeating background task, periodic inbox triage, scheduled reports, recurring agent workflow, or any task that should execute automatically on a timer. Also use when the user asks to manage existing crons — view, pause, resume, change schedule, or remove them."
 ---
 
@@ -23,12 +23,12 @@ If the task matches any of the above, call `get_skill("roleplay-cron")` and foll
 
 ## Scripts
 
-All scripts live under `skills/cron-task/scripts/`. Run them with `python -m skills.cron-task.scripts.<name>`. Every script requires `--workspace` and outputs JSON to stdout.
+All scripts live under `skills/cron_task/scripts/`. Run them with `python -m skills.cron_task.scripts.<name>`. Every script requires `--workspace` and outputs JSON to stdout.
 
 ### create.py — Create a new cron
 
 ```bash
-python -m skills.cron-task.scripts.create \
+python -m skills.cron_task.scripts.create \
   --workspace {workspace} \
   --cron-id <id> \
   --cron-expression "<expr>" \
@@ -50,7 +50,7 @@ python -m skills.cron-task.scripts.create \
 ### list.py — List all crons
 
 ```bash
-python -m skills.cron-task.scripts.list \
+python -m skills.cron_task.scripts.list \
   --workspace {workspace} \
   --enabled-only   # optional: filter to enabled crons
 ```
@@ -58,7 +58,7 @@ python -m skills.cron-task.scripts.list \
 ### get.py — Get cron details
 
 ```bash
-python -m skills.cron-task.scripts.get \
+python -m skills.cron_task.scripts.get \
   --workspace {workspace} \
   --cron-id <id>
 ```
@@ -68,7 +68,7 @@ Returns config + task content.
 ### update.py — Update an existing cron (merge semantics)
 
 ```bash
-python -m skills.cron-task.scripts.update \
+python -m skills.cron_task.scripts.update \
   --workspace {workspace} \
   --cron-id <id> \
   --cron-expression "<new expr>" \
@@ -81,7 +81,7 @@ Only the fields you pass are changed; everything else is preserved.
 ### delete.py — Delete a cron
 
 ```bash
-python -m skills.cron-task.scripts.delete \
+python -m skills.cron_task.scripts.delete \
   --workspace {workspace} \
   --cron-id <id>
 ```
