@@ -16,5 +16,5 @@ You are executing a delegated task in this invocation directory.
 
 ## Completion
 
-- On success: update status.json to {"status": "succeeded", "finished_at": "...", "error": ""}.
-- On failure: update status.json to {"status": "failed", "finished_at": "...", "error": "what went wrong"}.
+- On success: run `python -m skills.invoke-agent.scripts.task_complete --invocation-dir <this_dir>`
+- On failure: run `python -m skills.invoke-agent.scripts.task_fail --invocation-dir <this_dir> --reason "what went wrong"`

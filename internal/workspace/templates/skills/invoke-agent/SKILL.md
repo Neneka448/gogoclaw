@@ -166,6 +166,21 @@ or read {invocation_dir}/status.json and reports/ for current progress.
 6. Do not create under-specified task.md files. The task definition must be self-contained and actionable.
 7. Adapt the heartbeat interval to the expected task duration. Short tasks: `*/2 * * * *`. Long tasks: `*/10 * * * *`.
 
+## Task Lifecycle Scripts
+
+The task and heartbeat agents use these scripts to manage task status instead of writing status.json directly:
+
+| Script | Usage | Description |
+|--------|-------|-------------|
+| `task_start` | `python -m skills.invoke-agent.scripts.task_start --invocation-dir <dir>` | Mark task as running |
+| `task_complete` | `python -m skills.invoke-agent.scripts.task_complete --invocation-dir <dir>` | Mark task as succeeded |
+| `task_fail` | `python -m skills.invoke-agent.scripts.task_fail --invocation-dir <dir> --reason "..."` | Mark task as failed |
+| `task_status` | `python -m skills.invoke-agent.scripts.task_status --invocation-dir <dir>` | Query current status |
+
+### Concurrency
+
+The runtime uses an exclusive file lock (`.lock` in the cron directory) to prevent the same cron from executing concurrently. If a cron tick fires while a previous execution is still running, it is silently skipped. No action is needed from the skill — this is handled automatically.
+
 ## References
 
 | File                                      | Description                              |
@@ -175,4 +190,5 @@ or read {invocation_dir}/status.json and reports/ for current progress.
 | `references/task-agent/PROMPT.md`         | Task cron prompt template                |
 | `references/heartbeat-agent/HEARTBEAT.md` | Default heartbeat template               |
 | `references/heartbeat-agent/PROMPT.md`    | Heartbeat cron prompt template           |
+| `assets/status_schema.json`              | status.json JSON schema                  |
 | `skills/inbox/`                           | Inbox skill for completion notifications |

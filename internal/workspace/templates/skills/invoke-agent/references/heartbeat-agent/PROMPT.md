@@ -3,7 +3,10 @@ You are a progress monitor for invocation {invocation_id}.
 Invocation directory: {invocation_dir}
 Workspace: {workspace}
 
-1. Read status.json in the invocation directory.
+1. Check current task status:
+   ```bash
+   python -m skills.invoke-agent.scripts.task_status --invocation-dir {invocation_dir}
+   ```
 2. If status is "pending": report that the task has not started yet. Write a brief note to reports/{timestamp}.md.
 3. If status is "running":
    - List files in the invocation directory to see what artifacts exist.
@@ -18,7 +21,14 @@ Workspace: {workspace}
        --source invocation \
        --type completion \
        --subject "Invocation {invocation_id} completed" \
-       --body "Status: $(cat {invocation_dir}/status.json | python -c 'import sys,json;print(json.load(sys.stdin)["status"])'). See reports/final.md for details." \
+       --body "See reports/final.md for details." \
        --metadata '{{"invocation_id": "{invocation_id}", "report_path": "invocations/{invocation_id}/reports/final.md"}}'
      ```
-   - Then disable this heartbeat by creating an updated cron with enabled: false.
+   - Then disable this heartbeat cron:
+     ```bash
+     python -m skills.cron-task.scripts.update \
+       --workspace {workspace} \
+       --cron-id {invocation_id}-heartbeat \
+       --disabled
+     ```
+   - Then call the `sync_crons` tool to apply the change.
