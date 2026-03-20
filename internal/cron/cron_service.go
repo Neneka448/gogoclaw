@@ -291,6 +291,22 @@ func (s *cronService) executeCron(storedCron StoredCron) error {
 		return fmt.Errorf("cron executor is not configured")
 	}
 
+	// File lock: skip if another execution of this cron is already in progress.
+	// Uses O_CREATE|O_EXCL for atomic creation — only one goroutine can
+	// acquire the lock even if two ticks fire simultaneously.
+	lockPath := filepath.Join(storedCron.Path, ".lock")
+	lockFile, lockErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if lockErr != nil {
+		if os.IsExist(lockErr) {
+			fmt.Fprintf(os.Stderr, "[cron] skipping %s (locked)\n", storedCron.Config.CronID)
+			return nil
+		}
+		return lockErr
+	}
+	_, _ = lockFile.WriteString(s.currentTime().Format(time.RFC3339))
+	lockFile.Close()
+	defer os.Remove(lockPath)
+
 	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", storedCron.Config.CronID, storedCron.Config.CronExpression)
 
 	startedAt := s.currentTime()

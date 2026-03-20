@@ -16,6 +16,7 @@ Delegate tasks to other agent profiles through cron-driven, file-oriented execut
 - Coordinating work across multiple agent profiles
 
 Do NOT use for:
+
 - Simple tasks you can handle directly
 - Tasks that need immediate synchronous results
 - Work within the current profile that does not require delegation
@@ -167,11 +168,11 @@ or read {invocation_dir}/status.json and reports/ for current progress.
 
 ## References
 
-| File | Description |
-|------|-------------|
-| `references/SCHEMAS.md` | manifest.json and status.json schemas |
-| `references/task-agent/BOOTSTRAP.md` | Default bootstrap template |
-| `references/task-agent/PROMPT.md` | Task cron prompt template |
-| `references/heartbeat-agent/HEARTBEAT.md` | Default heartbeat template |
-| `references/heartbeat-agent/PROMPT.md` | Heartbeat cron prompt template |
-| `skills/inbox/` | Inbox skill for completion notifications |
+| File                                      | Description                              |
+| ----------------------------------------- | ---------------------------------------- |
+| `references/SCHEMAS.md`                   | manifest.json and status.json schemas    |
+| `references/task-agent/BOOTSTRAP.md`      | Default bootstrap template               |
+| `references/task-agent/PROMPT.md`         | Task cron prompt template                |
+| `references/heartbeat-agent/HEARTBEAT.md` | Default heartbeat template               |
+| `references/heartbeat-agent/PROMPT.md`    | Heartbeat cron prompt template           |
+| `skills/inbox/`                           | Inbox skill for completion notifications |

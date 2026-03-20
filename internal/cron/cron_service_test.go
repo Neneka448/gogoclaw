@@ -145,6 +145,56 @@ func TestCronServiceExecuteCronCreatesExecutionArtifacts(t *testing.T) {
 	}
 }
 
+func TestCronServiceExecuteCronSkipsWhenLocked(t *testing.T) {
+	workspace := t.TempDir()
+	executionCount := 0
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := NewCronService(resolver, nil, func(request ExecutionRequest) error {
+		executionCount++
+		return nil
+	}, nil)
+	if _, err := service.CreateCron(UpsertCronInput{
+		CronID:         "locked-job",
+		CronExpression: "0 * * * *",
+		Enabled:        true,
+		Task:           "should be skipped",
+	}); err != nil {
+		t.Fatalf("CreateCron() error = %v", err)
+	}
+
+	// Create lock file to simulate in-progress execution
+	lockPath := filepath.Join(workspace, "crons", "locked-job", ".lock")
+	if err := os.WriteFile(lockPath, []byte("2026-03-20T10:00:00Z"), 0644); err != nil {
+		t.Fatalf("WriteFile(.lock) error = %v", err)
+	}
+
+	// ExecuteCron should skip without error
+	if err := service.ExecuteCron("locked-job"); err != nil {
+		t.Fatalf("ExecuteCron() error = %v", err)
+	}
+	if executionCount != 0 {
+		t.Fatalf("executionCount = %d, want 0 (should have been skipped)", executionCount)
+	}
+
+	// Remove lock and verify execution proceeds
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatalf("Remove(.lock) error = %v", err)
+	}
+	if err := service.ExecuteCron("locked-job"); err != nil {
+		t.Fatalf("ExecuteCron() after unlock error = %v", err)
+	}
+	if executionCount != 1 {
+		t.Fatalf("executionCount = %d, want 1", executionCount)
+	}
+
+	// After execution completes, lock should be cleaned up (defer removes it)
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("lock file should be removed after execution, stat error = %v", err)
+	}
+}
+
 func TestCronServiceLoadAllRegistersEnabledCrons(t *testing.T) {
 	workspace := t.TempDir()
 	manager := &fakeCronManager{}
