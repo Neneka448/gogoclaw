@@ -4,6 +4,17 @@
 
 <h1 align="center">gogoclaw</h1>
 
+<p align="center">
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go"></a>
+  <a href="https://github.com/Neneka448/gogoclaw/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Neneka448/gogoclaw?style=flat" alt="License"></a>
+  <a href="https://github.com/Neneka448/gogoclaw/releases"><img src="https://img.shields.io/github/v/release/Neneka448/gogoclaw?style=flat&color=orange" alt="Release"></a>
+  <a href="https://github.com/Neneka448/gogoclaw/actions"><img src="https://img.shields.io/github/actions/workflow/status/Neneka448/gogoclaw/ci.yml?style=flat&label=CI" alt="CI"></a>
+  <br>
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat" alt="MCP"></a>
+  <a href="https://github.com/mattn/go-sqlite3"><img src="https://img.shields.io/badge/SQLite--vec-enabled-003B57?style=flat&logo=sqlite&logoColor=white" alt="SQLite-vec"></a>
+  <a href="https://github.com/spf13/cobra"><img src="https://img.shields.io/badge/CLI-Cobra-red?style=flat" alt="Cobra"></a>
+</p>
+
 <p align="center">everything is bash, everything is files</p>
 
 gogoclaw is a Go-based autonomous agent runtime built around file-first, skill-first, and cron-driven execution.
@@ -159,7 +170,7 @@ make sqlite-vec-install WORKSPACE=/path/to/workspace
 
 Each release publishes native binaries for:
 
-- Linux x86_64: `gogoclaw_linux_amd64_<version>`
+- Linux x86*64: `gogoclaw_linux_amd64*<version>`
 - macOS Intel: `gogoclaw_darwin_amd64_<version>`
 - macOS Apple Silicon: `gogoclaw_darwin_arm64_<version>`
 
