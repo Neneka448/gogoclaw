@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/bootstrap"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
@@ -17,6 +18,8 @@ var (
 	interactAgent bool
 	sessionID     string
 	agentProfile  string
+	syncWait      bool
+	syncTimeout   time.Duration
 )
 
 var agentCmd = &cobra.Command{
@@ -51,17 +54,27 @@ var agentCmd = &cobra.Command{
 			}
 		}()
 
-		_, runErr = (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
+		responses, err := (*gatewayRef).DirectProcessAndReturn(messagebus.Message{
 			ChannelID: "cli",
 			ChatID:    strings.TrimSpace(sessionID),
 			Message:   message,
 			Metadata: map[string]string{
-				"session_type": cliSessionType(),
+				"session_type":  cliSessionType(),
 				"agent_profile": strings.TrimSpace(agentProfile),
 			},
 		})
-		if runErr != nil {
-			return runErr
+		if err != nil {
+			return err
+		}
+
+		if syncWait {
+			result, waitErr := waitForDelegatedTask(responses, syncTimeout)
+			if result.Message != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), result.Message)
+			}
+			if waitErr != nil {
+				return waitErr
+			}
 		}
 		// for _, response := range responses {
 		// 	if strings.TrimSpace(response.Message) == "" {
@@ -87,6 +100,8 @@ func init() {
 	agentCmd.Flags().BoolVarP(&interactAgent, "interactive", "i", false, "run the agent in interactive mode")
 	agentCmd.Flags().StringVar(&sessionID, "session", "default", "session id to reuse for CLI conversation state")
 	agentCmd.Flags().StringVar(&agentProfile, "profile", "default", "agent profile name to run")
+	agentCmd.Flags().BoolVar(&syncWait, "sync", false, "wait for delegated background task to reach a terminal state before exiting")
+	agentCmd.Flags().DurationVar(&syncTimeout, "sync-timeout", 2*time.Minute, "maximum time to wait for delegated task to reach a terminal state when --sync is set")
 }
 
 func resolveConfigPath(configPath string) (string, error) {
