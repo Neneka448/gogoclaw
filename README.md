@@ -16,6 +16,7 @@ The goal is not a monolithic assistant application, but a runtime spine that can
 - background agents for autonomous task execution
 - cron-driven agents that poll, inspect, and continue file-based work
 - shared skill layers across multiple agent profiles
+- MQ-backed inbox routing for cross-agent and cross-system communication
 
 ## Design Principles
 
@@ -77,7 +78,7 @@ Implemented today:
 - ReAct-style agent loop with tool-calling and bounded tool iterations
 - workspace-backed session persistence with archive/reset behavior
 - gateway runtime for direct CLI execution and long-running channel processing
-- built-in CLI channel and optional Feishu channel integration
+- built-in CLI channel, optional Feishu channel integration, and RabbitMQ-backed MQ channel
 - cron service with workspace-backed cron task storage and execution
 - memory service and recall tool integration when embedding is configured
 - MCP service bootstrap and tool registration
@@ -98,7 +99,7 @@ Still evolving:
 ├── docs/                   # project documentation
 ├── internal/agent/         # ReAct loop and tool-call orchestration
 ├── internal/bootstrap/     # runtime wiring from config to gateway
-├── internal/channels/      # CLI and Feishu channels
+├── internal/channels/      # CLI, Feishu, and MQ channels
 ├── internal/cli/           # onboarding and auth flows
 ├── internal/config/        # config schema and loading
 ├── internal/cron/          # cron scheduler and workspace cron storage
@@ -209,6 +210,19 @@ The runtime will bootstrap the configured profile, load workspace prompts and sk
 
 This starts enabled channels and keeps the runtime alive for long-running processing. The CLI channel is enabled by default, and Feishu can be enabled in config.
 
+### MQ Channel
+
+The MQ channel uses RabbitMQ as an external inbox and delivery bus.
+
+Its role is:
+
+- accept messages from other software systems and feed them into the gateway as normal inbound messages
+- give each agent profile a durable external inbox queue
+- let background agent replies flow back out through the same channel path
+- support agent-to-agent communication through skills and scripts instead of adding more built-in runtime tools
+
+In practice, this means external systems can publish messages into RabbitMQ, `gogoclaw gateway` can consume them through the MQ channel, and the agent can reply back to RabbitMQ after processing. The workspace skill `agent_bus` writes outbound message files into the local workspace, and the MQ channel sidecar publishes them to RabbitMQ.
+
 ### 4. Authenticate Codex if needed
 
 ```bash
@@ -313,6 +327,14 @@ Example:
       "allowFrom": ["*"],
       "reactEmoji": "THUMBSUP"
     },
+    "mq": {
+      "enabled": true,
+      "url": "amqp://gogoclaw:gogoclaw@127.0.0.1:5672/",
+      "exchange": "agent.bus",
+      "profile": "default",
+      "machineId": "your-machine-id",
+      "prefetch": 16
+    },
     "sendProgress": true,
     "sendToolHints": true
   },
@@ -350,9 +372,73 @@ Notes:
 - profile definitions already live under agents.profiles
 - today, most runtime paths still effectively center on the default profile
 - embedding models are configured separately under the embedding section
+- the MQ channel is optional and uses RabbitMQ as the external message bus
+- `channels.mq.profile` identifies which agent inbox queue this process should consume
+- `channels.mq.machineId` is used to build the runtime instance identifier `<profile>@<machineId>`
+- `channels.mq.exchange` defaults to `agent.bus`
+- the MQ runtime sidecar writes local state under `<workspace>/.gogoclaw/agent_bus/`
 - terminal tool timeout can be configured through the tools array
 - MCP servers are configured under mcp.mcpServers and support stdio plus Streamable HTTP
 - if no custom workspace is provided during onboarding, it defaults to <profile-dir>/workspace
+
+### MQ Configuration
+
+Minimal RabbitMQ configuration for one agent process:
+
+```json
+{
+  "channels": {
+    "mq": {
+      "enabled": true,
+      "url": "amqp://gogoclaw:gogoclaw@127.0.0.1:5672/",
+      "exchange": "agent.bus",
+      "profile": "default",
+      "machineId": "your-machine-id",
+      "prefetch": 16
+    }
+  }
+}
+```
+
+Field meanings:
+
+- `enabled`: turns the MQ channel on
+- `url`: RabbitMQ connection string
+- `exchange`: topic exchange used for inbound and outbound routing
+- `profile`: logical agent identity served by this process
+- `machineId`: host-level identifier used to build `instance_id = <profile>@<machineId>`
+- `prefetch`: RabbitMQ consumer prefetch size
+
+RabbitMQ routing model in the current implementation:
+
+- exchange name: `agent.bus`
+- queue name: `agent.inbox.<profile>`
+- direct routing key: `profile.<profile>`
+- broadcast routing key: `broadcast`
+
+You can configure it with the CLI:
+
+```bash
+./gogoclaw config set channels.mq '{"enabled":true,"url":"amqp://gogoclaw:gogoclaw@127.0.0.1:5672/","exchange":"agent.bus","profile":"default","machineId":"your-machine-id","prefetch":16}'
+```
+
+After that, start the gateway:
+
+```bash
+./gogoclaw gateway
+```
+
+When the MQ channel starts successfully, it creates local runtime state under:
+
+```text
+<workspace>/.gogoclaw/agent_bus/
+├── config.json
+├── outbox/
+├── sent/
+└── failed/
+```
+
+The bundled workspace skill `skills/agent_bus/` uses this runtime directory. Its scripts write envelopes into `outbox/`, and the MQ channel sidecar publishes them to RabbitMQ.
 
 ## Workspace Conventions
 
@@ -372,6 +458,7 @@ Additional runtime conventions:
 - archived sessions are written when the user sends /new
 - cron tasks are stored under crons/<cron-id>/
 - vector and memory data live under the workspace as runtime files
+- MQ sidecar runtime files live under .gogoclaw/agent_bus/
 
 ## Built-in Tools
 

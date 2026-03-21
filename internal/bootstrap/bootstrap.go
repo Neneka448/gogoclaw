@@ -47,6 +47,11 @@ func Bootstrap(configPath string) (*gateway.Gateway, error) {
 	if err := channelRegistry.Register(channels.NewCLIChannel(channelsConfig.CLI, nil)); err != nil {
 		return nil, err
 	}
+	if channelsConfig.MQ.Enabled {
+		if err := channelRegistry.Register(channels.NewMQChannel(channelsConfig.MQ, messageBus, defaultProfile.Workspace)); err != nil {
+			return nil, err
+		}
+	}
 	if channelsConfig.Feishu.Enabled {
 		if err := channelRegistry.Register(channels.NewFeishuChannel(channelsConfig.Feishu, messageBus, defaultProfile.Workspace)); err != nil {
 			return nil, err

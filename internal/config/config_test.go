@@ -64,6 +64,12 @@ func TestNewConfigManagerLoadsConfig(t *testing.T) {
 	if loadedConfig.Cron.Timezone != "Europe/London" {
 		t.Fatalf("Cron.Timezone = %q, want Europe/London", loadedConfig.Cron.Timezone)
 	}
+	if loadedConfig.Channels.MQ.Exchange != "agent.bus" {
+		t.Fatalf("Channels.MQ.Exchange = %q, want agent.bus", loadedConfig.Channels.MQ.Exchange)
+	}
+	if loadedConfig.Channels.MQ.Prefetch != 16 {
+		t.Fatalf("Channels.MQ.Prefetch = %d, want 16", loadedConfig.Channels.MQ.Prefetch)
+	}
 	if loadedConfig.MCP.MCPServers == nil {
 		t.Fatal("MCP.MCPServers = nil, want empty map")
 	}

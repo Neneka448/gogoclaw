@@ -88,6 +88,29 @@ func TestEnsureDefaultSkillsCreatesAgentBrowser(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultSkillsCreatesAgentBus(t *testing.T) {
+	workspacePath := t.TempDir()
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	skillRoot := filepath.Join(workspacePath, "skills", "agent_bus")
+	for _, rel := range []string{
+		"SKILL.md",
+		"references/SCHEMAS.md",
+		"scripts/send.py",
+		"scripts/reply.py",
+		"scripts/broadcast.py",
+		"scripts/inspect.py",
+	} {
+		path := filepath.Join(skillRoot, rel)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("Stat(%s) error = %v", path, err)
+		}
+	}
+}
+
 func TestEnsureDefaultSkillsCreatesCronTask(t *testing.T) {
 	workspacePath := t.TempDir()
 

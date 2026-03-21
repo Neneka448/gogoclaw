@@ -167,7 +167,11 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 	case appcontext.InvocationModeForeground:
 		outputSink = messagebus.NewMessageBusOutputSink(messageBus)
 	default:
-		outputSink = messagebus.NewNoopOutputSink()
+		if strings.TrimSpace(request.Message.ChannelID) == "mq" {
+			outputSink = messagebus.NewMessageBusOutputSink(messageBus)
+		} else {
+			outputSink = messagebus.NewNoopOutputSink()
+		}
 	}
 
 	toolRegistry, err := buildInvocationToolRegistry(runtime.workspace, toolConfigs, runtime.skillRegistry, outputSink, runtime.cronService, runtime.context.MCPService, runtime.context.MemoryService)
