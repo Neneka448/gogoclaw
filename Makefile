@@ -47,11 +47,14 @@ else
 SQLITE_VEC_SHA256_CMD := sha256sum
 endif
 
+CODESIGN_ID ?= com.gogoclaw.gogoclaw
+CODESIGN_SIGNER ?= -
+
 LDFLAGS := -X github.com/Neneka448/gogoclaw/internal/version.Version=$(VERSION) \
            -X github.com/Neneka448/gogoclaw/internal/version.BuildTime=$(BUILD_TIME) \
            -X github.com/Neneka448/gogoclaw/internal/version.GitCommit=$(GIT_COMMIT)
 
-.PHONY: build test build-lite test-lite sqlite-vec-install sqlite-vec-clean
+.PHONY: build test build-lite test-lite sign sqlite-vec-install sqlite-vec-clean
 
 build: build-lite
 
@@ -59,6 +62,17 @@ test: test-lite
 
 build-lite:
 	go build -ldflags "$(LDFLAGS)" -o gogoclaw .
+ifeq ($(UNAME_S),Darwin)
+	@$(MAKE) sign
+endif
+
+sign:
+ifeq ($(UNAME_S),Darwin)
+	codesign --force --sign "$(CODESIGN_SIGNER)" --identifier "$(CODESIGN_ID)" --options runtime ./gogoclaw
+	@echo "Signed ./gogoclaw (identifier=$(CODESIGN_ID), signer=$(CODESIGN_SIGNER))"
+else
+	@echo "Code signing is only supported on macOS"
+endif
 
 test-lite:
 	go test ./...

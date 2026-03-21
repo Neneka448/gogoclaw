@@ -15,6 +15,8 @@ import (
 )
 
 const gatewayServiceLabelPrefix = "com.gogoclaw.gateway."
+const codesignDefaultIdentifier = "com.gogoclaw.gogoclaw"
+const codesignCertCN = "GoGoClaw Code Signing"
 
 type gatewayServiceSpec struct {
 	Label         string
@@ -151,6 +153,75 @@ var serviceStatusCmd = &cobra.Command{
 	},
 }
 
+var serviceSignCmd = &cobra.Command{
+	Use:   "sign",
+	Short: "Sign the gogoclaw binary with a stable macOS code identity",
+	Long: `Sign the gogoclaw binary with a stable code signing identity.
+
+By default, uses ad-hoc signing (signer "-") with a stable identifier
+"com.gogoclaw.gogoclaw". This gives the binary a persistent identity
+that macOS NECP and Network Extension policies can recognize.
+
+Use --signer to specify a signing certificate name from your Keychain,
+for example a self-signed certificate or an Apple Developer ID.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		signer, _ := cmd.Flags().GetString("signer")
+		identifier, _ := cmd.Flags().GetString("identifier")
+		return runServiceSign(cmd, signer, identifier)
+	},
+}
+
+var serviceSetupCertCmd = &cobra.Command{
+	Use:   "setup-cert",
+	Short: "Create a self-signed code signing certificate in Keychain",
+	Long: `Create a self-signed code signing certificate and install it into
+the login keychain. This gives the gogoclaw binary a real signing
+authority and TeamIdentifier that macOS NECP can recognize, which
+improves compatibility with VPN/proxy apps like Clash.
+
+After running this command, use "service sign --signer ` + `"` + codesignCertCN + `"` + `"
+to sign the binary with the certificate.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSetupCert(cmd)
+	},
+}
+
+var serviceBundleCmd = &cobra.Command{
+	Use:   "bundle",
+	Short: "Create a minimal macOS .app bundle around the gogoclaw binary",
+	Long: `Create a GoGoClaw.app bundle in the specified directory (default:
+~/Applications/). The bundle gives macOS a full application identity
+with CFBundleIdentifier, which is the strongest way to establish a
+stable NECP identity for background network access.
+
+After bundling, use "service install" to reinstall the launchd service
+pointing to the bundled binary.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		installDir, _ := cmd.Flags().GetString("dir")
+		signer, _ := cmd.Flags().GetString("signer")
+		return runServiceBundle(cmd, installDir, signer)
+	},
+}
+
+var serviceGrantNetworkCmd = &cobra.Command{
+	Use:   "grant-network",
+	Short: "Trigger the macOS Local Network permission prompt",
+	Long: `On macOS 15+, apps need explicit user consent for local network access.
+This command opens the GoGoClaw.app bundle to trigger the system
+permission dialog. Accept the prompt to allow local network access,
+then restart the launchd service.
+
+This must be run from a GUI session (e.g., Terminal.app on the Mac,
+or screen sharing).`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runGrantNetwork(cmd)
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(serviceCmd)
 	serviceCmd.AddCommand(serviceInstallCmd)
@@ -159,6 +230,18 @@ func init() {
 	serviceCmd.AddCommand(serviceStopCmd)
 	serviceCmd.AddCommand(serviceRestartCmd)
 	serviceCmd.AddCommand(serviceStatusCmd)
+	serviceCmd.AddCommand(serviceSignCmd)
+	serviceCmd.AddCommand(serviceSetupCertCmd)
+	serviceCmd.AddCommand(serviceBundleCmd)
+	serviceCmd.AddCommand(serviceGrantNetworkCmd)
+
+	serviceSignCmd.Flags().String("signer", "-", "Code signing identity (use \"-\" for ad-hoc, or a Keychain certificate name)")
+	serviceSignCmd.Flags().String("identifier", codesignDefaultIdentifier, "Bundle identifier for codesign")
+
+	homeDir, _ := os.UserHomeDir()
+	defaultBundleDir := filepath.Join(homeDir, "Applications")
+	serviceBundleCmd.Flags().String("dir", defaultBundleDir, "Directory to create the .app bundle in")
+	serviceBundleCmd.Flags().String("signer", "-", "Code signing identity for the bundle")
 }
 
 func runGatewayServiceStatus(cmd *cobra.Command) error {
@@ -192,7 +275,329 @@ func runGatewayServiceStatus(cmd *cobra.Command) error {
 		}
 	}
 
+	sigInfo := codesignInfo(spec.ProgramPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "Binary:     %s\n", spec.ProgramPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "Signed:     %s\n", sigInfo)
+
 	return nil
+}
+
+func runServiceSign(cmd *cobra.Command, signer string, identifier string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("code signing is only supported on macOS")
+	}
+
+	programPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	programPath, err = filepath.EvalSymlinks(programPath)
+	if err != nil {
+		return err
+	}
+
+	args := []string{
+		"--force",
+		"--sign", signer,
+		"--identifier", identifier,
+		"--options", "runtime",
+		programPath,
+	}
+	out, err := exec.Command("codesign", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("codesign failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Signed %s\n", programPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Identifier: %s\n", identifier)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Signer:     %s\n", signerDisplay(signer))
+
+	info := codesignInfo(programPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Verify:     %s\n", info)
+	return nil
+}
+
+func codesignInfo(path string) string {
+	out, err := exec.Command("codesign", "-dvv", path).CombinedOutput()
+	if err != nil {
+		return "unsigned"
+	}
+	output := string(out)
+	id := extractCodesignField(output, "Identifier")
+	authority := extractCodesignField(output, "Authority")
+	flags := extractCodesignField(output, "CodeDirectory flags")
+
+	var parts []string
+	if id != "" {
+		parts = append(parts, "id="+id)
+	}
+	if authority != "" {
+		parts = append(parts, "authority="+authority)
+	} else {
+		parts = append(parts, "authority=ad-hoc")
+	}
+	if strings.Contains(flags, "runtime") {
+		parts = append(parts, "runtime=hardened")
+	}
+	if len(parts) == 0 {
+		return "signed (details unavailable)"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func extractCodesignField(output string, field string) string {
+	prefix := field + "="
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
+
+func signerDisplay(signer string) string {
+	if signer == "-" {
+		return "ad-hoc (no certificate)"
+	}
+	return signer
+}
+
+func runSetupCert(cmd *cobra.Command) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("certificate setup is only supported on macOS")
+	}
+
+	// Check if certificate already exists
+	out, err := exec.Command("security", "find-identity", "-v", "-p", "codesigning").CombinedOutput()
+	if err == nil && strings.Contains(string(out), codesignCertCN) {
+		fmt.Fprintf(cmd.OutOrStdout(), "Certificate %q already exists in Keychain.\n", codesignCertCN)
+		fmt.Fprintf(cmd.OutOrStdout(), "To sign: gogoclaw service sign --signer %q\n", codesignCertCN)
+		return nil
+	}
+
+	// Create a temporary directory for cert generation
+	tmpDir, err := os.MkdirTemp("", "gogoclaw-cert-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	keyPath := filepath.Join(tmpDir, "key.pem")
+	certPath := filepath.Join(tmpDir, "cert.pem")
+	p12Path := filepath.Join(tmpDir, "cert.p12")
+
+	// Generate self-signed code signing certificate
+	opensslConf := filepath.Join(tmpDir, "openssl.cnf")
+	confContent := `[req]
+distinguished_name = req_dn
+x509_extensions = codesign
+prompt = no
+
+[req_dn]
+CN = ` + codesignCertCN + `
+O = GoGoClaw
+
+[codesign]
+keyUsage = critical, digitalSignature
+extendedKeyUsage = codeSigning
+basicConstraints = critical, CA:false
+`
+	if err := os.WriteFile(opensslConf, []byte(confContent), 0600); err != nil {
+		return fmt.Errorf("write openssl config: %w", err)
+	}
+
+	// Generate key + cert
+	genOut, err := exec.Command("openssl", "req", "-x509", "-newkey", "rsa:2048",
+		"-keyout", keyPath, "-out", certPath,
+		"-days", "3650", "-nodes",
+		"-config", opensslConf).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("generate certificate: %w: %s", err, strings.TrimSpace(string(genOut)))
+	}
+
+	// Convert to PKCS12 (use a simple passphrase for macOS Security framework compatibility)
+	const p12Pass = "gogoclaw"
+	p12Out, err := exec.Command("openssl", "pkcs12", "-export",
+		"-out", p12Path, "-inkey", keyPath, "-in", certPath,
+		"-passout", "pass:"+p12Pass).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create p12: %w: %s", err, strings.TrimSpace(string(p12Out)))
+	}
+
+	// Import into login keychain
+	importOut, err := exec.Command("security", "import", p12Path,
+		"-k", filepath.Join(os.Getenv("HOME"), "Library", "Keychains", "login.keychain-db"),
+		"-P", p12Pass,
+		"-T", "/usr/bin/codesign").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("import to keychain: %w: %s", err, strings.TrimSpace(string(importOut)))
+	}
+
+	// Trust the certificate for code signing
+	trustOut, err := exec.Command("security", "add-trusted-cert",
+		"-p", "codeSign",
+		"-k", filepath.Join(os.Getenv("HOME"), "Library", "Keychains", "login.keychain-db"),
+		certPath).CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "Warning: could not auto-trust certificate: %s\n", strings.TrimSpace(string(trustOut)))
+		fmt.Fprintf(cmd.OutOrStdout(), "You may need to trust it manually in Keychain Access.\n")
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Created code signing certificate %q in login keychain.\n", codesignCertCN)
+	fmt.Fprintf(cmd.OutOrStdout(), "To sign the binary:\n")
+	fmt.Fprintf(cmd.OutOrStdout(), "  gogoclaw service sign --signer %q\n", codesignCertCN)
+	fmt.Fprintf(cmd.OutOrStdout(), "To build + bundle:\n")
+	fmt.Fprintf(cmd.OutOrStdout(), "  gogoclaw service bundle --signer %q\n", codesignCertCN)
+	return nil
+}
+
+func runServiceBundle(cmd *cobra.Command, installDir string, signer string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("app bundling is only supported on macOS")
+	}
+
+	programPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	programPath, err = filepath.EvalSymlinks(programPath)
+	if err != nil {
+		return err
+	}
+
+	appDir := filepath.Join(installDir, "GoGoClaw.app")
+	macosDir := filepath.Join(appDir, "Contents", "MacOS")
+	binaryDst := filepath.Join(macosDir, "gogoclaw")
+	infoPlistPath := filepath.Join(appDir, "Contents", "Info.plist")
+
+	if err := os.MkdirAll(macosDir, 0755); err != nil {
+		return fmt.Errorf("create app bundle directory: %w", err)
+	}
+
+	// Copy binary into the bundle
+	srcData, err := os.ReadFile(programPath)
+	if err != nil {
+		return fmt.Errorf("read binary: %w", err)
+	}
+	if err := os.WriteFile(binaryDst, srcData, 0755); err != nil {
+		return fmt.Errorf("write binary to bundle: %w", err)
+	}
+
+	// Write Info.plist
+	infoPlist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>` + codesignDefaultIdentifier + `</string>
+  <key>CFBundleName</key>
+  <string>GoGoClaw</string>
+  <key>CFBundleExecutable</key>
+  <string>gogoclaw</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>GoGoClaw needs local network access to connect to message queues and other local services.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_amqp._tcp</string>
+  </array>
+</dict>
+</plist>
+`
+	if err := os.WriteFile(infoPlistPath, []byte(infoPlist), 0644); err != nil {
+		return fmt.Errorf("write Info.plist: %w", err)
+	}
+
+	// Sign the bundle
+	signArgs := []string{
+		"--force", "--deep",
+		"--sign", signer,
+		"--identifier", codesignDefaultIdentifier,
+		"--options", "runtime",
+		appDir,
+	}
+	signOut, err := exec.Command("codesign", signArgs...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("sign app bundle: %w: %s", err, strings.TrimSpace(string(signOut)))
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Created app bundle: %s\n", appDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Binary:     %s\n", binaryDst)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Identifier: %s\n", codesignDefaultIdentifier)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Signer:     %s\n", signerDisplay(signer))
+
+	info := codesignInfo(binaryDst)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Verify:     %s\n", info)
+
+	fmt.Fprintf(cmd.OutOrStdout(), "\nTo use the bundled binary with the service:\n")
+	fmt.Fprintf(cmd.OutOrStdout(), "  gogoclaw service install\n")
+	fmt.Fprintf(cmd.OutOrStdout(), "  (run from %s)\n", binaryDst)
+	return nil
+}
+
+func runGrantNetwork(cmd *cobra.Command) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("network permission grant is only supported on macOS")
+	}
+
+	programPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	programPath, err = filepath.EvalSymlinks(programPath)
+	if err != nil {
+		return err
+	}
+
+	// Find the .app bundle by walking up from the binary
+	appPath := findAppBundle(programPath)
+	if appPath == "" {
+		return fmt.Errorf("no .app bundle found; run 'service bundle' first")
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Opening %s to trigger local network permission prompt...\n", appPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "If a system dialog appears, click 'Allow' to grant local network access.\n\n")
+
+	// Use 'open' to launch the app in GUI context — this triggers TCC prompts
+	openOut, err := exec.Command("open", "-a", appPath, "--args", "--config",
+		resolveDefaultConfigPath(), "version").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("open app failed: %w: %s", err, strings.TrimSpace(string(openOut)))
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "App opened. After granting permission, restart the service:\n")
+	fmt.Fprintf(cmd.OutOrStdout(), "  gogoclaw service restart\n")
+	return nil
+}
+
+func findAppBundle(binaryPath string) string {
+	dir := filepath.Dir(binaryPath)
+	for dir != "/" && dir != "." {
+		if strings.HasSuffix(dir, ".app/Contents/MacOS") || strings.HasSuffix(dir, ".app/Contents/MacOS/") {
+			return filepath.Dir(filepath.Dir(dir)) // .app path
+		}
+		if strings.HasSuffix(dir, ".app") || strings.HasSuffix(dir, ".app/") {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	return ""
+}
+
+func resolveDefaultConfigPath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "~/.gogoclaw/config.json"
+	}
+	return filepath.Join(homeDir, ".gogoclaw", "config.json")
 }
 
 func installGatewayService(spec gatewayServiceSpec) error {
@@ -327,13 +732,28 @@ func resolveGatewayServiceSpec(configPath string) (gatewayServiceSpec, error) {
 		WorkingDir:    filepath.Dir(programPath),
 		DomainTarget:  fmt.Sprintf("gui/%d", uid),
 		ServiceTarget: fmt.Sprintf("gui/%d/%s", uid, label),
-		ProgramArgs: []string{
+	}
+
+	// If the binary is inside a .app bundle, use 'open -W -a' to launch it.
+	// This gives the process a GUI application context, which macOS requires
+	// for local network access on macOS 15+ (NECP/TCC restrictions).
+	appBundle := findAppBundle(programPath)
+	if appBundle != "" {
+		spec.ProgramArgs = []string{
+			"/usr/bin/open", "-W", "-a", appBundle,
+			"--args",
+			"--config", resolvedConfigPath,
+			"gateway",
+		}
+	} else {
+		spec.ProgramArgs = []string{
 			programPath,
 			"--config",
 			resolvedConfigPath,
 			"gateway",
-		},
+		}
 	}
+
 	return spec, nil
 }
 
