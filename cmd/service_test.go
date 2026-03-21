@@ -45,7 +45,7 @@ func TestRenderGatewayLaunchdPlist(t *testing.T) {
 		"<string>/Users/test/.gogoclaw/config.json</string>",
 		"<string>gateway</string>",
 		"<key>KeepAlive</key>",
-		"<true></true>",
+		"<true/>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Fatalf("plist missing %q\n%s", want, plist)

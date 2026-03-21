@@ -377,6 +377,8 @@ func renderGatewayLaunchdPlist(spec gatewayServiceSpec) ([]byte, error) {
 
 	header := []byte(xml.Header + `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
 	content = append(header, content...)
+	content = []byte(strings.ReplaceAll(string(content), "<true></true>", "<true/>"))
+	content = []byte(strings.ReplaceAll(string(content), "<false></false>", "<false/>"))
 	content = append(content, '\n')
 	return content, nil
 }
