@@ -208,6 +208,17 @@ The runtime will bootstrap the configured profile, load workspace prompts and sk
 ./gogoclaw gateway
 ```
 
+On macOS, prefer installing the gateway as a `launchd` service instead of using
+`nohup` or other detached shell tricks:
+
+```bash
+./gogoclaw service install
+./gogoclaw service status
+```
+
+This installs a per-user LaunchAgent that runs `gogoclaw gateway` with the
+current config path and keeps it alive across restarts.
+
 This starts enabled channels and keeps the runtime alive for long-running processing. The CLI channel is enabled by default, and Feishu can be enabled in config.
 
 ### MQ Channel
@@ -426,6 +437,12 @@ After that, start the gateway:
 
 ```bash
 ./gogoclaw gateway
+```
+
+Or install the macOS LaunchAgent once and let `launchd` manage it:
+
+```bash
+./gogoclaw service install
 ```
 
 When the MQ channel starts successfully, it creates local runtime state under:
