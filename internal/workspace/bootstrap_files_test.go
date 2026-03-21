@@ -197,6 +197,44 @@ func TestEnsureDefaultSkillsPreservesExistingSkill(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultSkillsSyncsBundledResourcesForExistingSkill(t *testing.T) {
+	workspacePath := t.TempDir()
+	skillDir := filepath.Join(workspacePath, "skills", "cron_task")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte("custom cron skill"), 0644); err != nil {
+		t.Fatalf("os.WriteFile(SKILL.md) error = %v", err)
+	}
+	staleScriptPath := filepath.Join(skillDir, "scripts", "create.py")
+	if err := os.WriteFile(staleScriptPath, []byte("stale"), 0644); err != nil {
+		t.Fatalf("os.WriteFile(create.py) error = %v", err)
+	}
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	skillContent, err := os.ReadFile(filepath.Join(skillDir, skillFileName))
+	if err != nil {
+		t.Fatalf("os.ReadFile(SKILL.md) error = %v", err)
+	}
+	if string(skillContent) != "custom cron skill" {
+		t.Fatalf("SKILL.md = %q, want custom content preserved", string(skillContent))
+	}
+
+	scriptContent, err := os.ReadFile(staleScriptPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(create.py) error = %v", err)
+	}
+	if string(scriptContent) == "stale" {
+		t.Fatal("create.py was not refreshed from embedded defaults")
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "scripts", "common.py")); err != nil {
+		t.Fatalf("common.py not synced: %v", err)
+	}
+}
+
 func TestEnsureDefaultSkillsRejectsEmptyPath(t *testing.T) {
 	if err := EnsureDefaultSkills(""); err == nil {
 		t.Fatal("EnsureDefaultSkills('') should return error")

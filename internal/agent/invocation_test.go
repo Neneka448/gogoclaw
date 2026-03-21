@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,5 +169,60 @@ func TestBuildExecutionContextResolvesCurrentSession(t *testing.T) {
 	}
 	if got := executionContext.CurrentSession.GetSessionID(); got != "feishu:chat-1" {
 		t.Fatalf("CurrentSession.GetSessionID() = %q, want feishu:chat-1", got)
+	}
+}
+
+func TestInvocationServiceRejectsDuplicateProfileRuntime(t *testing.T) {
+	configPath := writeTestConfig(t)
+
+	rawFirst, err := NewInvocationService(config.NewConfigManager(configPath), nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
+	if err != nil {
+		t.Fatalf("first NewInvocationService() error = %v", err)
+	}
+	first, ok := rawFirst.(*invocationService)
+	if !ok {
+		t.Fatalf("first service type = %T, want *invocationService", rawFirst)
+	}
+	defer func() {
+		if err := first.Close(); err != nil {
+			t.Fatalf("first Close() error = %v", err)
+		}
+	}()
+
+	if err := first.EnsureProfile("default"); err != nil {
+		t.Fatalf("first EnsureProfile() error = %v", err)
+	}
+
+	rawSecond, err := NewInvocationService(config.NewConfigManager(configPath), nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
+	if err != nil {
+		t.Fatalf("second NewInvocationService() error = %v", err)
+	}
+	second, ok := rawSecond.(*invocationService)
+	if !ok {
+		t.Fatalf("second service type = %T, want *invocationService", rawSecond)
+	}
+	defer func() {
+		if err := second.Close(); err != nil {
+			t.Fatalf("second Close() error = %v", err)
+		}
+	}()
+
+	err = second.EnsureProfile("default")
+	if err == nil {
+		t.Fatal("second EnsureProfile() error = nil, want duplicate profile lock failure")
+	}
+	if !strings.Contains(err.Error(), `profile "default" is already active`) {
+		t.Fatalf("second EnsureProfile() error = %v, want duplicate profile lock message", err)
+	}
+	if len(second.runtimes) != 0 {
+		t.Fatalf("len(second.runtimes) = %d, want 0 after lock failure", len(second.runtimes))
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("first Close() release error = %v", err)
+	}
+
+	if err := second.EnsureProfile("default"); err != nil {
+		t.Fatalf("second EnsureProfile() after release error = %v", err)
 	}
 }

@@ -7,8 +7,13 @@ import re
 import sys
 from pathlib import Path
 
+from skills.cron_task.scripts.common import (
+    resolve_config_path,
+    validate_invocation_mode,
+    validate_profile_name,
+)
+
 CRON_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
-VALID_INVOCATION_MODES = {"foreground", "background", "cron"}
 
 
 def main():
@@ -23,6 +28,7 @@ def main():
     parser.add_argument("--disabled", dest="enabled", action="store_false")
     parser.add_argument("--profile-name", default=None, help="New target agent profile")
     parser.add_argument("--invocation-mode", default=None, help="New invocation mode")
+    parser.add_argument("--config-path", default="", help="Path to config.json for profile validation")
     args = parser.parse_args()
 
     cron_dir = Path(args.workspace) / "crons" / args.cron_id
@@ -44,10 +50,17 @@ def main():
     if args.enabled is not None:
         config["enabled"] = args.enabled
     if args.profile_name is not None:
+        try:
+            validate_profile_name(args.profile_name, resolve_config_path(args.config_path))
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
         config["profileName"] = args.profile_name
     if args.invocation_mode is not None:
-        if args.invocation_mode not in VALID_INVOCATION_MODES:
-            print(json.dumps({"error": f"invalid invocation mode {args.invocation_mode!r}: must be one of {', '.join(sorted(VALID_INVOCATION_MODES))}"}))
+        try:
+            validate_invocation_mode(args.invocation_mode)
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}))
             sys.exit(1)
         config["invocationMode"] = args.invocation_mode
 

@@ -6,7 +6,7 @@ You are monitoring invocation {invocation_id}.
 
 1. Read status.json — determine current state.
 2. If running: list directory contents, read recent artifacts, summarize progress in 2-3 sentences.
-3. If completed (succeeded/failed): read `result.txt` when present, write a final report with the exact outcome, and notify the caller profile through agent_bus.
+3. If completed (succeeded/failed): read `result.txt` when present, or copy the exact failure reason from `status.json` when the task failed without a result file. Write a final report with the exact outcome, then notify the caller profile through agent_bus.
 
 ## Report Format
 

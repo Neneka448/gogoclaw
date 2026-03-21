@@ -39,6 +39,7 @@ type invocationService struct {
 
 type profileRuntime struct {
 	context                appcontext.SystemContext
+	lock                   *profileRuntimeLock
 	profileName            string
 	profile                config.ProfileConfig
 	embeddingProfileName   string
@@ -269,6 +270,18 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 	workspace := strings.TrimSpace(profile.Workspace)
 	utils.Perf("buildProfileRuntime: config loading took %s", time.Since(t0))
 
+	runtimeLock, err := acquireProfileRuntimeLock(workspace, profileName)
+	if err != nil {
+		return nil, err
+	}
+	keepLock := false
+	defer func() {
+		if keepLock {
+			return
+		}
+		_ = runtimeLock.release()
+	}()
+
 	t0 = time.Now()
 	if err := workspacepkg.EnsureMemorySkill(workspace); err != nil {
 		return nil, err
@@ -367,7 +380,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 
 	utils.Perf("buildProfileRuntime(%s): total took %s", profileName, time.Since(buildStart))
 
-	return &profileRuntime{
+	runtime := &profileRuntime{
 		context: appcontext.SystemContext{
 			Provider:       llmProvider,
 			TextEmbedding:  textEmbeddingProvider,
@@ -383,6 +396,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 			MemoryService:  memoryService,
 			MemoryEnabled:  memoryEnabled,
 		},
+		lock:                   runtimeLock,
 		profileName:            profileName,
 		profile:                *profile,
 		embeddingProfileName:   embeddingProfileName,
@@ -394,7 +408,9 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 		defaultChannelRegistry: service.defaultChannelRegistry,
 		cronService:            service.cronService,
 		cronEnabled:            service.cronEnabled,
-	}, nil
+	}
+	keepLock = true
+	return runtime, nil
 }
 
 func (runtime *profileRuntime) ensureReady() error {
@@ -432,6 +448,12 @@ func (runtime *profileRuntime) close() error {
 			recordFirstError(&firstErr, err)
 		}
 		runtime.context.SessionManager = nil
+	}
+	if runtime.lock != nil {
+		if err := runtime.lock.release(); err != nil {
+			recordFirstError(&firstErr, err)
+		}
+		runtime.lock = nil
 	}
 	return firstErr
 }

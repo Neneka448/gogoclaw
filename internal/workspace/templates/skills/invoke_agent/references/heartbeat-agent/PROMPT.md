@@ -14,10 +14,11 @@ Workspace: {workspace}
    - Write a brief progress summary to reports/{timestamp}.md.
 4. If status is "succeeded" or "failed":
    - Read `{invocation_dir}/result.txt` first if it exists.
-   - If `result.txt` does not exist, inspect the most recent delegated task session/output and extract the exact final result from there.
-   - Write `reports/final.md` with the exact user-facing outcome.
+   - If status is "failed" and `result.txt` does not exist, read `status.json` and copy the exact `error` value into `reports/final.md`. State clearly that the delegated task failed.
+   - If `result.txt` does not exist and status is not failed, inspect the most recent delegated task session/output and extract the exact final result from there.
+   - Write `reports/final.md` with the exact user-facing outcome or failure.
    - If there are exact numbers, identifiers, or statuses, copy them explicitly into `reports/final.md`.
-   - Do not write a vague success summary when the exact result is available.
+   - Do not write a vague success or failure summary when the exact result is available.
    - You must execute the remaining steps below before you stop. Do not only describe them.
    - Queue a completion notice back to the caller profile:
      ```bash

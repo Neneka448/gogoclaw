@@ -3,10 +3,15 @@
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
+
+from skills.cron_task.scripts.common import (
+    resolve_config_path,
+    validate_invocation_mode,
+    validate_profile_name,
+)
 
 CRON_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
@@ -23,10 +28,17 @@ def main():
     parser.add_argument("--disabled", dest="enabled", action="store_false")
     parser.add_argument("--profile-name", default="", help="Target agent profile")
     parser.add_argument("--invocation-mode", default="", help="Invocation mode (foreground, background, cron)")
+    parser.add_argument("--config-path", default="", help="Path to config.json for profile validation")
     args = parser.parse_args()
 
     if not CRON_ID_PATTERN.match(args.cron_id):
         print(json.dumps({"error": f"invalid cron_id {args.cron_id!r}: must match {CRON_ID_PATTERN.pattern}"}))
+        sys.exit(1)
+    try:
+        validate_profile_name(args.profile_name, resolve_config_path(args.config_path))
+        validate_invocation_mode(args.invocation_mode)
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}))
         sys.exit(1)
 
     cron_dir = Path(args.workspace) / "crons" / args.cron_id
