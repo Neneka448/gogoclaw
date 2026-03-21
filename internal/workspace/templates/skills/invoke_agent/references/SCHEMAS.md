@@ -22,7 +22,15 @@ invocations/{invocation-id}/
   "task_summary": "One-line summary of the task",
   "created_at": "RFC3339 timestamp",
   "task_cron_id": "inv-YYYYMMDD-XXXXXX-task",
-  "heartbeat_cron_id": "inv-YYYYMMDD-XXXXXX-heartbeat"
+  "heartbeat_cron_id": "inv-YYYYMMDD-XXXXXX-heartbeat",
+  "return_channel_id": "original user-facing channel id",
+  "return_chat_id": "original user-facing chat id",
+  "return_message_id": "original message id when available",
+  "return_message_type": "original message type when available",
+  "return_sender_id": "original sender id when available",
+  "return_reply_to": "original reply target when available",
+  "return_session_id": "original session id when available",
+  "return_workspace": "workspace path where the caller agent can publish completion messages"
 }
 ```
 

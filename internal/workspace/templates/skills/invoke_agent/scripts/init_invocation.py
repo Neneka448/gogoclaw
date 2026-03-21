@@ -9,6 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def env(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create invocation directory and metadata")
     parser.add_argument("--workspace", required=True, help="Workspace root directory")
@@ -33,6 +37,14 @@ def main():
         "created_at": now.isoformat(),
         "task_cron_id": f"{invocation_id}-task",
         "heartbeat_cron_id": f"{invocation_id}-heartbeat",
+        "return_channel_id": env("GOGOCLAW_CHANNEL_ID"),
+        "return_chat_id": env("GOGOCLAW_CHAT_ID"),
+        "return_message_id": env("GOGOCLAW_MESSAGE_ID"),
+        "return_message_type": env("GOGOCLAW_MESSAGE_TYPE"),
+        "return_sender_id": env("GOGOCLAW_SENDER_ID"),
+        "return_reply_to": env("GOGOCLAW_REPLY_TO"),
+        "return_session_id": env("GOGOCLAW_SESSION_ID"),
+        "return_workspace": env("GOGOCLAW_WORKSPACE"),
     }
     (invocation_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
@@ -43,9 +55,6 @@ def main():
         "error": "",
     }
     (invocation_dir / "status.json").write_text(json.dumps(status, indent=2))
-
-    # Ensure inbox directory exists
-    (Path(args.workspace) / "inbox").mkdir(parents=True, exist_ok=True)
 
     print(json.dumps({
         "invocation_id": invocation_id,

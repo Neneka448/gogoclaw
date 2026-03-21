@@ -128,6 +128,19 @@ func TestEnsureDefaultSkillsCreatesCronTask(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultSkillsDeploysInvokeAgentNotificationScript(t *testing.T) {
+	workspacePath := t.TempDir()
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	scriptPath := filepath.Join(workspacePath, "skills", "invoke_agent", "scripts", "notify_completion.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("Stat(%s) error = %v", scriptPath, err)
+	}
+}
+
 func TestEnsureDefaultSkillsDeploysBundledResources(t *testing.T) {
 	workspacePath := t.TempDir()
 

@@ -162,6 +162,128 @@ func TestMQChannelConsumesInboundMessages(t *testing.T) {
 	}
 }
 
+func TestMQChannelAppliesReturnRouteToInboundMessage(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	inboundQueue, err := bus.Get(messagebus.InboundQueue)
+	if err != nil {
+		t.Fatalf("Get(InboundQueue) error = %v", err)
+	}
+
+	broker := newFakeMQBroker()
+	ch := newMQChannelWithFactory(config.MQChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+		URL:           "amqp://guest:guest@localhost:5672/",
+		Exchange:      "agent.bus",
+		Profile:       "front",
+		MachineID:     "machine-a",
+	}, bus, workspace, func(cfg mqResolvedConfig) (mqBroker, error) {
+		return broker, nil
+	})
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop()
+
+	broker.deliveries <- mqDelivery{
+		Body: []byte(`{
+			"version": 1,
+			"message_id": "msg-complete",
+			"message_type": "direct",
+			"source_profile": "worker",
+			"source_instance_id": "worker@machine-b",
+			"target_profile": "front",
+			"conversation_id": "inv-1",
+			"correlation_id": "inv-1",
+			"created_at": "2026-03-21T12:10:00Z",
+			"body": "SYSTEM EVENT: delegated task completed",
+			"metadata": {
+				"return_channel_id": "feishu",
+				"return_chat_id": "oc_chat_123",
+				"return_message_type": "text",
+				"return_reply_to": "om_parent",
+				"return_sender_id": "user-debug4"
+			}
+		}`),
+		RoutingKey: "profile.front",
+		Ack:        func() error { return nil },
+		Nack:       func(bool) error { return nil },
+	}
+
+	select {
+	case inbound := <-inboundQueue:
+		if inbound.ChannelID != "feishu" {
+			t.Fatalf("ChannelID = %q, want feishu", inbound.ChannelID)
+		}
+		if inbound.ChatID != "oc_chat_123" {
+			t.Fatalf("ChatID = %q, want oc_chat_123", inbound.ChatID)
+		}
+		if inbound.ReplyTo != "om_parent" {
+			t.Fatalf("ReplyTo = %q, want om_parent", inbound.ReplyTo)
+		}
+		if inbound.Metadata["agent_profile"] != "front" {
+			t.Fatalf("agent_profile = %q, want front", inbound.Metadata["agent_profile"])
+		}
+		if inbound.Metadata["mq_return_route_applied"] != "true" {
+			t.Fatalf("mq_return_route_applied = %q, want true", inbound.Metadata["mq_return_route_applied"])
+		}
+		if inbound.Metadata["target_profile"] != "user-debug4" {
+			t.Fatalf("target_profile = %q, want user-debug4", inbound.Metadata["target_profile"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for inbound MQ message with return route")
+	}
+}
+
+func TestMQChannelSendPrefersExplicitTargetProfile(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	broker := newFakeMQBroker()
+	ch := newMQChannelWithFactory(config.MQChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+		URL:           "amqp://guest:guest@localhost:5672/",
+		Exchange:      "agent.bus",
+		Profile:       "front",
+		MachineID:     "machine-a",
+	}, bus, workspace, func(cfg mqResolvedConfig) (mqBroker, error) {
+		return broker, nil
+	})
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop()
+
+	err := ch.Send(messagebus.Message{
+		ChannelID: mqChannelName,
+		ChatID:    "conv-1",
+		Message:   "done",
+		Metadata: map[string]string{
+			"mq_message_id":      "msg-worker",
+			"mq_source_profile":  "worker",
+			"target_profile":     "user-debug4",
+			"mq_conversation_id": "conv-1",
+			"mq_correlation_id":  "msg-worker",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if broker.publishedCount() != 1 {
+		t.Fatalf("publishedCount = %d, want 1", broker.publishedCount())
+	}
+	published := broker.publishedMessage(0)
+	if published.routingKey != "profile.user-debug4" {
+		t.Fatalf("routingKey = %q, want profile.user-debug4", published.routingKey)
+	}
+	var envelope mqEnvelope
+	if err := json.Unmarshal(published.body, &envelope); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if envelope.TargetProfile != "user-debug4" {
+		t.Fatalf("TargetProfile = %q, want user-debug4", envelope.TargetProfile)
+	}
+}
+
 func TestMQChannelSendPublishesReplyEnvelope(t *testing.T) {
 	workspace := t.TempDir()
 	bus := messagebus.NewMessageBus()

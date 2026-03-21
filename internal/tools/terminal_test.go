@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 )
 
 func TestTerminalToolRunsCommandInWorkspace(t *testing.T) {
@@ -140,5 +142,45 @@ func TestTerminalToolRejectsAbsoluteCwd(t *testing.T) {
 	}
 	if parsed.Error != "terminal cwd must not use absolute path" {
 		t.Fatalf("parsed.Error = %q, want absolute path error", parsed.Error)
+	}
+}
+
+func TestTerminalToolInjectsMessageContextEnv(t *testing.T) {
+	workspace := t.TempDir()
+	descriptor := NewTerminalTool(workspace, time.Second)
+	contextTool, ok := descriptor.Tool.(MessageContextTool)
+	if !ok {
+		t.Fatal("terminal tool does not implement MessageContextTool")
+	}
+	contextTool.SetMessageContext(messagebus.Message{
+		ChannelID:   "feishu",
+		ChatID:      "oc_chat_1",
+		MessageID:   "om_1",
+		MessageType: "text",
+		SenderID:    "ou_user_1",
+		ReplyTo:     "om_parent",
+		Metadata: map[string]string{
+			"agent_profile": "default",
+			"foo":           "bar",
+		},
+	})
+
+	result, err := descriptor.Tool.Execute(`{"command":"printf '%s|%s|%s|%s' \"$GOGOCLAW_CHANNEL_ID\" \"$GOGOCLAW_CHAT_ID\" \"$GOGOCLAW_SESSION_ID\" \"$GOGOCLAW_MESSAGE_METADATA_JSON\""}`)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var parsed terminalResult
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if parsed.Error != "" {
+		t.Fatalf("parsed.Error = %q, want empty", parsed.Error)
+	}
+	if !strings.Contains(parsed.Stdout, "feishu|oc_chat_1|feishu:oc_chat_1|") {
+		t.Fatalf("parsed.Stdout = %q, want injected channel/chat/session env", parsed.Stdout)
+	}
+	if !strings.Contains(parsed.Stdout, `"foo":"bar"`) {
+		t.Fatalf("parsed.Stdout = %q, want metadata json", parsed.Stdout)
 	}
 }

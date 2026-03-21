@@ -270,6 +270,7 @@ func (c *MQChannel) handleDelivery(delivery mqDelivery) error {
 		SenderID:    envelope.SourceProfile,
 		ReplyTo:     envelope.InReplyToMessageID,
 		Metadata: map[string]string{
+			"agent_profile":             c.resolved.Profile,
 			"mq_message_id":             envelope.MessageID,
 			"mq_message_type":           envelope.MessageType,
 			"mq_source_profile":         envelope.SourceProfile,
@@ -285,6 +286,7 @@ func (c *MQChannel) handleDelivery(delivery mqDelivery) error {
 	for key, value := range envelope.Metadata {
 		msg.Metadata["mq_meta_"+key] = value
 	}
+	applyMQReturnRoute(&msg, envelope.Metadata)
 
 	if err := bus.Put(msg, messagebus.InboundQueue); err != nil {
 		if delivery.Nack != nil {
@@ -296,6 +298,38 @@ func (c *MQChannel) handleDelivery(delivery mqDelivery) error {
 		return delivery.Ack()
 	}
 	return nil
+}
+
+func applyMQReturnRoute(message *messagebus.Message, metadata map[string]string) {
+	if message == nil || len(metadata) == 0 {
+		return
+	}
+	channelID := strings.TrimSpace(metadata["return_channel_id"])
+	chatID := strings.TrimSpace(metadata["return_chat_id"])
+	if channelID == "" || chatID == "" {
+		return
+	}
+	message.ChannelID = channelID
+	message.ChatID = chatID
+	if replyTo := strings.TrimSpace(metadata["return_reply_to"]); replyTo != "" {
+		message.ReplyTo = replyTo
+	}
+	if messageType := strings.TrimSpace(metadata["return_message_type"]); messageType != "" {
+		message.MessageType = messageType
+	}
+	if messageID := strings.TrimSpace(metadata["return_message_id"]); messageID != "" {
+		message.MessageID = messageID
+	}
+	if senderID := strings.TrimSpace(metadata["return_sender_id"]); senderID != "" {
+		message.SenderID = senderID
+	}
+	if message.Metadata == nil {
+		message.Metadata = make(map[string]string, 1)
+	}
+	if senderID := strings.TrimSpace(metadata["return_sender_id"]); senderID != "" {
+		message.Metadata["target_profile"] = senderID
+	}
+	message.Metadata["mq_return_route_applied"] = "true"
 }
 
 func (c *MQChannel) outboxLoop(stopCh <-chan struct{}) {
@@ -388,7 +422,7 @@ func (c *MQChannel) buildOutboundEnvelope(message messagebus.Message) (mqEnvelop
 	messageID := newMQID("msg")
 	conversationID := firstMQNonEmpty(metadataValue(metadata, "mq_conversation_id"), message.ChatID, messageID)
 	correlationID := firstMQNonEmpty(metadataValue(metadata, "mq_correlation_id"), metadataValue(metadata, "mq_message_id"), messageID)
-	targetProfile := firstMQNonEmpty(metadataValue(metadata, "mq_source_profile"), metadataValue(metadata, "target_profile"))
+	targetProfile := firstMQNonEmpty(metadataValue(metadata, "target_profile"), metadataValue(metadata, "mq_source_profile"))
 	if targetProfile == "" {
 		return mqEnvelope{}, fmt.Errorf("mq outbound target profile is required")
 	}

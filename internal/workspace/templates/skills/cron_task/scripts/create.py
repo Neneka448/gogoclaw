@@ -16,7 +16,9 @@ def main():
     parser.add_argument("--workspace", required=True, help="Workspace root directory")
     parser.add_argument("--cron-id", required=True, help="Stable cron identifier")
     parser.add_argument("--cron-expression", required=True, help="Standard 5-field cron expression")
-    parser.add_argument("--task", required=True, help="Complete task definition text")
+    task_group = parser.add_mutually_exclusive_group(required=True)
+    task_group.add_argument("--task", help="Complete task definition text")
+    task_group.add_argument("--task-file", help="Path to a file containing the full task definition text")
     parser.add_argument("--enabled", dest="enabled", action="store_true", default=True)
     parser.add_argument("--disabled", dest="enabled", action="store_false")
     parser.add_argument("--profile-name", default="", help="Target agent profile")
@@ -44,8 +46,12 @@ def main():
     if args.invocation_mode:
         config["invocationMode"] = args.invocation_mode
 
+    task_content = args.task
+    if args.task_file:
+        task_content = Path(args.task_file).read_text()
+
     (cron_dir / "config.json").write_text(json.dumps(config, indent=2))
-    (cron_dir / "task.md").write_text(args.task)
+    (cron_dir / "task.md").write_text(task_content)
 
     print(json.dumps({
         "cronID": args.cron_id,

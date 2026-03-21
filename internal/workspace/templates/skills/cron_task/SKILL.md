@@ -23,16 +23,16 @@ If the task matches any of the above, call `get_skill("roleplay-cron")` and foll
 
 ## Scripts
 
-All scripts live under `skills/cron_task/scripts/`. Run them with `python -m skills.cron_task.scripts.<name>`. Every script requires `--workspace` and outputs JSON to stdout.
+All scripts live under `skills/cron_task/scripts/`. Run them with `python3 -m skills.cron_task.scripts.<name>`. Every script requires `--workspace` and outputs JSON to stdout.
 
 ### create.py — Create a new cron
 
 ```bash
-python -m skills.cron_task.scripts.create \
+python3 -m skills.cron_task.scripts.create \
   --workspace {workspace} \
   --cron-id <id> \
   --cron-expression "<expr>" \
-  --task "<full task definition>" \
+  --task-file <path-to-task-file> \
   --enabled \
   --profile-name <profile> \
   --invocation-mode <mode>
@@ -42,7 +42,7 @@ python -m skills.cron_task.scripts.create \
 |-----|----------|-------|
 | `--cron-id` | yes | Stable identifier. Must match `[a-zA-Z0-9][a-zA-Z0-9._-]*` |
 | `--cron-expression` | yes | Standard 5-field cron: `minute hour dom month dow` |
-| `--task` | yes | Complete task definition (see "Writing a Good Task" below) |
+| `--task` / `--task-file` | yes | Provide exactly one. Use `--task-file` when the task contains Markdown, code fences, or backticks. |
 | `--enabled` / `--disabled` | no | Defaults to enabled |
 | `--profile-name` | no | Target agent profile for execution |
 | `--invocation-mode` | no | `foreground`, `background`, or `cron` |
@@ -50,7 +50,7 @@ python -m skills.cron_task.scripts.create \
 ### list.py — List all crons
 
 ```bash
-python -m skills.cron_task.scripts.list \
+python3 -m skills.cron_task.scripts.list \
   --workspace {workspace} \
   --enabled-only   # optional: filter to enabled crons
 ```
@@ -58,7 +58,7 @@ python -m skills.cron_task.scripts.list \
 ### get.py — Get cron details
 
 ```bash
-python -m skills.cron_task.scripts.get \
+python3 -m skills.cron_task.scripts.get \
   --workspace {workspace} \
   --cron-id <id>
 ```
@@ -68,11 +68,11 @@ Returns config + task content.
 ### update.py — Update an existing cron (merge semantics)
 
 ```bash
-python -m skills.cron_task.scripts.update \
+python3 -m skills.cron_task.scripts.update \
   --workspace {workspace} \
   --cron-id <id> \
   --cron-expression "<new expr>" \
-  --task "<new task>" \
+  --task-file <path-to-task-file> \
   --disabled
 ```
 
@@ -81,10 +81,12 @@ Only the fields you pass are changed; everything else is preserved.
 ### delete.py — Delete a cron
 
 ```bash
-python -m skills.cron_task.scripts.delete \
+python3 -m skills.cron_task.scripts.delete \
   --workspace {workspace} \
   --cron-id <id>
 ```
+
+When the task content is multi-line or contains Markdown code fences, always prefer `--task-file` over inline `--task`. This avoids shell interpolation corrupting the stored prompt.
 
 ## After Any Change: Sync
 

@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--invocation-id", required=True, help="Invocation ID")
     parser.add_argument("--invocation-dir", required=True, help="Invocation directory path")
     parser.add_argument("--workspace", required=True, help="Workspace root directory")
+    parser.add_argument("--output-file", default="", help="Optional file path to write the rendered prompt")
     args = parser.parse_args()
 
     skill_dir = Path(__file__).resolve().parent.parent
@@ -35,6 +36,12 @@ def main():
     content = content.replace("{invocation_dir}", args.invocation_dir)
     content = content.replace("{workspace}", args.workspace)
     content = content.replace("{now}", now)
+
+    if args.output_file:
+        output_path = Path(args.output_file)
+        output_path.write_text(content)
+        print(f'{{"file":"{output_path}"}}')
+        return
 
     print(content)
 

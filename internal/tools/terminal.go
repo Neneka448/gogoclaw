@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/utils"
 	"github.com/Neneka448/gogoclaw/internal/utils/pathutil"
 	openai "github.com/sashabaranov/go-openai"
@@ -24,6 +26,7 @@ func DefaultTerminalTimeout() time.Duration {
 type TerminalTool struct {
 	workspace string
 	timeout   time.Duration
+	context   messagebus.Message
 }
 
 type terminalArgs struct {
@@ -94,6 +97,7 @@ func (tool *TerminalTool) Execute(args string) (string, error) {
 
 	cmd := exec.CommandContext(ctx, "bash", "-lc", input.Command)
 	cmd.Dir = resolvedCwd
+	cmd.Env = append(os.Environ(), tool.commandEnv()...)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -129,6 +133,34 @@ func (tool *TerminalTool) Execute(args string) (string, error) {
 	result.ExitCode = -1
 	result.Error = err.Error()
 	return utils.EncodeJSON(result)
+}
+
+func (tool *TerminalTool) SetMessageContext(message messagebus.Message) {
+	tool.context = message
+}
+
+func (tool *TerminalTool) commandEnv() []string {
+	context := tool.context
+	metadataJSON := "{}"
+	if len(context.Metadata) > 0 {
+		if encoded, err := json.Marshal(context.Metadata); err == nil {
+			metadataJSON = string(encoded)
+		}
+	}
+
+	return []string{
+		"GOGOCLAW_WORKSPACE=" + strings.TrimSpace(tool.workspace),
+		"GOGOCLAW_CHANNEL_ID=" + strings.TrimSpace(context.ChannelID),
+		"GOGOCLAW_CHAT_ID=" + strings.TrimSpace(context.ChatID),
+		"GOGOCLAW_MESSAGE_ID=" + strings.TrimSpace(context.MessageID),
+		"GOGOCLAW_MESSAGE_TYPE=" + strings.TrimSpace(context.MessageType),
+		"GOGOCLAW_SENDER_ID=" + strings.TrimSpace(context.SenderID),
+		"GOGOCLAW_REPLY_TO=" + strings.TrimSpace(context.ReplyTo),
+		"GOGOCLAW_SESSION_ID=" + strings.TrimSpace(context.ChannelID) + ":" + strings.TrimSpace(context.ChatID),
+		"GOGOCLAW_AGENT_PROFILE=" + strings.TrimSpace(context.Metadata["agent_profile"]),
+		"GOGOCLAW_INVOCATION_MODE=" + strings.TrimSpace(context.Metadata["invocation_mode"]),
+		"GOGOCLAW_MESSAGE_METADATA_JSON=" + metadataJSON,
+	}
 }
 
 func (tool *TerminalTool) resolveWorkingDirectory(cwd string) (string, error) {

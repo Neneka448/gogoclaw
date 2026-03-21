@@ -16,7 +16,9 @@ def main():
     parser.add_argument("--workspace", required=True, help="Workspace root directory")
     parser.add_argument("--cron-id", required=True, help="Cron identifier to update")
     parser.add_argument("--cron-expression", default=None, help="New cron expression")
-    parser.add_argument("--task", default=None, help="New task definition text")
+    task_group = parser.add_mutually_exclusive_group()
+    task_group.add_argument("--task", default=None, help="New task definition text")
+    task_group.add_argument("--task-file", default=None, help="Path to a file containing the new task definition text")
     parser.add_argument("--enabled", dest="enabled", action="store_true", default=None)
     parser.add_argument("--disabled", dest="enabled", action="store_false")
     parser.add_argument("--profile-name", default=None, help="New target agent profile")
@@ -51,8 +53,11 @@ def main():
 
     config_path.write_text(json.dumps(config, indent=2))
 
-    if args.task is not None:
-        task_path.write_text(args.task)
+    task_content = args.task
+    if args.task_file is not None:
+        task_content = Path(args.task_file).read_text()
+    if task_content is not None:
+        task_path.write_text(task_content)
 
     config["path"] = str(cron_dir)
     print(json.dumps(config, indent=2))
