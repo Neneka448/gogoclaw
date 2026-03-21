@@ -15,6 +15,16 @@ def load_json(path: Path):
     return json.loads(path.read_text())
 
 
+def existing_relative_path(path: Path, workspace: Path) -> str:
+    try:
+        relative = path.relative_to(workspace)
+    except ValueError:
+        return ""
+    if not path.exists() or not path.is_file():
+        return ""
+    return str(relative)
+
+
 def source_instance_id_for_profile(runtime, profile: str) -> str:
     suffix = ""
     if "@" in runtime.source_instance_id:
@@ -57,6 +67,7 @@ def main():
         raise ValueError("manifest missing target_profile")
 
     report_path = f"invocations/{invocation_id}/reports/final.md"
+    result_path = existing_relative_path(invocation_dir / "result.txt", workspace)
     state = str(status.get("status", "")).strip() or "unknown"
     error = str(status.get("error", "")).strip()
 
@@ -68,17 +79,23 @@ def main():
         f"Status: {state}",
         f"Final report: {report_path}",
     ]
+    if result_path:
+        body_lines.append(f"Result file: {result_path}")
     if error:
         body_lines.extend(["", f"Error: {error}"])
     body_lines.extend([
         "",
-        "Read the final report, then continue the user conversation in this session with a concise update.",
+        "Read the final report first.",
+        "If a result file is listed, read it before replying.",
+        "Do not infer or invent exact numbers when the report is vague.",
+        "Then continue the user conversation in this session with a concise update.",
     ])
 
     metadata = {
         "invocation_id": invocation_id,
         "completion_kind": "invoke_agent",
         "report_path": report_path,
+        "result_path": result_path,
         "task_summary": str(manifest.get("task_summary", "")).strip(),
         "target_profile": target_profile,
         "return_channel_id": str(manifest.get("return_channel_id", "")).strip(),
@@ -87,6 +104,7 @@ def main():
         "return_message_type": str(manifest.get("return_message_type", "")).strip(),
         "return_sender_id": str(manifest.get("return_sender_id", "")).strip(),
         "return_reply_to": str(manifest.get("return_reply_to", "")).strip(),
+        "return_correlation_id": str(manifest.get("return_correlation_id", "")).strip(),
         "return_session_id": str(manifest.get("return_session_id", "")).strip(),
         "status": state,
     }

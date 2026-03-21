@@ -13,6 +13,19 @@ def env(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
+def env_metadata() -> dict:
+    raw = env("GOGOCLAW_MESSAGE_METADATA_JSON")
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(k): str(v) for k, v in payload.items()}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create invocation directory and metadata")
     parser.add_argument("--workspace", required=True, help="Workspace root directory")
@@ -25,6 +38,7 @@ def main():
     date_str = now.strftime("%Y%m%d")
     random_suffix = os.urandom(3).hex()
     invocation_id = f"inv-{date_str}-{random_suffix}"
+    metadata = env_metadata()
 
     invocation_dir = Path(args.workspace) / "invocations" / invocation_id
     (invocation_dir / "reports").mkdir(parents=True, exist_ok=True)
@@ -43,6 +57,7 @@ def main():
         "return_message_type": env("GOGOCLAW_MESSAGE_TYPE"),
         "return_sender_id": env("GOGOCLAW_SENDER_ID"),
         "return_reply_to": env("GOGOCLAW_REPLY_TO"),
+        "return_correlation_id": metadata.get("mq_correlation_id", ""),
         "return_session_id": env("GOGOCLAW_SESSION_ID"),
         "return_workspace": env("GOGOCLAW_WORKSPACE"),
     }

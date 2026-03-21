@@ -257,6 +257,7 @@ func TestMQChannelSendPrefersExplicitTargetProfile(t *testing.T) {
 		ChannelID: mqChannelName,
 		ChatID:    "conv-1",
 		Message:   "done",
+		FinishReason: "stop",
 		Metadata: map[string]string{
 			"mq_message_id":      "msg-worker",
 			"mq_source_profile":  "worker",
@@ -306,6 +307,7 @@ func TestMQChannelSendPublishesReplyEnvelope(t *testing.T) {
 		ChannelID: mqChannelName,
 		ChatID:    "conv-1",
 		Message:   "ack",
+		FinishReason: "stop",
 		Metadata: map[string]string{
 			"mq_message_id":      "msg-1",
 			"mq_source_profile":  "planner",
@@ -339,6 +341,130 @@ func TestMQChannelSendPublishesReplyEnvelope(t *testing.T) {
 	}
 	if envelope.InReplyToMessageID != "msg-1" {
 		t.Fatalf("InReplyToMessageID = %q, want msg-1", envelope.InReplyToMessageID)
+	}
+}
+
+func TestMQChannelSendSkipsToolResultMessages(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	broker := newFakeMQBroker()
+	ch := newMQChannelWithFactory(config.MQChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+		URL:           "amqp://guest:guest@localhost:5672/",
+		Exchange:      "agent.bus",
+		Profile:       "writer",
+		MachineID:     "machine-a",
+	}, bus, workspace, func(cfg mqResolvedConfig) (mqBroker, error) {
+		return broker, nil
+	})
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop()
+
+	err := ch.Send(messagebus.Message{
+		ChannelID: mqChannelName,
+		ChatID:    "conv-1",
+		Message:   "tool output",
+		Metadata: map[string]string{
+			"target_profile": "planner",
+			"message_kind":   "tool_result",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if broker.publishedCount() != 0 {
+		t.Fatalf("publishedCount = %d, want 0", broker.publishedCount())
+	}
+}
+
+func TestMQChannelSendSkipsToolCallMessages(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	broker := newFakeMQBroker()
+	ch := newMQChannelWithFactory(config.MQChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+		URL:           "amqp://guest:guest@localhost:5672/",
+		Exchange:      "agent.bus",
+		Profile:       "writer",
+		MachineID:     "machine-a",
+	}, bus, workspace, func(cfg mqResolvedConfig) (mqBroker, error) {
+		return broker, nil
+	})
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop()
+
+	err := ch.Send(messagebus.Message{
+		ChannelID:    mqChannelName,
+		ChatID:       "conv-1",
+		Message:      "get_skill({\"name\":\"invoke_agent\"})",
+		FinishReason: "tool_calls",
+		Metadata: map[string]string{
+			"target_profile": "planner",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if broker.publishedCount() != 0 {
+		t.Fatalf("publishedCount = %d, want 0", broker.publishedCount())
+	}
+}
+
+func TestMQChannelSendUsesReturnRouteConversationAndCorrelation(t *testing.T) {
+	workspace := t.TempDir()
+	bus := messagebus.NewMessageBus()
+	broker := newFakeMQBroker()
+	ch := newMQChannelWithFactory(config.MQChannelConfig{
+		ChannelConfig: config.ChannelConfig{Enabled: true},
+		URL:           "amqp://guest:guest@localhost:5672/",
+		Exchange:      "agent.bus",
+		Profile:       "front",
+		MachineID:     "machine-a",
+	}, bus, workspace, func(cfg mqResolvedConfig) (mqBroker, error) {
+		return broker, nil
+	})
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop()
+
+	err := ch.Send(messagebus.Message{
+		ChannelID: mqChannelName,
+		ChatID:    "user-conv-1",
+		MessageID: "root-msg-1",
+		ReplyTo:   "completion-msg-1",
+		Message:   "final answer",
+		Metadata: map[string]string{
+			"mq_return_route_applied": "true",
+			"mq_conversation_id":      "user-conv-1",
+			"mq_correlation_id":       "root-msg-1",
+			"target_profile":          "user-debug5",
+		},
+		FinishReason: "stop",
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if broker.publishedCount() != 1 {
+		t.Fatalf("publishedCount = %d, want 1", broker.publishedCount())
+	}
+
+	var envelope mqEnvelope
+	if err := json.Unmarshal(broker.publishedMessage(0).body, &envelope); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if envelope.ConversationID != "user-conv-1" {
+		t.Fatalf("ConversationID = %q, want user-conv-1", envelope.ConversationID)
+	}
+	if envelope.CorrelationID != "root-msg-1" {
+		t.Fatalf("CorrelationID = %q, want root-msg-1", envelope.CorrelationID)
+	}
+	if envelope.InReplyToMessageID != "root-msg-1" {
+		t.Fatalf("InReplyToMessageID = %q, want root-msg-1", envelope.InReplyToMessageID)
 	}
 }
 

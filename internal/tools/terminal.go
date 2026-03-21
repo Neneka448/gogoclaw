@@ -149,6 +149,7 @@ func (tool *TerminalTool) commandEnv() []string {
 	}
 
 	return []string{
+		"PYTHONPATH=" + tool.pythonPathEnv(),
 		"GOGOCLAW_WORKSPACE=" + strings.TrimSpace(tool.workspace),
 		"GOGOCLAW_CHANNEL_ID=" + strings.TrimSpace(context.ChannelID),
 		"GOGOCLAW_CHAT_ID=" + strings.TrimSpace(context.ChatID),
@@ -164,11 +165,8 @@ func (tool *TerminalTool) commandEnv() []string {
 }
 
 func (tool *TerminalTool) resolveWorkingDirectory(cwd string) (string, error) {
-	resolvedCwd, err := pathutil.ResolveRelativeOnly(cwd, tool.workspace)
+	resolvedCwd, err := pathutil.ResolveWithinWorkspace(cwd, tool.workspace)
 	if err != nil {
-		if err.Error() == "must not use absolute path" {
-			return "", fmt.Errorf("terminal cwd must not use absolute path")
-		}
 		if err.Error() == "path is outside the workspace" {
 			return "", fmt.Errorf("terminal cwd %q is outside the workspace", cwd)
 		}
@@ -176,4 +174,17 @@ func (tool *TerminalTool) resolveWorkingDirectory(cwd string) (string, error) {
 	}
 
 	return resolvedCwd, nil
+}
+
+func (tool *TerminalTool) pythonPathEnv() string {
+	workspace := strings.TrimSpace(tool.workspace)
+	if workspace == "" {
+		return os.Getenv("PYTHONPATH")
+	}
+
+	existing := strings.TrimSpace(os.Getenv("PYTHONPATH"))
+	if existing == "" {
+		return workspace
+	}
+	return workspace + string(os.PathListSeparator) + existing
 }

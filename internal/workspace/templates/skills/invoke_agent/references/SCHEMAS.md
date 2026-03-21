@@ -9,6 +9,7 @@ invocations/{invocation-id}/
   bootstrap.md        # Initialization instructions for task agent
   heartbeat.md        # Progress check template for heartbeat agent
   status.json         # Task status (updated by task agent)
+  result.txt          # Exact final user-facing result written by the task agent
   reports/            # Heartbeat progress reports
 ```
 
@@ -29,6 +30,7 @@ invocations/{invocation-id}/
   "return_message_type": "original message type when available",
   "return_sender_id": "original sender id when available",
   "return_reply_to": "original reply target when available",
+  "return_correlation_id": "original mq correlation id when available",
   "return_session_id": "original session id when available",
   "return_workspace": "workspace path where the caller agent can publish completion messages"
 }
@@ -44,3 +46,11 @@ invocations/{invocation-id}/
   "error": "error message or empty"
 }
 ```
+
+## result.txt
+
+Plain text final result written by the delegated task before it marks success.
+
+- Keep it concise and user-facing.
+- Include exact numbers or identifiers when the task produced them.
+- Heartbeat should prefer this file when composing `reports/final.md`.

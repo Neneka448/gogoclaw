@@ -200,6 +200,9 @@ func (c *MQChannel) Send(message messagebus.Message) error {
 	if !c.Enabled() {
 		return fmt.Errorf("mq channel disabled")
 	}
+	if shouldSkipMQOutbound(message) {
+		return nil
+	}
 	envelope, err := c.buildOutboundEnvelope(message)
 	if err != nil {
 		return err
@@ -329,6 +332,12 @@ func applyMQReturnRoute(message *messagebus.Message, metadata map[string]string)
 	if senderID := strings.TrimSpace(metadata["return_sender_id"]); senderID != "" {
 		message.Metadata["target_profile"] = senderID
 	}
+	if chatID != "" {
+		message.Metadata["mq_conversation_id"] = chatID
+	}
+	if correlationID := strings.TrimSpace(metadata["return_correlation_id"]); correlationID != "" {
+		message.Metadata["mq_correlation_id"] = correlationID
+	}
 	message.Metadata["mq_return_route_applied"] = "true"
 }
 
@@ -426,7 +435,7 @@ func (c *MQChannel) buildOutboundEnvelope(message messagebus.Message) (mqEnvelop
 	if targetProfile == "" {
 		return mqEnvelope{}, fmt.Errorf("mq outbound target profile is required")
 	}
-	inReplyTo := firstMQNonEmpty(metadataValue(metadata, "mq_message_id"), message.ReplyTo)
+	inReplyTo := firstMQNonEmpty(message.MessageID, message.ReplyTo, metadataValue(metadata, "mq_message_id"))
 	messageType := "direct"
 	if inReplyTo != "" {
 		messageType = "reply"
@@ -473,6 +482,26 @@ func filterOutboundMetadata(metadata map[string]string, message messagebus.Messa
 		return nil
 	}
 	return filtered
+}
+
+func shouldSkipMQOutbound(message messagebus.Message) bool {
+	if strings.TrimSpace(message.Message) == "" {
+		return true
+	}
+	if isProgressMessage(message) || isToolResultMessage(message) {
+		return true
+	}
+	if message.FinishReason == "tool_calls" {
+		return true
+	}
+	if strings.TrimSpace(message.FinishReason) == "" && !isActiveMessage(message) {
+		return true
+	}
+	return false
+}
+
+func isActiveMessage(message messagebus.Message) bool {
+	return message.Metadata != nil && message.Metadata["message_kind"] == "active_message"
 }
 
 func metadataValue(metadata map[string]string, key string) string {

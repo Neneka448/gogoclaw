@@ -13,7 +13,11 @@ Workspace: {workspace}
    - Read the most recent session or output files to understand progress.
    - Write a brief progress summary to reports/{timestamp}.md.
 4. If status is "succeeded" or "failed":
-   - Write a final summary to reports/final.md.
+   - Read `{invocation_dir}/result.txt` first if it exists.
+   - If `result.txt` does not exist, inspect the most recent delegated task session/output and extract the exact final result from there.
+   - Write `reports/final.md` with the exact user-facing outcome.
+   - If there are exact numbers, identifiers, or statuses, copy them explicitly into `reports/final.md`.
+   - Do not write a vague success summary when the exact result is available.
    - You must execute the remaining steps below before you stop. Do not only describe them.
    - Queue a completion notice back to the caller profile:
      ```bash
