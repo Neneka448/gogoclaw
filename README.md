@@ -129,16 +129,50 @@ Build from source:
 ```bash
 git clone https://github.com/Neneka448/gogoclaw.git
 cd gogoclaw
-CGO_ENABLED=1 go build -o gogoclaw .
+make build
 ```
 
-Or use the provided Make target:
-
-```bash
-CGO_ENABLED=1 make build
-```
+On macOS, `make build` automatically signs the binary with a stable code identity (`com.gogoclaw.gogoclaw`). On Linux, the signing step is skipped.
 
 If you hit build errors related to sqlite or cgo, see [docs/troubleshooting.md](docs/troubleshooting.md).
+
+### macOS: service installation
+
+On macOS 15+, background launchd services need a GUI application context to access the local network (required for MQ channels, etc.). The recommended setup:
+
+```bash
+# 1. Build (auto-signs on macOS)
+make build
+
+# 2. Create a .app bundle in ~/Applications/
+./gogoclaw service bundle
+
+# 3. Install as launchd service (auto-detects .app bundle, uses 'open -W -a')
+~/Applications/GoGoClaw.app/Contents/MacOS/gogoclaw service install
+```
+
+Optionally, for stronger signing identity (helps with VPN/proxy tools like Clash):
+
+```bash
+# Create a self-signed code signing certificate in Keychain
+./gogoclaw service setup-cert
+
+# Rebuild bundle with the certificate
+./gogoclaw service bundle --signer "GoGoClaw Code Signing"
+```
+
+See [docs/troubleshooting.md](docs/troubleshooting.md) for details on macOS network issues.
+
+### Linux: service installation
+
+On Linux, no signing or bundling is needed. Just build and run:
+
+```bash
+make build
+./gogoclaw service install
+```
+
+### sqlite-vec extension
 
 Install the sqlite-vec loadable extension into the default workspace location:
 
