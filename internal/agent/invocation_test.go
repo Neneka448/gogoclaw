@@ -60,7 +60,7 @@ func TestInvocationServiceEvictsRuntimeAfterInitializationFailure(t *testing.T) 
 		_ = os.Unsetenv("GOGOCLAW_SQLITE_VEC_PATH")
 	}()
 
-	rawService, err := NewInvocationService(configManager, nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
+	rawService, err := NewInvocationService(configManager, nil, nil, nil, false, nil, provider.TokenProvider(stubCodexTokenProvider{}))
 	if err != nil {
 		t.Fatalf("NewInvocationService() error = %v", err)
 	}
@@ -134,7 +134,7 @@ func TestBuildExecutionContextResolvesCurrentSession(t *testing.T) {
 	configPath := writeTestConfig(t)
 	configManager := config.NewConfigManager(configPath)
 
-	rawService, err := NewInvocationService(configManager, nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
+	rawService, err := NewInvocationService(configManager, nil, nil, nil, false, nil, provider.TokenProvider(stubCodexTokenProvider{}))
 	if err != nil {
 		t.Fatalf("NewInvocationService() error = %v", err)
 	}
@@ -175,7 +175,7 @@ func TestBuildExecutionContextResolvesCurrentSession(t *testing.T) {
 func TestInvocationServiceRejectsDuplicateProfileRuntime(t *testing.T) {
 	configPath := writeTestConfig(t)
 
-	rawFirst, err := NewInvocationService(config.NewConfigManager(configPath), nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
+	rawFirst, err := NewInvocationService(config.NewConfigManager(configPath), nil, nil, nil, false, nil, provider.TokenProvider(stubCodexTokenProvider{}))
 	if err != nil {
 		t.Fatalf("first NewInvocationService() error = %v", err)
 	}
@@ -193,7 +193,7 @@ func TestInvocationServiceRejectsDuplicateProfileRuntime(t *testing.T) {
 		t.Fatalf("first EnsureProfile() error = %v", err)
 	}
 
-	rawSecond, err := NewInvocationService(config.NewConfigManager(configPath), nil, nil, nil, false, provider.TokenProvider(stubCodexTokenProvider{}))
+	rawSecond, err := NewInvocationService(config.NewConfigManager(configPath), nil, nil, nil, false, nil, provider.TokenProvider(stubCodexTokenProvider{}))
 	if err != nil {
 		t.Fatalf("second NewInvocationService() error = %v", err)
 	}

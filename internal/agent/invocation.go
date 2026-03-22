@@ -18,6 +18,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/session"
 	"github.com/Neneka448/gogoclaw/internal/skills"
 	"github.com/Neneka448/gogoclaw/internal/systemprompt"
+	"github.com/Neneka448/gogoclaw/internal/taskwatch"
 	"github.com/Neneka448/gogoclaw/internal/tools"
 	"github.com/Neneka448/gogoclaw/internal/utils"
 	"github.com/Neneka448/gogoclaw/internal/vectorstore"
@@ -32,6 +33,7 @@ type invocationService struct {
 	defaultChannelRegistry channels.Registry
 	cronService            cron.Service
 	cronEnabled            bool
+	taskWatchService       taskwatch.Service
 	codexTokenProvider     provider.TokenProvider
 	mu                     sync.Mutex
 	runtimes               map[string]*profileRuntime
@@ -51,11 +53,12 @@ type profileRuntime struct {
 	defaultChannelRegistry channels.Registry
 	cronService            cron.Service
 	cronEnabled            bool
+	taskWatchService       taskwatch.Service
 	startOnce              sync.Once
 	startErr               error
 }
 
-func NewInvocationService(configManager config.ConfigManager, defaultMessageBus messagebus.MessageBus, defaultChannelRegistry channels.Registry, cronService cron.Service, cronEnabled bool, codexTokenProvider provider.TokenProvider) (appcontext.InvocationService, error) {
+func NewInvocationService(configManager config.ConfigManager, defaultMessageBus messagebus.MessageBus, defaultChannelRegistry channels.Registry, cronService cron.Service, cronEnabled bool, taskWatchService taskwatch.Service, codexTokenProvider provider.TokenProvider) (appcontext.InvocationService, error) {
 	if configManager == nil {
 		return nil, fmt.Errorf("config manager is required")
 	}
@@ -65,6 +68,7 @@ func NewInvocationService(configManager config.ConfigManager, defaultMessageBus 
 		defaultChannelRegistry: defaultChannelRegistry,
 		cronService:            cronService,
 		cronEnabled:            cronEnabled,
+		taskWatchService:       taskWatchService,
 		codexTokenProvider:     codexTokenProvider,
 		runtimes:               make(map[string]*profileRuntime),
 	}, nil
@@ -171,7 +175,7 @@ func (service *invocationService) buildExecutionContext(request appcontext.Invoc
 		outputSink = messagebus.NewNoopOutputSink()
 	}
 
-	toolRegistry, err := buildInvocationToolRegistry(runtime.workspace, toolConfigs, runtime.skillRegistry, outputSink, runtime.cronService, runtime.context.MCPService, runtime.context.MemoryService)
+	toolRegistry, err := buildInvocationToolRegistry(runtime.workspace, toolConfigs, runtime.skillRegistry, outputSink, runtime.cronService, runtime.context.MCPService, runtime.context.MemoryService, runtime.taskWatchService)
 	if err != nil {
 		return appcontext.SystemContext{}, err
 	}
@@ -408,6 +412,7 @@ func (service *invocationService) buildProfileRuntime(profileName string) (*prof
 		defaultChannelRegistry: service.defaultChannelRegistry,
 		cronService:            service.cronService,
 		cronEnabled:            service.cronEnabled,
+		taskWatchService:       service.taskWatchService,
 	}
 	keepLock = true
 	return runtime, nil
@@ -536,7 +541,7 @@ func resolveInvocationEmbeddingProvider(configManager config.ConfigManager, cach
 	return embeddingProvider, nil
 }
 
-func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConfig, skillRegistry skills.Registry, sink messagebus.OutputSink, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service) (tools.ToolRegistry, error) {
+func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConfig, skillRegistry skills.Registry, sink messagebus.OutputSink, cronService cron.Service, mcpService mcppkg.Service, memoryService memory.Service, taskWatchService taskwatch.Service) (tools.ToolRegistry, error) {
 	registry := tools.NewToolRegistry()
 	toolConfigIndex := buildInvocationToolConfigIndex(toolConfigs)
 	readFile := tools.NewReadFileTool(workspace)
@@ -573,6 +578,13 @@ func buildInvocationToolRegistry(workspace string, toolConfigs []config.ToolConf
 	executeCron.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "execute_cron", tools.DefaultToolExecutionTimeout)
 	if err := registry.RegisterTool("execute_cron", executeCron); err != nil {
 		return nil, err
+	}
+	if taskWatchService != nil {
+		registerWatch := tools.NewRegisterTaskWatchTool(taskWatchService)
+		registerWatch.Timeout = resolveInvocationToolTimeout(toolConfigIndex, "register_task_watch", tools.DefaultToolExecutionTimeout)
+		if err := registry.RegisterTool("register_task_watch", registerWatch); err != nil {
+			return nil, err
+		}
 	}
 	if memoryService != nil {
 		recallMemory := tools.NewRecallMemoryTool(memoryService)

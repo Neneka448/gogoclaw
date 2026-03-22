@@ -1,12 +1,12 @@
 ---
 name: invoke_agent
-description: "Delegate a task to another agent profile through cron-driven execution with heartbeat monitoring. Completion is returned to the caller profile through agent_bus so the original conversation can continue."
+description: "Delegate a task to another agent profile through cron-driven execution with automatic completion monitoring. The runtime watches invocation status and delivers a completion notification back to the caller profile."
 trigger: "When the user asks to delegate, hand off, assign, or dispatch a task to another agent or profile, or when a long-running task should execute independently in the background."
 ---
 
 # Invoke Agent
 
-Delegate tasks to other agent profiles through cron-driven, file-oriented execution. The delegated task runs independently — no blocking, no direct coupling. Progress is monitored by a heartbeat cron, and completion is returned to the caller profile through agent_bus so the original conversation can resume.
+Delegate tasks to other agent profiles through cron-driven, file-oriented execution. The delegated task runs independently — no blocking, no direct coupling. The runtime **automatically** monitors invocation status and delivers a completion (or timeout) notification back to the caller profile so the original conversation can resume.
 
 ## When to Use
 
@@ -25,7 +25,7 @@ Do NOT use for:
 
 All invocation state lives under `{workspace}/invocations/{invocation-id}/`. See `references/SCHEMAS.md` for manifest.json and status.json schemas.
 
-Completion notifications are delivered back to the caller profile via the **agent_bus** skill — see `skills/agent_bus/`.
+Completion notifications are delivered automatically by the runtime's taskwatch service. When the task agent writes a terminal status to `status.json` (succeeded or failed), the runtime injects a completion message into the caller profile's inbound queue — no manual heartbeat or polling is needed.
 
 ## Protocol
 
@@ -71,16 +71,7 @@ python3 -m skills.invoke_agent.scripts.write_agent_file \
   --content "Custom bootstrap instructions"
 ```
 
-### Step 4: Write Heartbeat File
-
-```bash
-python3 -m skills.invoke_agent.scripts.write_agent_file \
-  --invocation-dir {invocation_dir} \
-  --type heartbeat \
-  --template-vars '{"invocation_id": "{invocation_id}", "workspace": "{workspace}"}'
-```
-
-### Step 5: Create Task Cron
+### Step 4: Create Task Cron
 
 Render the task prompt into a file:
 
@@ -106,74 +97,60 @@ python3 -m skills.cron_task.scripts.create \
   --enabled
 ```
 
-### Step 6: Create Heartbeat Cron
+**Important**: The cron ID **must** follow the format `{invocation_id}-task`. The runtime uses this convention to automatically register a taskwatch monitor when the cron fires.
 
-Render the heartbeat prompt into a file:
+### Step 5: Sync Crons
 
-```bash
-python3 -m skills.invoke_agent.scripts.render_prompt \
-  --type heartbeat \
-  --invocation-id {invocation_id} \
-  --invocation-dir {invocation_dir} \
-  --workspace {workspace} \
-  --output-file {invocation_dir}/heartbeat.prompt.md
-```
+Call the `sync_crons` tool to load the new cron into the runtime scheduler.
 
-Use the rendered file with `--task-file`:
-
-```bash
-python3 -m skills.cron_task.scripts.create \
-  --workspace {workspace} \
-  --cron-id {invocation_id}-heartbeat \
-  --cron-expression "*/5 * * * *" \
-  --task-file {invocation_dir}/heartbeat.prompt.md \
-  --profile-name {target_profile} \
-  --invocation-mode cron \
-  --enabled
-```
-
-Adapt the heartbeat interval to the expected task duration.
-
-### Step 6b: Sync Crons
-
-Call the `sync_crons` tool to load both new crons into the runtime scheduler.
-
-### Step 7: Trigger Immediate Execution
+### Step 6: Trigger Immediate Execution
 
 Use `execute_cron` to start the task immediately:
 
 - `cron_id`: `{invocation_id}-task`
 - `async`: true
 
-### Step 8: Report Receipt to User
+### Step 7: Report Receipt to User
 
 ```
 Invocation created: {invocation_id}
 Target profile: {profile}
 Invocation directory: {invocation_dir}
 Task cron: {invocation_id}-task (triggered immediately)
-Heartbeat cron: {invocation_id}-heartbeat (every N minutes)
 
-The task is now running independently. When it completes, the caller profile will
-receive a completion message through agent_bus. You can also inspect
+The task is now running independently. The runtime will automatically
+monitor its status and deliver a completion notification back to this
+conversation when the task finishes. You can also inspect
 {invocation_dir}/status.json and reports/ for current progress.
 ```
+
+## How Automatic Monitoring Works
+
+When the runtime executes a task cron whose ID matches `{inv-*}-task`:
+
+1. It reads `manifest.json` from `{workspace}/invocations/{invocation_id}/`
+2. It auto-registers a **taskwatch** entry using the manifest's return routing
+3. The taskwatch service periodically checks `status.json` for terminal states
+4. On completion (`succeeded` or `failed`): injects a notification message into the caller profile's inbound queue, with the final report path and result
+5. On timeout (default 1 hour): injects a timeout notification
+6. The task cron is automatically disabled after completion detection
+
+No heartbeat cron, no manual `register_task_watch` call, no agent_bus wiring needed.
 
 ## Important Rules
 
 1. Always generate a unique invocation ID. Never reuse IDs.
-2. Write ALL files before creating crons. The task agent must find files ready on first execution.
-3. Always create both task and heartbeat crons. The heartbeat is essential for progress tracking and completion notification.
+2. Write ALL files before creating the cron. The task agent must find files ready on first execution.
+3. The cron ID **must** be `{invocation_id}-task` for automatic monitoring to work.
 4. Always trigger immediate execution with `execute_cron` after creating the task cron.
-5. Use the target profile for both task and heartbeat crons so they share the same workspace and can read each other's files.
+5. Use the target profile for the task cron so it runs in the correct workspace.
 6. Do not create under-specified task.md files. The task definition must be self-contained and actionable.
-7. Adapt the heartbeat interval to the expected task duration. Short tasks: `*/2 * * * *`. Long tasks: `*/10 * * * *`.
-8. If the user explicitly asks you to delegate or names a target profile, you must use this skill even when the task itself is simple.
-9. The delegated task cron is a transport/execution primitive for this workflow. Create it even for one-shot delegated tasks, then disable it after completion.
+7. If the user explicitly asks you to delegate or names a target profile, you must use this skill even when the task itself is simple.
+8. The delegated task cron is a transport/execution primitive for this workflow. Create it even for one-shot delegated tasks — it is automatically disabled after completion.
 
 ## Task Lifecycle Scripts
 
-The task and heartbeat agents use these scripts to manage task status instead of writing status.json directly:
+The task agent uses these scripts to manage task status instead of writing status.json directly:
 
 | Script | Usage | Description |
 |--------|-------|-------------|
@@ -190,10 +167,6 @@ The runtime uses an exclusive file lock (`.lock` in the cron directory) to preve
 
 | File                                      | Description                              |
 | ----------------------------------------- | ---------------------------------------- |
-| `references/SCHEMAS.md`                   | manifest.json and status.json schemas          |
-| `references/task-agent/BOOTSTRAP.md`      | Default bootstrap template                     |
-| `references/task-agent/PROMPT.md`         | Task cron prompt template                      |
-| `references/heartbeat-agent/HEARTBEAT.md` | Default heartbeat template                     |
-| `references/heartbeat-agent/PROMPT.md`    | Heartbeat cron prompt template                 |
-| `assets/status_schema.json`               | status.json JSON schema                        |
-| `skills/agent_bus/`                       | MQ-backed completion delivery to caller agent  |
+| `references/SCHEMAS.md`                   | manifest.json and status.json schemas    |
+| `references/task-agent/BOOTSTRAP.md`      | Default bootstrap template               |
+| `references/task-agent/PROMPT.md`         | Task cron prompt template                |
