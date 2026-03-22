@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	DefaultCheckInterval = 60 * time.Second
+	DefaultCheckInterval = 30 * time.Second
 	DefaultTimeout       = 3600 * time.Second
 	scanInterval         = 30 * time.Second
 )
@@ -87,6 +87,13 @@ func (s *service) Register(entry WatchEntry) error {
 	if entry.CallerProfile == "" {
 		return fmt.Errorf("caller_profile is required")
 	}
+
+	// Idempotent: if already watching this invocation, skip.
+	existing, err := s.store.Get(entry.InvocationID)
+	if err == nil && existing != nil && existing.Status == WatchStatusActive {
+		return nil
+	}
+
 	now := time.Now().UTC()
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = now
