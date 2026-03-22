@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	ccron "github.com/robfig/cron/v3"
 )
 
@@ -291,21 +293,31 @@ func (s *cronService) executeCron(storedCron StoredCron) error {
 		return fmt.Errorf("cron executor is not configured")
 	}
 
-	// File lock: skip if another execution of this cron is already in progress.
-	// Uses O_CREATE|O_EXCL for atomic creation — only one goroutine can
-	// acquire the lock even if two ticks fire simultaneously.
 	lockPath := filepath.Join(storedCron.Path, ".lock")
-	lockFile, lockErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	lock, lockErr := utils.AcquireFileLock(utils.FileLockOptions{
+		Path:     lockPath,
+		Resource: fmt.Sprintf("cron:%s", storedCron.Config.CronID),
+		Metadata: map[string]string{
+			"cron_id":     storedCron.Config.CronID,
+			"workspace":   filepath.Dir(filepath.Dir(storedCron.Path)),
+			"expression":  storedCron.Config.CronExpression,
+			"profile_name": storedCron.Config.ProfileName,
+		},
+		Now: s.currentTime,
+	})
 	if lockErr != nil {
-		if os.IsExist(lockErr) {
-			fmt.Fprintf(os.Stderr, "[cron] skipping %s (locked)\n", storedCron.Config.CronID)
+		var heldErr *utils.FileLockHeldError
+		if errors.As(lockErr, &heldErr) {
+			fmt.Fprintf(os.Stderr, "[cron] skipping %s (locked%s)\n", storedCron.Config.CronID, utils.FormatFileLockInfo(heldErr.Info))
 			return nil
 		}
 		return lockErr
 	}
-	_, _ = lockFile.WriteString(s.currentTime().Format(time.RFC3339))
-	lockFile.Close()
-	defer os.Remove(lockPath)
+	defer func() {
+		if err := lock.Release(); err != nil {
+			fmt.Fprintf(os.Stderr, "[cron] release lock %s error: %v\n", storedCron.Config.CronID, err)
+		}
+	}()
 
 	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", storedCron.Config.CronID, storedCron.Config.CronExpression)
 

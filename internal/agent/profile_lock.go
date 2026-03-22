@@ -8,13 +8,13 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/sys/unix"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 )
 
 const profileLockDirName = ".gogoclaw/profile_locks"
 
 type profileRuntimeLock struct {
-	file        *os.File
+	lock        *utils.FileLock
 	path        string
 	profileName string
 	workspace   string
@@ -33,20 +33,24 @@ func acquireProfileRuntimeLock(workspace string, profileName string) (*profileRu
 	}
 
 	lockPath := filepath.Join(lockDir, fmt.Sprintf("%s.lock", normalizeProfileLockName(profileName)))
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	lock, err := utils.AcquireFileLock(utils.FileLockOptions{
+		Path:     lockPath,
+		Resource: fmt.Sprintf("profile:%s", profileName),
+		Metadata: map[string]string{
+			"profile":   profileName,
+			"workspace": workspace,
+		},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("open profile lock file: %w", err)
-	}
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		_ = file.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, fmt.Errorf("profile %q is already active in workspace %q", profileName, workspace)
+		var heldErr *utils.FileLockHeldError
+		if errors.As(err, &heldErr) {
+			return nil, fmt.Errorf("profile %q is already active in workspace %q%s", profileName, workspace, utils.FormatFileLockInfo(heldErr.Info))
 		}
 		return nil, fmt.Errorf("acquire profile lock: %w", err)
 	}
 
 	return &profileRuntimeLock{
-		file:        file,
+		lock:        lock,
 		path:        lockPath,
 		profileName: profileName,
 		workspace:   workspace,
@@ -54,19 +58,16 @@ func acquireProfileRuntimeLock(workspace string, profileName string) (*profileRu
 }
 
 func (lock *profileRuntimeLock) release() error {
-	if lock == nil || lock.file == nil {
+	if lock == nil || lock.lock == nil {
 		return nil
 	}
 
 	var releaseErr error
 	lock.releaseOnce.Do(func() {
-		if err := unix.Flock(int(lock.file.Fd()), unix.LOCK_UN); err != nil {
-			releaseErr = fmt.Errorf("unlock profile %q in workspace %q: %w", lock.profileName, lock.workspace, err)
+		if err := lock.lock.Release(); err != nil {
+			releaseErr = fmt.Errorf("release profile %q lock in workspace %q: %w", lock.profileName, lock.workspace, err)
 		}
-		if err := lock.file.Close(); err != nil && releaseErr == nil {
-			releaseErr = fmt.Errorf("close profile lock %s: %w", lock.path, err)
-		}
-		lock.file = nil
+		lock.lock = nil
 	})
 	return releaseErr
 }

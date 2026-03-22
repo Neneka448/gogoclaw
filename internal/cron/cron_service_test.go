@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 )
 
 type fakeCronManager struct {
@@ -164,11 +165,21 @@ func TestCronServiceExecuteCronSkipsWhenLocked(t *testing.T) {
 		t.Fatalf("CreateCron() error = %v", err)
 	}
 
-	// Create lock file to simulate in-progress execution
+	// Hold a real advisory lock to simulate in-progress execution.
 	lockPath := filepath.Join(workspace, "crons", "locked-job", ".lock")
-	if err := os.WriteFile(lockPath, []byte("2026-03-20T10:00:00Z"), 0644); err != nil {
-		t.Fatalf("WriteFile(.lock) error = %v", err)
+	lock, err := utils.AcquireFileLock(utils.FileLockOptions{
+		Path:     lockPath,
+		Resource: "cron:locked-job",
+		Metadata: map[string]string{"cron_id": "locked-job"},
+	})
+	if err != nil {
+		t.Fatalf("AcquireFileLock() error = %v", err)
 	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			t.Fatalf("lock.Release() error = %v", err)
+		}
+	}()
 
 	// ExecuteCron should skip without error
 	if err := service.ExecuteCron("locked-job"); err != nil {
@@ -178,9 +189,15 @@ func TestCronServiceExecuteCronSkipsWhenLocked(t *testing.T) {
 		t.Fatalf("executionCount = %d, want 0 (should have been skipped)", executionCount)
 	}
 
-	// Remove lock and verify execution proceeds
-	if err := os.Remove(lockPath); err != nil {
-		t.Fatalf("Remove(.lock) error = %v", err)
+	if info, err := utils.ReadFileLockInfo(lockPath); err != nil {
+		t.Fatalf("ReadFileLockInfo() error = %v", err)
+	} else if info == nil || info.PID == 0 {
+		t.Fatalf("lock info = %#v, want non-empty pid metadata", info)
+	}
+
+	// Release lock and verify execution proceeds.
+	if err := lock.Release(); err != nil {
+		t.Fatalf("lock.Release() error = %v", err)
 	}
 	if err := service.ExecuteCron("locked-job"); err != nil {
 		t.Fatalf("ExecuteCron() after unlock error = %v", err)
@@ -189,9 +206,11 @@ func TestCronServiceExecuteCronSkipsWhenLocked(t *testing.T) {
 		t.Fatalf("executionCount = %d, want 1", executionCount)
 	}
 
-	// After execution completes, lock should be cleaned up (defer removes it)
-	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
-		t.Fatalf("lock file should be removed after execution, stat error = %v", err)
+	// The lock file remains on disk for diagnostics, but it should be readable.
+	if info, err := utils.ReadFileLockInfo(lockPath); err != nil {
+		t.Fatalf("ReadFileLockInfo() after execution error = %v", err)
+	} else if info == nil || info.PID == 0 {
+		t.Fatalf("post-execution lock info = %#v, want non-empty pid metadata", info)
 	}
 }
 
