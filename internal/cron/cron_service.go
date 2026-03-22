@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 	ccron "github.com/robfig/cron/v3"
 )
 
@@ -290,6 +292,32 @@ func (s *cronService) executeCron(storedCron StoredCron) error {
 	if s.executor == nil {
 		return fmt.Errorf("cron executor is not configured")
 	}
+
+	lockPath := filepath.Join(storedCron.Path, ".lock")
+	lock, lockErr := utils.AcquireFileLock(utils.FileLockOptions{
+		Path:     lockPath,
+		Resource: fmt.Sprintf("cron:%s", storedCron.Config.CronID),
+		Metadata: map[string]string{
+			"cron_id":     storedCron.Config.CronID,
+			"workspace":   filepath.Dir(filepath.Dir(storedCron.Path)),
+			"expression":  storedCron.Config.CronExpression,
+			"profile_name": storedCron.Config.ProfileName,
+		},
+		Now: s.currentTime,
+	})
+	if lockErr != nil {
+		var heldErr *utils.FileLockHeldError
+		if errors.As(lockErr, &heldErr) {
+			fmt.Fprintf(os.Stderr, "[cron] skipping %s (locked%s)\n", storedCron.Config.CronID, utils.FormatFileLockInfo(heldErr.Info))
+			return nil
+		}
+		return lockErr
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			fmt.Fprintf(os.Stderr, "[cron] release lock %s error: %v\n", storedCron.Config.CronID, err)
+		}
+	}()
 
 	fmt.Fprintf(os.Stderr, "[cron] executing %s (%s)\n", storedCron.Config.CronID, storedCron.Config.CronExpression)
 

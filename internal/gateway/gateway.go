@@ -185,6 +185,16 @@ func (g *gateway) Start() error {
 		_, _ = fmt.Fprintf(stderrWriter, "[cron] scheduler started\n")
 	}
 
+	if g.context.TaskWatchService != nil && g.context.TaskWatchEnabled {
+		if err := g.context.TaskWatchService.Start(); err != nil {
+			if g.context.CronService != nil {
+				_ = g.context.CronService.Stop()
+			}
+			return g.failStart(err)
+		}
+		_, _ = fmt.Fprintf(stderrWriter, "[taskwatch] service started\n")
+	}
+
 	if g.context.ChannelRegistry != nil {
 		if err := g.context.ChannelRegistry.StartAll(); err != nil {
 			if g.context.CronService != nil {
@@ -276,6 +286,11 @@ func (g *gateway) Stop() error {
 	}
 	if g.context.CronService != nil {
 		if err := g.context.CronService.Stop(); err != nil {
+			return err
+		}
+	}
+	if g.context.TaskWatchService != nil {
+		if err := g.context.TaskWatchService.Stop(); err != nil {
 			return err
 		}
 	}

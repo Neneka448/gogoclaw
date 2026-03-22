@@ -257,7 +257,7 @@ Point to files in the references/ directory if needed.
 
 ### How Skills Are Loaded at Runtime
 
-1. `workspace.EnsureDefaultSkills()` deploys embedded template skills on first run (skips if SKILL.md already exists).
+1. `workspace.EnsureDefaultSkills()` deploys embedded template skills on first run and keeps bundled skill resources synced on later runs while preserving workspace `SKILL.md` files.
 2. `skills.LoadWorkspaceSkills(workspace)` scans `skills/*/SKILL.md`, parses frontmatter, and builds the registry.
 3. `systemprompt.Service.Build()` injects skill names + metadata into the `<skills>` section of the system prompt.
 4. When the agent decides a skill is relevant, it calls the `get_skill` tool which returns the full SKILL.md content.
@@ -271,7 +271,7 @@ To ship a skill as part of the gogoclaw binary:
 2. Add `SKILL.md` with frontmatter + protocol.
 3. Add any supporting files (scripts, references, templates).
 4. The `//go:embed templates/*.md templates/skills` directive in `bootstrap_files.go` picks it up automatically.
-5. `EnsureDefaultSkills()` deploys it to the workspace on first run. Existing skills are never overwritten.
+5. `EnsureDefaultSkills()` deploys it to the workspace on first run. Existing `SKILL.md` files are preserved, while bundled scripts/references/assets are refreshed from the embedded defaults.
 
 ### Writing Effective Skills
 
@@ -279,7 +279,7 @@ To ship a skill as part of the gogoclaw binary:
 - Write the protocol as imperative steps, not explanations.
 - If the skill needs shell commands, put them in `scripts/` and reference them from the protocol.
 - Skills can reference other workspace files via `read_file` — instruct the agent to do so in the protocol.
-- A skill can call `create_cron` to schedule follow-up work, enabling autonomous multi-step workflows.
+- A skill can use the cron-task scripts and `sync_crons` tool to schedule follow-up work, enabling autonomous multi-step workflows.
 
 ---
 
@@ -316,7 +316,7 @@ Some changes touch multiple modules. Common patterns:
 `config/schema.go` → `tools/<name>.go` → `agent/invocation.go` (register) → optionally `workspace/templates/TOOLS.md` (document for the agent)
 
 **Adding a new autonomous behavior (skill + cron):**
-`workspace/templates/skills/<name>/SKILL.md` → skill protocol calls `create_cron` → `cron/cron_service.go` executes on schedule
+`workspace/templates/skills/<name>/SKILL.md` → skill protocol uses cron-task scripts + `sync_crons` → `cron/cron_service.go` executes on schedule
 
 **Adding a new external integration (provider + config + bootstrap):**
 `config/schema.go` → `provider/<name>.go` → `agent/invocation.go` (construct) → `context/system_context.go` (if new field needed)
@@ -328,4 +328,3 @@ Some changes touch multiple modules. Common patterns:
 - `tools/` defines the `Tool` interface and implementations. Tools receive dependencies via constructor, not by reaching into `SystemContext` directly.
 - `bootstrap/` is the only place that wires everything together for the gateway path. `agent/invocation.go` does the same for per-profile runtime.
 - `workspace/` only handles file scaffolding. It does not read config or know about runtime state.
-

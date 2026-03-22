@@ -34,6 +34,7 @@ type MCPServerConfig struct {
 type ChannelsConfig struct {
 	CLI           CLIChannelConfig    `json:"cli"`
 	Feishu        FeishuChannelConfig `json:"feishu"`
+	MQ            MQChannelConfig     `json:"mq"`
 	SendProgress  bool                `json:"sendProgress"`
 	SendToolHints bool                `json:"sendToolHints"`
 }
@@ -54,6 +55,15 @@ type FeishuChannelConfig struct {
 	VerificationToken string   `json:"verificationToken"`
 	AllowFrom         []string `json:"allowFrom"`
 	ReactEmoji        string   `json:"reactEmoji"`
+}
+
+type MQChannelConfig struct {
+	ChannelConfig
+	URL       string `json:"url"`
+	Exchange  string `json:"exchange"`
+	Profile   string `json:"profile"`
+	MachineID string `json:"machineId"`
+	Prefetch  int    `json:"prefetch"`
 }
 
 type AgentConfig struct {
@@ -208,6 +218,10 @@ func CreateDefaultConfig() SysConfig {
 			Feishu: FeishuChannelConfig{
 				AllowFrom:  []string{"*"},
 				ReactEmoji: "THUMBSUP",
+			},
+			MQ: MQChannelConfig{
+				Exchange: "agent.bus",
+				Prefetch: 16,
 			},
 			SendProgress:  true,
 			SendToolHints: true,

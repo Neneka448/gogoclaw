@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Neneka448/gogoclaw/internal/config"
+	"github.com/Neneka448/gogoclaw/internal/utils"
 )
 
 type fakeCronManager struct {
@@ -142,6 +143,74 @@ func TestCronServiceExecuteCronCreatesExecutionArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(string(sessionRefContent), `"sessionFile": "sessions/cron:indexer:task_exec_20260313T100000+0200.json"`) {
 		t.Fatalf("session.json = %s", string(sessionRefContent))
+	}
+}
+
+func TestCronServiceExecuteCronSkipsWhenLocked(t *testing.T) {
+	workspace := t.TempDir()
+	executionCount := 0
+	resolver := config.NewProfileResolver(map[string]config.ProfileConfig{
+		"default": {Workspace: workspace},
+	}, "default")
+	service := NewCronService(resolver, nil, func(request ExecutionRequest) error {
+		executionCount++
+		return nil
+	}, nil)
+	if _, err := service.CreateCron(UpsertCronInput{
+		CronID:         "locked-job",
+		CronExpression: "0 * * * *",
+		Enabled:        true,
+		Task:           "should be skipped",
+	}); err != nil {
+		t.Fatalf("CreateCron() error = %v", err)
+	}
+
+	// Hold a real advisory lock to simulate in-progress execution.
+	lockPath := filepath.Join(workspace, "crons", "locked-job", ".lock")
+	lock, err := utils.AcquireFileLock(utils.FileLockOptions{
+		Path:     lockPath,
+		Resource: "cron:locked-job",
+		Metadata: map[string]string{"cron_id": "locked-job"},
+	})
+	if err != nil {
+		t.Fatalf("AcquireFileLock() error = %v", err)
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			t.Fatalf("lock.Release() error = %v", err)
+		}
+	}()
+
+	// ExecuteCron should skip without error
+	if err := service.ExecuteCron("locked-job"); err != nil {
+		t.Fatalf("ExecuteCron() error = %v", err)
+	}
+	if executionCount != 0 {
+		t.Fatalf("executionCount = %d, want 0 (should have been skipped)", executionCount)
+	}
+
+	if info, err := utils.ReadFileLockInfo(lockPath); err != nil {
+		t.Fatalf("ReadFileLockInfo() error = %v", err)
+	} else if info == nil || info.PID == 0 {
+		t.Fatalf("lock info = %#v, want non-empty pid metadata", info)
+	}
+
+	// Release lock and verify execution proceeds.
+	if err := lock.Release(); err != nil {
+		t.Fatalf("lock.Release() error = %v", err)
+	}
+	if err := service.ExecuteCron("locked-job"); err != nil {
+		t.Fatalf("ExecuteCron() after unlock error = %v", err)
+	}
+	if executionCount != 1 {
+		t.Fatalf("executionCount = %d, want 1", executionCount)
+	}
+
+	// The lock file remains on disk for diagnostics, but it should be readable.
+	if info, err := utils.ReadFileLockInfo(lockPath); err != nil {
+		t.Fatalf("ReadFileLockInfo() after execution error = %v", err)
+	} else if info == nil || info.PID == 0 {
+		t.Fatalf("post-execution lock info = %#v, want non-empty pid metadata", info)
 	}
 }
 

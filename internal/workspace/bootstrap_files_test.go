@@ -88,6 +88,29 @@ func TestEnsureDefaultSkillsCreatesAgentBrowser(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultSkillsCreatesAgentBus(t *testing.T) {
+	workspacePath := t.TempDir()
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	skillRoot := filepath.Join(workspacePath, "skills", "agent_bus")
+	for _, rel := range []string{
+		"SKILL.md",
+		"references/SCHEMAS.md",
+		"scripts/send.py",
+		"scripts/reply.py",
+		"scripts/broadcast.py",
+		"scripts/inspect.py",
+	} {
+		path := filepath.Join(skillRoot, rel)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("Stat(%s) error = %v", path, err)
+		}
+	}
+}
+
 func TestEnsureDefaultSkillsCreatesCronTask(t *testing.T) {
 	workspacePath := t.TempDir()
 
@@ -95,13 +118,26 @@ func TestEnsureDefaultSkillsCreatesCronTask(t *testing.T) {
 		t.Fatalf("EnsureDefaultSkills() error = %v", err)
 	}
 
-	skillPath := filepath.Join(workspacePath, "skills", "cron-task", skillFileName)
+	skillPath := filepath.Join(workspacePath, "skills", "cron_task", skillFileName)
 	info, err := os.Stat(skillPath)
 	if err != nil {
 		t.Fatalf("Stat(%s) error = %v", skillPath, err)
 	}
 	if info.Size() == 0 {
-		t.Fatalf("cron-task SKILL.md is empty")
+		t.Fatalf("cron_task SKILL.md is empty")
+	}
+}
+
+func TestEnsureDefaultSkillsDeploysInvokeAgentNotificationScript(t *testing.T) {
+	workspacePath := t.TempDir()
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	scriptPath := filepath.Join(workspacePath, "skills", "invoke_agent", "scripts", "notify_completion.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("Stat(%s) error = %v", scriptPath, err)
 	}
 }
 
@@ -158,6 +194,44 @@ func TestEnsureDefaultSkillsPreservesExistingSkill(t *testing.T) {
 	}
 	if string(content) != "custom skill content" {
 		t.Fatalf("skill-creator SKILL.md = %q, want custom content preserved", string(content))
+	}
+}
+
+func TestEnsureDefaultSkillsSyncsBundledResourcesForExistingSkill(t *testing.T) {
+	workspacePath := t.TempDir()
+	skillDir := filepath.Join(workspacePath, "skills", "cron_task")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0755); err != nil {
+		t.Fatalf("os.MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte("custom cron skill"), 0644); err != nil {
+		t.Fatalf("os.WriteFile(SKILL.md) error = %v", err)
+	}
+	staleScriptPath := filepath.Join(skillDir, "scripts", "create.py")
+	if err := os.WriteFile(staleScriptPath, []byte("stale"), 0644); err != nil {
+		t.Fatalf("os.WriteFile(create.py) error = %v", err)
+	}
+
+	if err := EnsureDefaultSkills(workspacePath); err != nil {
+		t.Fatalf("EnsureDefaultSkills() error = %v", err)
+	}
+
+	skillContent, err := os.ReadFile(filepath.Join(skillDir, skillFileName))
+	if err != nil {
+		t.Fatalf("os.ReadFile(SKILL.md) error = %v", err)
+	}
+	if string(skillContent) != "custom cron skill" {
+		t.Fatalf("SKILL.md = %q, want custom content preserved", string(skillContent))
+	}
+
+	scriptContent, err := os.ReadFile(staleScriptPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(create.py) error = %v", err)
+	}
+	if string(scriptContent) == "stale" {
+		t.Fatal("create.py was not refreshed from embedded defaults")
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, "scripts", "common.py")); err != nil {
+		t.Fatalf("common.py not synced: %v", err)
 	}
 }
 

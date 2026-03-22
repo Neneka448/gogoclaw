@@ -8,6 +8,7 @@ import (
 	"github.com/Neneka448/gogoclaw/internal/config"
 	"github.com/Neneka448/gogoclaw/internal/cron"
 	mcppkg "github.com/Neneka448/gogoclaw/internal/mcp"
+	"github.com/Neneka448/gogoclaw/internal/taskwatch"
 	"github.com/Neneka448/gogoclaw/internal/memory"
 	messagebus "github.com/Neneka448/gogoclaw/internal/message_bus"
 	"github.com/Neneka448/gogoclaw/internal/provider"
@@ -83,8 +84,10 @@ type SystemContext struct {
 	SessionManager  session.SessionManager
 	CurrentSession  session.Session
 	VectorStore     vectorstore.Service
-	CronService     cron.Service
-	CronEnabled     bool
+	CronService       cron.Service
+	CronEnabled       bool
+	TaskWatchService  taskwatch.Service
+	TaskWatchEnabled  bool
 	MCPService      mcppkg.Service
 	MemoryService   memory.Service
 	MemoryEnabled   bool

@@ -196,7 +196,7 @@ These are mistakes that have been observed in practice. Avoid them.
 
 ## Checklist Before Creating
 
-Before calling `create_cron`, verify:
+Before creating the cron via `python -m skills.cron_task.scripts.create`, verify:
 
 - [ ] SOUL.md exists at workspace root with identity, voice, language rules, and varied-length examples.
 - [ ] SKILL.md exists under `skills/<name>/` with tools, workflow, unified COT, and safety rules.

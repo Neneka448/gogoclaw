@@ -345,8 +345,24 @@ func validateSysConfig(cfg SysConfig) error {
 	if err := validateEmbeddingProfileReferences(cfg); err != nil {
 		return err
 	}
+	if err := validateMQChannelConfig(cfg.Channels.MQ); err != nil {
+		return err
+	}
 	if err := validateToolNames(cfg.Tools); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateMQChannelConfig(cfg MQChannelConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.URL) == "" {
+		return fmt.Errorf("mq channel url is required when enabled")
+	}
+	if strings.TrimSpace(cfg.Profile) == "" {
+		return fmt.Errorf("mq channel profile is required when enabled")
 	}
 	return nil
 }
@@ -423,6 +439,12 @@ func normalizeSysConfig(cfg *SysConfig) {
 	}
 	if strings.TrimSpace(cfg.Channels.Feishu.ReactEmoji) == "" {
 		cfg.Channels.Feishu.ReactEmoji = defaultConfig.Channels.Feishu.ReactEmoji
+	}
+	if strings.TrimSpace(cfg.Channels.MQ.Exchange) == "" {
+		cfg.Channels.MQ.Exchange = defaultConfig.Channels.MQ.Exchange
+	}
+	if cfg.Channels.MQ.Prefetch <= 0 {
+		cfg.Channels.MQ.Prefetch = defaultConfig.Channels.MQ.Prefetch
 	}
 	if !cfg.Channels.CLI.Enabled {
 		cfg.Channels.CLI.Enabled = defaultConfig.Channels.CLI.Enabled

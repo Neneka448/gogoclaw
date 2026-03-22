@@ -20,9 +20,10 @@ type MessageTool struct {
 }
 
 type messageToolArgs struct {
-	Content    string   `json:"content,omitempty"`
-	MediaPaths []string `json:"media_paths,omitempty"`
-	MediaPath  string   `json:"media_path,omitempty"`
+	Content       string   `json:"content,omitempty"`
+	MediaPaths    []string `json:"media_paths,omitempty"`
+	MediaPath     string   `json:"media_path,omitempty"`
+	TargetProfile string   `json:"target_profile,omitempty"`
 }
 
 type messageToolResult struct {
@@ -54,6 +55,10 @@ func NewMessageTool(sink messagebus.OutputSink) ToolDescriptor {
 						"media_path": map[string]any{
 							"type":        "string",
 							"description": "Optional single local file path to attach to the message.",
+						},
+						"target_profile": map[string]any{
+							"type":        "string",
+							"description": "Optional target agent profile name. When set, the message is routed via MQ to the specified remote profile instead of replying to the current channel.",
 						},
 					},
 					"required": []string{"content"},
@@ -103,6 +108,12 @@ func (tool *MessageTool) Execute(args string) (string, error) {
 	tool.mu.Lock()
 	ctx := tool.context
 	tool.mu.Unlock()
+
+	targetProfile := strings.TrimSpace(input.TargetProfile)
+	if targetProfile != "" {
+		return tool.executeMQDirect(ctx, input.Content, mediaPaths, targetProfile)
+	}
+
 	if strings.TrimSpace(ctx.ChannelID) == "" || strings.TrimSpace(ctx.ChatID) == "" {
 		return encodeMessageToolResult(messageToolResult{Error: "message context is not set"})
 	}
@@ -166,4 +177,55 @@ func cloneMessageMetadata(metadata map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+const mqChannelID = "mq"
+
+func (tool *MessageTool) executeMQDirect(ctx messagebus.Message, content string, mediaPaths []string, targetProfile string) (string, error) {
+	metadata := cloneMessageMetadata(ctx.Metadata)
+	if metadata == nil {
+		metadata = make(map[string]string, 8)
+	}
+	metadata["target_profile"] = targetProfile
+	metadata["message_kind"] = "active_message"
+
+	// Propagate return routing so the remote agent's reply
+	// routes back to the original caller (e.g. the MQ source or feishu chat).
+	if ctx.ChannelID != "" {
+		metadata["return_channel_id"] = ctx.ChannelID
+	}
+	if ctx.ChatID != "" {
+		metadata["return_chat_id"] = ctx.ChatID
+	}
+	if ctx.SenderID != "" {
+		metadata["return_sender_id"] = ctx.SenderID
+	}
+	if ctx.ReplyTo != "" {
+		metadata["return_reply_to"] = ctx.ReplyTo
+	}
+	if ctx.MessageID != "" {
+		metadata["return_message_id"] = ctx.MessageID
+	}
+	if ctx.MessageType != "" {
+		metadata["return_message_type"] = ctx.MessageType
+	}
+
+	outbound := messagebus.Message{
+		ChannelID:    mqChannelID,
+		Message:      content,
+		MessageID:    ctx.MessageID,
+		MessageType:  "direct",
+		ChatID:       ctx.ChatID,
+		SenderID:     ctx.SenderID,
+		MediaPaths:   mediaPaths,
+		Metadata:     metadata,
+		FinishReason: "",
+	}
+	if err := tool.sink.Emit(outbound); err != nil {
+		return encodeMessageToolResult(messageToolResult{Error: err.Error()})
+	}
+	tool.mu.Lock()
+	tool.sentInTurn = true
+	tool.mu.Unlock()
+	return encodeMessageToolResult(messageToolResult{Status: "sent_to_profile:" + targetProfile})
 }

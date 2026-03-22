@@ -12,13 +12,13 @@ import (
 )
 
 const (
-	agentsFile       = "AGENTS.md"
-	soulFile         = "SOUL.md"
-	toolsFile        = "TOOLS.md"
-	userFile         = "USER.md"
-	heartbeatFile    = "HEARTBEAT.md"
-	memorySkillFile  = "MEMORY_SKILL.md"
-	skillFileName    = "SKILL.md"
+	agentsFile      = "AGENTS.md"
+	soulFile        = "SOUL.md"
+	toolsFile       = "TOOLS.md"
+	userFile        = "USER.md"
+	heartbeatFile   = "HEARTBEAT.md"
+	memorySkillFile = "MEMORY_SKILL.md"
+	skillFileName   = "SKILL.md"
 )
 
 var bootstrapFileNames = []string{agentsFile, soulFile, toolsFile, userFile, heartbeatFile}
@@ -89,9 +89,9 @@ func EnsureMemorySkill(workspacePath string) error {
 }
 
 // EnsureDefaultSkills deploys embedded default skill templates into the workspace
-// skills directory. If a skill's SKILL.md already exists, the entire skill is
-// skipped (existing skills are preserved). New skills are deployed with all
-// bundled resources (agents, scripts, references, etc.).
+// skills directory. Existing SKILL.md files are preserved, while bundled
+// resources such as scripts, references, assets, and templates are kept in sync
+// with the embedded defaults.
 func EnsureDefaultSkills(workspacePath string) error {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
@@ -103,22 +103,35 @@ func EnsureDefaultSkills(workspacePath string) error {
 		return fmt.Errorf("read embedded skill templates: %w", err)
 	}
 
+	// Migrate legacy hyphenated skill directories to underscore naming so that
+	// python -m imports work. If both old and new exist, remove the old one.
+	legacyRenames := map[string]string{
+		"cron-task":    "cron_task",
+		"invoke-agent": "invoke_agent",
+	}
+	for oldName, newName := range legacyRenames {
+		oldDir := filepath.Join(workspacePath, "skills", oldName)
+		newDir := filepath.Join(workspacePath, "skills", newName)
+		if _, err := os.Stat(oldDir); err == nil {
+			if _, err := os.Stat(newDir); err == nil {
+				// New dir already deployed — remove the legacy one.
+				os.RemoveAll(oldDir)
+			} else {
+				// Rename old → new.
+				os.Rename(oldDir, newDir)
+			}
+		}
+	}
+
 	for _, entry := range skillEntries {
 		if !entry.IsDir() {
 			continue
 		}
 		skillName := entry.Name()
 		targetDir := filepath.Join(workspacePath, "skills", skillName)
-		targetPath := filepath.Join(targetDir, skillFileName)
-
-		if _, err := os.Stat(targetPath); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("stat skill file %s: %w", targetPath, err)
-		}
 
 		embeddedRoot := filepath.Join("templates", "skills", skillName)
-		if err := deployEmbeddedDir(bootstrapTemplates, embeddedRoot, targetDir); err != nil {
+		if err := syncEmbeddedSkillDir(bootstrapTemplates, embeddedRoot, targetDir); err != nil {
 			return fmt.Errorf("deploy skill %s: %w", skillName, err)
 		}
 	}
@@ -126,9 +139,10 @@ func EnsureDefaultSkills(workspacePath string) error {
 	return nil
 }
 
-// deployEmbeddedDir recursively copies all files from an embedded FS directory
-// to a target directory on disk.
-func deployEmbeddedDir(fsys embed.FS, embeddedRoot, targetDir string) error {
+// syncEmbeddedSkillDir recursively copies all files from an embedded skill
+// directory to a target directory on disk. Existing SKILL.md files are
+// preserved so workspace-local skill protocols are not overwritten.
+func syncEmbeddedSkillDir(fsys embed.FS, embeddedRoot, targetDir string) error {
 	return fs.WalkDir(fsys, embeddedRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -155,6 +169,14 @@ func deployEmbeddedDir(fsys embed.FS, embeddedRoot, targetDir string) error {
 		mode := fs.FileMode(0644)
 		if isExecutableScript(path, content) {
 			mode = 0755
+		}
+
+		if filepath.Base(targetPath) == skillFileName {
+			if _, err := os.Stat(targetPath); err == nil {
+				return nil
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("stat skill file %s: %w", targetPath, err)
+			}
 		}
 
 		return os.WriteFile(targetPath, content, mode)

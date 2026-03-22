@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Invocation Task Status",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "succeeded", "failed"]
+    },
+    "started_at": {
+      "type": "string",
+      "description": "RFC3339 timestamp when execution started, empty if not yet started"
+    },
+    "finished_at": {
+      "type": "string",
+      "description": "RFC3339 timestamp when execution finished, empty if not yet finished"
+    },
+    "error": {
+      "type": "string",
+      "description": "Error message if status is failed, empty otherwise"
+    }
+  }
+}
