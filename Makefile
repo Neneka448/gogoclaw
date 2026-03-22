@@ -68,7 +68,7 @@ endif
 
 sign:
 ifeq ($(UNAME_S),Darwin)
-	codesign --force --sign "$(CODESIGN_SIGNER)" --identifier "$(CODESIGN_ID)" --options runtime ./gogoclaw
+	codesign --force --sign "$(CODESIGN_SIGNER)" --identifier "$(CODESIGN_ID)" --options runtime --entitlements entitlements.plist ./gogoclaw
 	@echo "Signed ./gogoclaw (identifier=$(CODESIGN_ID), signer=$(CODESIGN_SIGNER))"
 else
 	@echo "Code signing is only supported on macOS"
